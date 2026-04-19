@@ -13,17 +13,28 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T18 just landed; T19 next (needs hardware))
+- (nothing — full Clash→Quartus→.sof build closes; T19 next (needs hardware))
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T19. ✦ Milestone: hello on hardware.** Requires the DE2 + USB
-  Blaster physically connected + the Quartus tarball prefetched
-  into the Nix store. Steps: fill in TODO pin assignments in
-  `Riski5.qsf` from the Terasic DE2 Pin Table, `nix build
-  .#riski5-core`, `nix run .#flash-riski5`, visually verify
+- **T19. ✦ Milestone: hello on hardware.** The synthesis pipeline
+  already closes (`nix build .#riski5-core` produces `Riski5.sof`;
+  7 070 LEs / 21 %, Fmax 41.53 MHz — under our 50 MHz target, but
+  hardware bring-up only needs functional silicon to toggle pins).
+  Remaining blockers are physical: DE2 + USB Blaster connected,
+  Quartus tarball prefetched into the Nix store, and the TODO pin
+  assignments in `Riski5.qsf` filled in from the Terasic DE2 Pin
+  Table. Then `nix run .#flash-riski5` and visually verify
   "Hello from Riski5" on the LCD and `hello, world\n` on the
   JTAG-UART console.
+- **Timing closure at 50 MHz** — deferred to phase 1E (T40–T44).
+  The current 41.53 MHz is from the single-cycle critical path
+  (fetch → decode → regfile-read → ALU → writeback-mux) and the
+  barrel shifter. Area is also high at 7 070 LEs / 21 % because
+  Quartus inferred zero block memory bits — both register file
+  and BRAM are currently distributed LUT-RAM. Moving them onto
+  M4K is a phase-1E micro-optimisation, not a prerequisite for
+  first hardware run.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
