@@ -83,26 +83,14 @@ simulateProgram n program =
     -- imem read: pc / 4 into the program vector.
     imemOf :: BitVector 32 -> BitVector 32
     imemOf pc = padded P.!! (P.fromIntegral pc `P.div` 4)
-    -- Run a Clash simulation. The core's output PC drives imemData
-    -- for the *next* cycle; since we assume async read, we need a
-    -- feedback loop. We cheat here by pre-generating a long PC
-    -- trace via Clash's simulation.
     go ::
       (HiddenClockResetEnable System) =>
       Signal System (BitVector 32, BitVector 32, BitVector 32, BitVector 4, CP.Bool)
     go =
       let
-        -- Start by making imemData a function of the current PC.
-        -- Clash has no direct "read from a haskell function of
-        -- the current pc" primitive, so we build it from a
-        -- simulate loop externally.
         dmem = fromList (P.repeat 0 :: [BitVector 32])
-        imemSig =
-          let pcS = outPc
-              -- Map pc through imemOf to drive imemData.
-              imemOfS = fmap imemOf pcS
-           in imemOfS
-        (outPc, dAddr, dWdata, dBe, dRen) = core imemSig dmem
+        imemSig = fmap imemOf outPc
+        (outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
     samples =

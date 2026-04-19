@@ -57,15 +57,22 @@ core ::
   Signal dom (BitVector 32) ->
   -- | data memory read response (assumed same-cycle read)
   Signal dom (BitVector 32) ->
-  -- | @(pc, dmemAddr, dmemWdata, dmemByteEn, dmemReadEn)@
+  {- | @(pc, dmemAddr, dmemWdata, dmemByteEn, dmemReadEn, writeBack)@.
+  The @writeBack@ component carries @Just (rd, value)@ on cycles
+  that commit a register-file write, @Nothing@ otherwise. Real SoC
+  tops ignore it; simulation harnesses use it to observe
+  architectural state cycle-by-cycle without poking inside the
+  regfile.
+  -}
   ( Signal dom (BitVector 32) -- current PC, drives imem addr
   , Signal dom (BitVector 32) -- dmem address
   , Signal dom (BitVector 32) -- dmem write data
   , Signal dom (BitVector 4) -- per-byte write-enable (0 = no write)
   , Signal dom Bool -- read enable
+  , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write (observability)
   )
 core imemData dmemRData =
-  (pc, dmemAddr, dmemWdata, dmemBe, dmemRen)
+  (pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack)
  where
   -- ----- PC ---------------------------------------------------------
   pc :: Signal dom (BitVector 32)

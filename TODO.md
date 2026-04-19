@@ -13,13 +13,15 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T10 just landed; T11 is next)
+- (nothing — T11 just landed; T12 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T11. Whole-core sim via verilambda.** Diff every `InstrCatalog`
-  program against `Riski5.Reference` via Verilator under verilambda.
 - **T12. CSR file + M-mode traps.** `src/Riski5/CSR.hs`.
+- **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
+  driver so the same diff runs through Verilator. Deferred until the
+  SoC-with-BRAM interface stabilizes (T14), since the top-entity
+  shape is more naturally a SoC than a bare core.
 
 Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
 
@@ -122,6 +124,23 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   - `test/CoreSpec.hs` — pure-Clash sanity check: PC advances by 4
     per NOP cycle; ADDI sequence doesn't stall. Full verilambda-
     driven diff against Reference lands in T11. Total: 46 tests.
+- **T11. Whole-core sim (pure Clash) + Reference diff** (2026-04-19)
+  - `core` gained an observability output: the regfile write-back
+    signal (`Signal dom (Maybe (BitVector 5, BitVector 32))`).
+    Synthesizable targets will ignore it; simulation drivers use it
+    to reconstruct architectural register state without poking
+    inside the regfile.
+  - `test/CoreSimSpec.hs` — nine differential tests running small
+    Asm programs (ADDI / LUI+ADDI / ADD+SUB / XOR+OR+AND+SLTIU /
+    SLL+SRL+SRA / BEQ-taken / BNE-not-taken / SLTI / backward-
+    branch 3-iteration loop) through both the Clash core and
+    `Riski5.Reference`, asserting identical final integer register
+    files. All pass; no divergences found.
+  - Verilambda/Verilator wrapping intentionally deferred until the
+    SoC-with-BRAM interface lands — the top-entity shape is more
+    natural as a SoC than as a bare core. Tracked as
+    T11-verilambda.
+  - Total: 55 tests green.
 
 ## Ongoing
 
