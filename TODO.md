@@ -13,7 +13,29 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — full Clash→Quartus→.sof build closes; T19 next (needs hardware))
+- **T19. ✦ Hello on hardware.** First-flash succeeded (`Riski5.sof`
+  loaded over USB-Blaster, LEDR shows `0x8F` proving the entire
+  Hello firmware ran to completion). LCD still shows black boxes
+  on the top row though — debugging the HD44780 path. So far:
+  - **Fixed** an LCD address-setup-time bug (data + RS rose on the
+    same edge as `E`; HD44780 needs ≥40 ns lead). Added a `Setup`
+    state to `Riski5.Lcd`'s FSM.
+  - **Suspect 1**: missing HD44780 power-on wake sequence (3× `0x30`
+    writes with proper inter-write delays).
+  - **Suspect 2**: post-Clear wait too short — controller waits
+    40 µs, HD44780 needs 1.52 ms to finish Clear/Home, so all
+    subsequent character writes land in a busy chip and are
+    dropped.
+- **T19a. LCD backlight investigation.** Both `LCD_BLON` polarities
+  give a dark backlight on a brand-new DE2. User confirmed the
+  PCB has no visible contrast trimmer near the LCD socket. Likely
+  causes to triage: (a) `LCD_BLON` is NC on this DE2 rev, with the
+  backlight wired to a fixed source; (b) the backlight needs both
+  `LCD_ON` and `LCD_BLON` driven through a specific transition;
+  (c) something on this rev's schematic differs from the User
+  Manual. Next step: pull the actual DE2 schematic PDF
+  (separate from the User Manual), trace the backlight LED's
+  power path, and confirm what controls it.
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
