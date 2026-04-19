@@ -13,12 +13,11 @@ rules around maintaining it.
 
 ## In flight
 
-- **T5. Encoder** [started 2026-04-19]
-  - `src/Riski5/Encode.hs` — total `Instr -> BitVector 32`.
+- **T6. Decoder + roundtrip tests** [started 2026-04-19]
+  - `src/Riski5/Decode.hs` + `test/DecodeSpec.hs`.
 
 ## Next up
 
-- **T6. Decoder + roundtrip tests.** `Decode.hs` + `DecodeSpec.hs`.
 - **T7. Asm eDSL.** `Asm.hs` + `AsmSpec.hs`.
 
 Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
@@ -57,6 +56,10 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     and `Instr` ADT covering all 47 RV32I + Zifencei + 6 Zicsr + MRET
     instructions. Width-indexed immediates (`Signed 12/13/21`,
     `BitVector 20/5`).
+- **T5. Encoder** (2026-04-19)
+  - `src/Riski5/Encode.hs` — total `Instr -> BitVector 32` covering
+    every constructor via rType/iType/shiftI/sType/bType/uType/jType
+    helpers plus hard-coded ECALL/EBREAK/MRET encodings.
 
 ## Ongoing
 
