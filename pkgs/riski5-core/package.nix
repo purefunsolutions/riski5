@@ -63,8 +63,15 @@ in
       # source root too. All per-feature language extensions live in
       # the .hs files themselves; Clash just needs the GHC2021
       # language standard and the two source roots.
+      #
+      # -XImplicitPrelude is explicit because Clash's CLI frontend
+      # defaults to NoImplicitPrelude (unlike cabal). Our modules
+      # use the `import Clash.Prelude hiding ((&&), ...)` pattern so
+      # the ISA constructors (And, Xor, ...) don't clash — that
+      # assumes Prelude is implicitly in scope to supply the hidden
+      # operators.
       clash --verilog -fclash-hdlsyn Quartus \
-        -XGHC2021 \
+        -XGHC2021 -XImplicitPrelude \
         -isrc -iapp -ifirmware/phase1 \
         Top
 
