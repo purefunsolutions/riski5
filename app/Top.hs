@@ -32,17 +32,7 @@ module Top (
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
 import Clash.Sized.Vector qualified as V
-import Data.Either qualified as DE
-import Riski5.Asm (
-  Asm,
-  addi,
-  assemble,
-  j,
-  label,
-  lui,
- )
-import Riski5.Asm qualified as Asm
-import Riski5.ISA (Instr (..), x0, x1, x2, x3)
+import Hello (helloFirmwareWords)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
 import Prelude qualified as P
@@ -62,38 +52,18 @@ createDomain
 
 -- * Firmware --------------------------------------------------------
 
-{- |
-Tight six-instruction counter that drives LEDR from an upper slice
-of a counter register. Starts by building the LEDR MMIO address in
-@x1@ (the GPIO base is 0x1000_0020), then loops: increment @x2@,
-shift right by 20 bits, store to LEDR.
+{- | 256-word (1 KB) instruction memory — enough for the Hello
+firmware plus headroom. Unused words are NOPs.
 -}
-counterFirmware :: Asm ()
-counterFirmware = do
-  lui x1 0x10000
-  addi x1 x1 0x20
-  loopL <- label
-  addi x2 x2 1
-  Asm.srli x3 x2 20
-  Asm.emit (Sw x1 x3 0)
-  j loopL
+type ProgSize = 256
 
-firmwareWords :: [BitVector 32]
-firmwareWords =
-  DE.fromRight
-    (P.error "counterFirmware failed to assemble")
-    (assemble counterFirmware)
-
--- | 64-word (256-byte) instruction memory; remainder is NOP padding.
-type ProgSize = 64
-
--- | 64-word data memory. Phase-1B first bring-up doesn't touch it.
+-- | 64-word data memory. Phase-1B Hello firmware doesn't touch it.
 type DataSize = 64
 
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
   V.unsafeFromList
-    (P.take 64 (firmwareWords P.++ P.repeat 0x0000_0013))
+    (P.take 256 (helloFirmwareWords P.++ P.repeat 0x0000_0013))
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0

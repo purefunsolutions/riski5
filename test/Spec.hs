@@ -10,6 +10,7 @@ import BramSpec qualified
 import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
+import HelloSpec qualified
 import LcdSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
@@ -34,4 +35,5 @@ main =
       , BramCoreSpec.tests
       , LcdSpec.tests
       , SocSpec.tests
+      , HelloSpec.tests
       ]

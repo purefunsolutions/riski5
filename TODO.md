@@ -13,14 +13,17 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T17 just landed; T18 next)
+- (nothing — T18 just landed; T19 next (needs hardware))
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T18. Hello-from-Riski5 firmware.** `firmware/phase1/Hello.hs`
-  via `Riski5.Asm`, writes `hello, world\n` to UART and
-  `Hello from Riski5` to the LCD; `Emit.hs` dumps the assembled
-  program as a Quartus `.mif`.
+- **T19. ✦ Milestone: hello on hardware.** Requires the DE2 + USB
+  Blaster physically connected + the Quartus tarball prefetched
+  into the Nix store. Steps: fill in TODO pin assignments in
+  `Riski5.qsf` from the Terasic DE2 Pin Table, `nix build
+  .#riski5-core`, `nix run .#flash-riski5`, visually verify
+  "Hello from Riski5" on the LCD and `hello, world\n` on the
+  JTAG-UART console.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
@@ -241,6 +244,25 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     derivation evaluations. Actual `nix build .#riski5-core`
     is deferred to hardware bring-up (T19) — needs Quartus
     running + the user's ~4 GB Quartus tarball prefetched.
+- **T18. Hello-from-Riski5 firmware** (2026-04-19)
+  - `firmware/phase1/Hello.hs` — full `Riski5.Asm` program:
+    initialises the HD44780 (function-set → display-on →
+    entry-mode → clear) via the busy-polled path, writes
+    `Hello from Riski5` to LCD line 1, then `hello, world\n` to
+    the JTAG UART, then spins. ~150 instructions end to end.
+  - `firmware/phase1/Emit.hs` — executable (`cabal run
+    riski5-emit-hello -- out.mif`) that assembles the Hello
+    program and emits a Quartus-compatible Memory Initialization
+    File, NOP-padded to 256 words. Matches the imem size in
+    `Top.hs`.
+  - `app/Top.hs` — now embeds `helloFirmwareWords` instead of the
+    placeholder counter. Bumps `ProgSize` from 64 to 256 words.
+  - `test/HelloSpec.hs` — drives the full SoC with the Hello
+    firmware for 60 000 cycles (enough for the LCD busy-wait
+    loops to drain) and asserts the observed JTAG-UART TX stream
+    is exactly `hello, world\n`. **First fully integrated test —
+    core + bus + BRAM + LCD + UART + firmware — passes on first
+    try.** 75 tests green.
 
 ## Ongoing
 

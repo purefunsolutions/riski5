@@ -78,6 +78,26 @@ library riski5-top
     , base
     , clash-prelude
     , riski5
+    , riski5-firmware
+
+library riski5-firmware
+  import:          warnings, language
+  hs-source-dirs:  firmware/phase1
+  exposed-modules: Hello
+  build-depends:
+    , base
+    , clash-prelude
+    , riski5
+
+executable riski5-emit-hello
+  import:         warnings, language
+  main-is:        Emit.hs
+  hs-source-dirs: firmware/phase1
+  build-depends:
+    , base
+    , clash-prelude
+    , riski5
+    , riski5-firmware
 
 test-suite riski5-test
   import:         warnings, language
@@ -92,6 +112,7 @@ test-suite riski5-test
     CoreSimSpec
     CoreSpec
     DecodeSpec
+    HelloSpec
     LcdSpec
     ReferenceSpec
     RegfileSpec
@@ -102,8 +123,9 @@ test-suite riski5-test
     , base
     , clash-prelude
     , containers
-    , hedgehog        >=1.4  && <2
+    , hedgehog         >=1.4  && <2
     , riski5
-    , tasty           >=1.5  && <1.6
-    , tasty-hedgehog  >=1.4  && <1.5
-    , tasty-hunit     >=0.10 && <0.11
+    , riski5-firmware
+    , tasty            >=1.5  && <1.6
+    , tasty-hedgehog   >=1.4  && <1.5
+    , tasty-hunit      >=0.10 && <0.11
