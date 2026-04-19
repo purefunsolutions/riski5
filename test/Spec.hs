@@ -5,6 +5,8 @@ module Main (main) where
 
 import AluSpec qualified
 import AsmSpec qualified
+import BramCoreSpec qualified
+import BramSpec qualified
 import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
@@ -26,4 +28,6 @@ main =
       , CoreSpec.tests
       , CoreSimSpec.tests
       , TrapSpec.tests
+      , BramSpec.tests
+      , BramCoreSpec.tests
       ]

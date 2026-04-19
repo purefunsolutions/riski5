@@ -13,12 +13,10 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T12 just landed; T13 is next)
+- (nothing — T13 just landed; T14 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T13. Bus + slaves skeleton.** `src/Riski5/{Bus,Bram,JtagUart}.hs`
-  + GPIO inside `Soc.hs`.
 - **T14. LCD controller.** `src/Riski5/Lcd.hs`.
 - **T15. SoC top.** `src/Riski5/Soc.hs`.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
@@ -160,6 +158,26 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   - `test/TrapSpec.hs` — 8 HUnit cases covering every trap path
     plus CSRRS/CSRRC set/clear semantics. All green; no bugs
     found. Total: 63 tests green.
+- **T13. Bus + BRAM + JTAG UART skeleton** (2026-04-19)
+  - `src/Riski5/MemMap.hs` — the 4-bit-MSB address decoder plus
+    named region bases and reset defaults. Single source of truth
+    for every address constant in the code base.
+  - `src/Riski5/Bram.hs` — word-addressable async-read RAM with
+    byte-enable writes. Backed by a register-array (like the
+    regfile) for the same pipelineless reason; sync-BRAM swap is
+    deferred to the pipeline phase.
+  - `src/Riski5/JtagUart.hs` — a minimal functional model for
+    simulation (TX observable, RX stubbed, CTL.TxReady always
+    asserted). The Altera IP black-box annotation gets added with
+    the Quartus flow in T17.
+  - `test/BramSpec.hs` — 3 direct HUnit tests for the BRAM wrapper
+    (word write+read, byte-enable, two sequential writes).
+  - `test/BramCoreSpec.hs` — 4 integration tests wiring Core + BRAM
+    + BRAM (imem and dmem) and diffing against Reference for
+    SW/LW / multi-word / SB+LBU / SH+LH negative. All green. First
+    test that exercises Core's byte-enable + store-data-lane
+    plumbing end-to-end.
+  - Total: 70 tests green.
 
 ## Ongoing
 

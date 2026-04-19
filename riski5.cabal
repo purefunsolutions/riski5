@@ -50,11 +50,14 @@ library
     Riski5
     Riski5.ALU
     Riski5.Asm
+    Riski5.Bram
     Riski5.Core
     Riski5.CSR
     Riski5.Decode
     Riski5.Encode
     Riski5.ISA
+    Riski5.JtagUart
+    Riski5.MemMap
     Riski5.Reference
     Riski5.Regfile
 
@@ -72,6 +75,8 @@ test-suite riski5-test
   other-modules:
     AluSpec
     AsmSpec
+    BramCoreSpec
+    BramSpec
     CoreSimSpec
     CoreSpec
     DecodeSpec
