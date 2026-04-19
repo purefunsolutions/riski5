@@ -35,7 +35,6 @@ module Top (
 
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
-import Clash.Sized.Vector qualified as V
 import Hello (helloFirmwareWords)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
@@ -66,8 +65,7 @@ type DataSize = 64
 
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
-  V.unsafeFromList
-    (P.take 256 (helloFirmwareWords P.++ P.repeat 0x0000_0013))
+  $(listToVecTH (P.take 256 (helloFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0
