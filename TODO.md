@@ -13,11 +13,10 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T13 just landed; T14 is next)
+- (nothing — T14 just landed; T15 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T14. LCD controller.** `src/Riski5/Lcd.hs`.
 - **T15. SoC top.** `src/Riski5/Soc.hs`.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
@@ -178,6 +177,16 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     test that exercises Core's byte-enable + store-data-lane
     plumbing end-to-end.
   - Total: 70 tests green.
+- **T14. LCD controller** (2026-04-19)
+  - `src/Riski5/Lcd.hs` — minimal HD44780 16×2 controller. FSM
+    cycles Idle → Pulse (16 cycles, E high) → Wait (2000 cycles,
+    enforcing the 37 µs post-write minimum at 50 MHz) → Idle. MMIO
+    window exposes DATA (offset 0, RS=1), CMD (offset 4, RS=0), and
+    STATUS (offset 8, bit 0 = busy). Firmware runs the power-on
+    init sequence itself via sequential MMIO writes.
+  - `test/LcdSpec.hs` — 2 HUnit cases: E-strobe pulse width (cycles
+    2..17 high, 18 low after a write issued on cycle 1); busy flag
+    asserted continuously through pulse+idle. 72 tests green.
 
 ## Ongoing
 
