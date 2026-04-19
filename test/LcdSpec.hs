@@ -35,9 +35,10 @@ import Clash.Prelude (
  )
 import Clash.Prelude qualified as CP
 import Riski5.Lcd (LcdPins (..), lcd)
+import Riski5.MemMap (lcdBase)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
-import Prelude (Bool (..), Int, Maybe (..), ($), (<$>), (<*>))
+import Prelude (Bool (..), Int, Maybe (..), ($), (+), (<$>), (<*>))
 import Prelude qualified as P
 
 tests :: TestTree
@@ -82,11 +83,12 @@ case_pulseWidth = do
   -- MMIO write on cycle 1 (once reset has released).
   -- Cycle 2..17: E is high (pulseCycles = 16 at 50 MHz).
   -- Cycle 18: E drops, post-write idle begins.
-  let prog =
+  let dataAddr = lcdBase + 0
+      prog =
         simLcd
           22
           (False : True : P.repeat False) -- select on cycle 1 only
-          (0 : 0 : P.repeat 0) -- addr = DATA (offset 0)
+          (0 : dataAddr : P.repeat dataAddr) -- absolute DATA address
           (0 : 0xAB : P.repeat 0)
           (0 : 0b0001 : P.repeat 0)
       esAt c = lcdE (P.fst (prog P.!! c))
@@ -103,9 +105,11 @@ case_busyFlag :: Assertion
 case_busyFlag = do
   -- Cycle 0: reset. Cycle 1: firmware issues one DATA write. Cycles
   -- 2..: read STATUS every cycle.
-  let idle_ = (False, 0 :: BitVector 32, 0 :: BitVector 32, 0 :: BitVector 4)
-      firstWrite = (True, 0, 0xAB, 0b0001)
-      statusRead = (True, 8, 0, 0)
+  let dataAddr = lcdBase + 0
+      statusAddr = lcdBase + 8
+      idle_ = (False, 0 :: BitVector 32, 0 :: BitVector 32, 0 :: BitVector 4)
+      firstWrite = (True, dataAddr, 0xAB, 0b0001)
+      statusRead = (True, statusAddr, 0, 0)
       ops = idle_ : firstWrite : P.replicate 30 statusRead
       (sels, addrs, wdatas, bes) = unzip4 ops
       prog = simLcd 32 sels addrs wdatas bes

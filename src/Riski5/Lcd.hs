@@ -47,6 +47,7 @@ module Riski5.Lcd (
 ) where
 
 import Clash.Prelude hiding (not, (&&), (||))
+import Riski5.MemMap (lcdBase)
 
 {- |
 Bundle of LCD pins exposed by the controller. Wired straight to
@@ -95,9 +96,9 @@ idleCycles = 2000
 -- * MMIO offsets ---------------------------------------------------
 
 offsetData, offsetCmd, offsetStatus :: BitVector 32
-offsetData = 0
-offsetCmd = 4
-offsetStatus = 8
+offsetData = lcdBase + 0
+offsetCmd = lcdBase + 4
+offsetStatus = lcdBase + 8
 
 -- * Controller -----------------------------------------------------
 
