@@ -26,7 +26,8 @@ incremental_db/
 obj_dir/
 greybox_tmp/
 
-# Only commit PDFs under docs/riscv/ that the plan explicitly names. Stray
-# downloads stay out.
+# Only commit PDFs under docs/riscv/ and docs/de2/ that the plan explicitly
+# names. Stray downloads stay out.
 docs/**/*.pdf
 !docs/riscv/*.pdf
+!docs/de2/*.pdf
