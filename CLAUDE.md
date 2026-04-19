@@ -210,3 +210,12 @@ explicitly names get committed.
 
 Small, one task ≈ one commit. Messages describe what changed and
 **why**, not a mechanical diff summary.
+
+**Fixes land as `fixup!` / `squash!` commits.** When we find a bug
+later that was introduced by commit `<abc>`, don't land the fix as a
+standalone commit — use `git commit --fixup=<abc>` (or `--squash` when
+a new message is warranted). At a convenient merge boundary
+(typically end of phase or before pushing), run
+`git rebase -i --autosquash <base>` to fold them into their targets
+so the final history is one-task-per-commit with clean messages.
+Normal feature / scope commits stay as-is.
