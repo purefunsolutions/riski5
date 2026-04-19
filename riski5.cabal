@@ -54,6 +54,7 @@ library
     Riski5.Encode
     Riski5.ISA
     Riski5.Reference
+    Riski5.Regfile
 
   build-depends:
     , base           >=4.20 && <5
@@ -71,6 +72,7 @@ test-suite riski5-test
     AsmSpec
     DecodeSpec
     ReferenceSpec
+    RegfileSpec
 
   build-depends:
     , base

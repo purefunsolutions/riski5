@@ -7,6 +7,7 @@ import AluSpec qualified
 import AsmSpec qualified
 import DecodeSpec qualified
 import ReferenceSpec qualified
+import RegfileSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
@@ -17,5 +18,6 @@ main =
       [ DecodeSpec.tests
       , AsmSpec.tests
       , AluSpec.tests
+      , RegfileSpec.tests
       , ReferenceSpec.tests
       ]

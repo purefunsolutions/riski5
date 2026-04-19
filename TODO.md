@@ -13,11 +13,10 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T8 just landed; T9 is next)
+- (nothing — T9 just landed; T10 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T9. Regfile on M4K.** `src/Riski5/Regfile.hs`.
 - **T10. Pipelineless datapath (no CSR).** `src/Riski5/Core.hs`.
 - **T11. Whole-core sim via verilambda.** `test/CoreSpec.hs`.
 - **T12. CSR file + M-mode traps.** `src/Riski5/CSR.hs`.
@@ -103,6 +102,17 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     each passing 500–1000 random cases biased toward boundary
     values (0, ±1, signed/unsigned min/max, alternating patterns).
     Total now: 40 tests green in ≈ 100 ms.
+- **T9. Regfile on M4K** (2026-04-19)
+  - `src/Riski5/Regfile.hs` — 32×32 integer register file with two
+    read ports and one write port, backed by two `blockRam` instances
+    (≈ 2 M4K, trivially inside the 105-M4K budget). `x0` hard-wired
+    to zero on both read (address-compared mux) and write (write-enable
+    gated). Synchronous-read semantics (1-cycle output latency)
+    matching Cyclone II M4K behaviour.
+  - `test/RegfileSpec.hs` — 4 HUnit cases exercising x5 write→read
+    round-trip, writes-to-x0 dropped, reads-of-x0 always zero, two
+    read ports return independent values. Driven via Clash's
+    `sampleN` pure simulator. Total: 44 tests green.
 
 ## Ongoing
 
