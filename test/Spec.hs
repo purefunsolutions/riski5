@@ -13,6 +13,7 @@ import DecodeSpec qualified
 import LcdSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SocSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
 
@@ -32,4 +33,5 @@ main =
       , BramSpec.tests
       , BramCoreSpec.tests
       , LcdSpec.tests
+      , SocSpec.tests
       ]

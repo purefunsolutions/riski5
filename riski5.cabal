@@ -55,12 +55,14 @@ library
     Riski5.CSR
     Riski5.Decode
     Riski5.Encode
+    Riski5.Gpio
     Riski5.ISA
     Riski5.JtagUart
     Riski5.Lcd
     Riski5.MemMap
     Riski5.Reference
     Riski5.Regfile
+    Riski5.Soc
 
   build-depends:
     , base           >=4.20 && <5
@@ -84,6 +86,7 @@ test-suite riski5-test
     LcdSpec
     ReferenceSpec
     RegfileSpec
+    SocSpec
     TrapSpec
 
   build-depends:

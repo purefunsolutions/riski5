@@ -13,11 +13,12 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T14 just landed; T15 is next)
+- (nothing — T15 just landed; T16 next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T15. SoC top.** `src/Riski5/Soc.hs`.
+- **T16. DE2 top entity + pins + timing.** `app/Top.hs`,
+  `pkgs/riski5-core/{Riski5.qpf,Riski5.qsf,Riski5.sdc}`.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
@@ -187,6 +188,20 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   - `test/LcdSpec.hs` — 2 HUnit cases: E-strobe pulse width (cycles
     2..17 high, 18 low after a write issued on cycle 1); busy flag
     asserted continuously through pulse+idle. 72 tests green.
+- **T15. SoC top** (2026-04-19)
+  - `src/Riski5/Soc.hs` — SoC top wiring core + imem-BRAM + dmem-BRAM
+    + JTAG UART + LCD + GPIO through the address decoder. Exposes
+    `SocIn` (switches, keys) and `SocOut` (LEDR, LEDG, LCD pins,
+    observable UART TX byte).
+  - `src/Riski5/Gpio.hs` — MMIO LEDR/LEDG/SW/KEY block.
+  - `test/SocSpec.hs` — 2 integration tests. First program writes
+    'H' then 'i' through SW to the UART DATA register; observed TX
+    stream matches "Hi". Second program writes 0x15 to LEDR via SW
+    to the GPIO register; SoC's LEDR output reflects it.
+  - Integration caught a real bug: JTAG UART, LCD, and GPIO slaves
+    were comparing against relative offsets but the bus passes
+    absolute addresses. Fixed as `fixup!` commits against T13 + T14
+    to keep history clean. 74 tests green.
 
 ## Ongoing
 
