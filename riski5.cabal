@@ -48,6 +48,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Riski5
+    Riski5.ALU
     Riski5.Asm
     Riski5.Decode
     Riski5.Encode
@@ -66,6 +67,7 @@ test-suite riski5-test
   main-is:        Spec.hs
   hs-source-dirs: test
   other-modules:
+    AluSpec
     AsmSpec
     DecodeSpec
     ReferenceSpec

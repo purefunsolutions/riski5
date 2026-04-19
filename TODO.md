@@ -13,11 +13,10 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — ready to start phase 1B)
+- (nothing — T8 just landed; T9 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T8. ALU + tests.** `src/Riski5/ALU.hs`, `test/AluSpec.hs`.
 - **T9. Regfile on M4K.** `src/Riski5/Regfile.hs`.
 - **T10. Pipelineless datapath (no CSR).** `src/Riski5/Core.hs`.
 - **T11. Whole-core sim via verilambda.** `test/CoreSpec.hs`.
@@ -95,6 +94,15 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     HUnit cases covering ADDI/LUI/ADD/SUB/BEQ (taken and not)/SW+LW
     round-trip/SRAI/JAL/ECALL-trap/SLTI. All 24 tests pass
     (14 original + 10 reference).
+- **T8. ALU + tests** (2026-04-19)
+  - `src/Riski5/ALU.hs` — combinational `alu :: AluOp -> BitVector
+    32 -> BitVector 32 -> BitVector 32` covering all ten RV32I
+    arithmetic/logical/shift/compare ops, plus a separate
+    `branchTaken :: BranchOp -> ...` for the six branch comparators.
+  - `test/AluSpec.hs` — 16 Hedgehog properties (10 ALU + 6 branch),
+    each passing 500–1000 random cases biased toward boundary
+    values (0, ±1, signed/unsigned min/max, alternating patterns).
+    Total now: 40 tests green in ≈ 100 ms.
 
 ## Ongoing
 

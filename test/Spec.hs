@@ -3,6 +3,7 @@
 
 module Main (main) where
 
+import AluSpec qualified
 import AsmSpec qualified
 import DecodeSpec qualified
 import ReferenceSpec qualified
@@ -15,5 +16,6 @@ main =
       "riski5"
       [ DecodeSpec.tests
       , AsmSpec.tests
+      , AluSpec.tests
       , ReferenceSpec.tests
       ]
