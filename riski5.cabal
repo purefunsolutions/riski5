@@ -33,15 +33,7 @@ common warnings
     -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
 
 common language
-  default-language:   GHC2021
-  default-extensions:
-    DataKinds
-    DeriveAnyClass
-    DerivingStrategies
-    LambdaCase
-    NoStarIsType
-    TypeFamilies
-    UndecidableInstances
+  default-language: GHC2021
 
 library
   import:          warnings, language
