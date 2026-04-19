@@ -75,6 +75,10 @@ Internal state of the controller FSM.
 data LcdState
   = -- | Nothing in flight; outputs @E=0@ and the last-latched data.
     Idle
+  | {- | Data + RS already latched, @E@ still low — gives the HD44780
+    its address-setup time before @E@ rises. @count@ cycles remaining.
+    -}
+    Setup {count :: BitVector 16}
   | -- | Holding @E@ high; @count@ cycles remaining.
     Pulse {count :: BitVector 16}
   | {- | Enforcing post-write idle; @count@ cycles remaining before
@@ -85,6 +89,16 @@ data LcdState
   deriving anyclass (NFDataX)
 
 -- * Timing constants -----------------------------------------------
+
+{- | Address-setup cycles before @E@ rises. HD44780 needs RS / data
+stable ≥ 40 ns before the @E@ rising edge; at 50 MHz one cycle is
+20 ns, so 8 cycles (160 ns) leaves 4× margin and absorbs FPGA
+fabric + I/O cell propagation skew between the data and @E@ paths.
+This is the bug that broke the first hardware run — without it,
+data and @E@ rose on the same edge and the chip latched garbage.
+-}
+setupCycles :: BitVector 16
+setupCycles = 8
 
 {- | Duration of the @E@ high pulse in clock cycles at 50 MHz.
 Spec requires ≥ 230 ns; we use 16 cycles (320 ns) for margin.
@@ -173,8 +187,11 @@ lcd selS addrS wdataS beS _readEnS =
     ( \req st ->
         case st of
           Idle -> case req of
-            Just _ -> Pulse {count = pulseCycles - 1}
+            Just _ -> Setup {count = setupCycles - 1}
             Nothing -> Idle
+          Setup c
+            | c == 0 -> Pulse {count = pulseCycles - 1}
+            | otherwise -> Setup {count = c - 1}
           Pulse c
             | c == 0 -> Wait {count = idleCycles - 1}
             | otherwise -> Pulse {count = c - 1}

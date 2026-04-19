@@ -87,12 +87,16 @@ case_pulseWidth :: Assertion
 case_pulseWidth = do
   -- Cycle 0: under reset — any write is dropped. Firmware issues the
   -- MMIO write on cycle 1 (once reset has released).
-  -- Cycle 2..17: E is high (pulseCycles = 16 at 50 MHz).
-  -- Cycle 18: E drops, post-write idle begins.
+  -- Cycle 2..9:   Setup phase (setupCycles = 8). Data + RS latched
+  --               on the cycle 1→2 edge; E stays low so the HD44780
+  --               sees data/RS stable before E rises (address-setup
+  --               time bug-fix from the first hardware run).
+  -- Cycle 10..25: E is high (pulseCycles = 16 at 50 MHz).
+  -- Cycle 26:     E drops, post-write idle begins.
   let dataAddr = lcdBase + 0
       prog =
         simLcd
-          22
+          30
           (False : True : P.repeat False) -- select on cycle 1 only
           (0 : dataAddr : P.repeat dataAddr) -- absolute DATA address
           (0 : 0xAB : P.repeat 0)
@@ -100,12 +104,16 @@ case_pulseWidth = do
       esAt c = lcdE (P.fst (prog P.!! c))
   assertEqual "cycle 0: E low (reset)" low (esAt 0)
   assertEqual "cycle 1: E still low (request captured this edge)" low (esAt 1)
-  assertEqual "cycle 2: E high (pulse start)" high (esAt 2)
-  assertEqual "cycle 17: E high (pulse last)" high (esAt 17)
-  assertEqual "cycle 18: E low (pulse ended)" low (esAt 18)
-  -- Data + RS stable through the pulse window.
-  assertEqual "cycle 2: DATA = 0xAB" 0xAB (lcdData (P.fst (prog P.!! 2)))
+  assertEqual "cycle 2: E low (Setup phase: data latched, E held)" low (esAt 2)
+  assertEqual "cycle 9: E still low (last Setup cycle)" low (esAt 9)
+  assertEqual "cycle 10: E high (pulse start)" high (esAt 10)
+  assertEqual "cycle 25: E high (pulse last)" high (esAt 25)
+  assertEqual "cycle 26: E low (pulse ended)" low (esAt 26)
+  -- Data + RS stable through the Setup window AND the pulse window.
+  assertEqual "cycle 2: DATA = 0xAB (latched at Setup)" 0xAB (lcdData (P.fst (prog P.!! 2)))
   assertEqual "cycle 2: RS = 1 (DATA write)" high (lcdRs (P.fst (prog P.!! 2)))
+  assertEqual "cycle 10: DATA still 0xAB (held into pulse)" 0xAB (lcdData (P.fst (prog P.!! 10)))
+  assertEqual "cycle 10: RS still 1" high (lcdRs (P.fst (prog P.!! 10)))
 
 case_busyFlag :: Assertion
 case_busyFlag = do
