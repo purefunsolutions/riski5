@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2026 Mika Tammi
+# SPDX-License-Identifier: MIT OR BSD-3-Clause
+# Mirror of verilambda's fourmolu settings for a consistent style across
+# the sibling repos: 2-space indent + leading commas + diff-friendly
+# imports.
+
+indentation: 2
+comma-style: leading
+import-export-style: diff-friendly
+respectful: true
+haddock-style: multi-line
+newlines-between-decls: 1
+function-arrows: trailing
+record-brace-space: true
+indent-wheres: false

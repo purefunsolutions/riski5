@@ -1,0 +1,54 @@
+cabal-version:      3.0
+name:               riski5
+version:            0.1.0
+synopsis:           Clash RV32I soft core + minimal SoC for the Altera DE2
+description:
+  A pipelineless single-cycle RV32I (+Zicsr, M-mode, Zifencei) core
+  written in Clash, targeted at the Altera DE2 (Cyclone II
+  EP2C35F672C6). The ISA is defined at the Haskell type level and is
+  the single source of truth for both the hardware decoder and the
+  firmware assembler eDSL.
+
+license:            (MIT OR BSD-3-Clause)
+license-files:
+  LICENSE-BSD
+  LICENSE-MIT
+
+author:             Mika Tammi
+maintainer:         mikatammi@gmail.com
+copyright:          2026 Mika Tammi
+category:           Hardware
+build-type:         Simple
+extra-source-files: README.md
+tested-with:        GHC ==9.10.3
+
+source-repository head
+  type:     git
+  location: https://github.com/mikatammi/riski5
+
+common warnings
+  ghc-options:
+    -Wall -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wmissing-export-lists
+    -Wmissing-home-modules -Wpartial-fields -Wredundant-constraints
+
+common language
+  default-language:   GHC2021
+  default-extensions:
+    DataKinds
+    DeriveAnyClass
+    DerivingStrategies
+    LambdaCase
+    NoStarIsType
+    TypeFamilies
+
+library
+  import:          warnings, language
+  hs-source-dirs:  src
+  exposed-modules:
+    Riski5
+    Riski5.ISA
+
+  build-depends:
+    , base           >=4.20 && <5
+    , clash-prelude  ^>=1.8

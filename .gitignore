@@ -1,0 +1,32 @@
+# SPDX-FileCopyrightText: 2026 Mika Tammi
+# SPDX-License-Identifier: MIT OR BSD-3-Clause
+
+# Nix build outputs
+result
+result-*
+
+# Claude-local state
+.claude/
+
+# Haskell / cabal
+dist/
+dist-newstyle/
+.ghc.environment.*
+*.hi
+*.o
+cabal.project.local
+cabal.project.local~
+
+# Quartus / Verilator / simulation artefacts
+*.vcd
+*.fst
+output_files/
+db/
+incremental_db/
+obj_dir/
+greybox_tmp/
+
+# Only commit PDFs under docs/riscv/ that the plan explicitly names. Stray
+# downloads stay out.
+docs/**/*.pdf
+!docs/riscv/*.pdf
