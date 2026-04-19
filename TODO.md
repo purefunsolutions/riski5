@@ -13,12 +13,14 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T15 just landed; T16 next)
+- (nothing — T16 just landed; T17 next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T16. DE2 top entity + pins + timing.** `app/Top.hs`,
-  `pkgs/riski5-core/{Riski5.qpf,Riski5.qsf,Riski5.sdc}`.
+- **T17. Nix build + flash app.** `pkgs/riski5-core/package.nix`
+  (Clash → Verilog → Quartus → .sof), `apps/flash-riski5.nix`,
+  `apps/console.nix`. Altera JTAG UART IP integration lands here
+  alongside the synthesis flow.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
@@ -202,6 +204,24 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     were comparing against relative offsets but the bus passes
     absolute addresses. Fixed as `fixup!` commits against T13 + T14
     to keep history clean. 74 tests green.
+- **T16. DE2 top entity + pin assignments + SDC** (2026-04-19)
+  - `app/Top.hs` — Clash top entity named `riski5` (with proper
+    port names via `:::`), instantiates Soc with a six-instruction
+    counter firmware baked into the initial BRAM contents, drops
+    the UART TX observability channel (not synthesizable; the real
+    Altera IP integration is T17). On-board LEDs will toggle at
+    ~12 Hz when hardware bring-up starts — the "core is alive"
+    signal.
+  - `pkgs/riski5-core/Riski5.qpf` — Quartus project file.
+  - `pkgs/riski5-core/Riski5.sdc` — 50 MHz create_clock + false-path
+    on the async KEY0 reset.
+  - `pkgs/riski5-core/Riski5.qsf` — Cyclone II device + verified
+    CLOCK_50, KEY0, LEDR[0..7] pins (from alterade2-flake); KEY[1..3],
+    SW[0..17], LEDR[8..17], LEDG[0..8], and the eight LCD pins are
+    left as `TODO` comments to be filled in from the Terasic DE2 pin
+    table before first flash. No pins invented.
+  - `cabal build` across library + riski5-top sublib + tests all
+    green; Quartus flow lands in T17.
 
 ## Ongoing
 

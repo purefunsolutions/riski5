@@ -1,0 +1,88 @@
+# SPDX-FileCopyrightText: 2026 Mika Tammi
+# SPDX-License-Identifier: MIT OR BSD-3-Clause
+#
+# Quartus II 13.0sp1 settings for riski5 on the Altera DE2
+# (Cyclone II EP2C35F672C6).
+#
+# Pin assignments MUST be verified against the Terasic DE2 Pin Table
+# before bit-stream generation. The subset already verified by
+# alterade2-flake's de2-blinky (CLOCK_50, KEY0, LEDR[0..7]) is
+# transcribed here; additional pins are noted with TODO markers so
+# a reviewer catches the gap instead of a mystery placement.
+#
+#   Terasic DE2 User Manual / Pin Table:
+#     http://www.terasic.com.tw/attachment/archive/30/DE2_Pin_Table.pdf
+
+set_global_assignment -name FAMILY "Cyclone II"
+set_global_assignment -name DEVICE EP2C35F672C6
+set_global_assignment -name TOP_LEVEL_ENTITY riski5
+set_global_assignment -name ORIGINAL_QUARTUS_VERSION "13.0 SP1"
+set_global_assignment -name LAST_QUARTUS_VERSION "13.0 SP1"
+set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVTTL"
+set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
+
+# -- Source files --------------------------------------------------
+# Clash emits ./verilog/Top.topEntity/riski5.v on each build.
+set_global_assignment -name VERILOG_FILE verilog/Top.topEntity/riski5.v
+set_global_assignment -name SDC_FILE Riski5.sdc
+
+# -- Clock ---------------------------------------------------------
+set_location_assignment PIN_N2 -to CLOCK_50
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
+
+# -- Pushbutton KEY0 (async active-LOW reset) ----------------------
+set_location_assignment PIN_G26 -to KEY0
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY0
+
+# -- Pushbuttons KEY[3:1] ------------------------------------------
+# TODO(phase-1B): verify against DE2 pin table before flashing.
+# set_location_assignment PIN_<X> -to KEY[1]
+# set_location_assignment PIN_<X> -to KEY[2]
+# set_location_assignment PIN_<X> -to KEY[3]
+
+# -- Slide switches SW[17:0] ---------------------------------------
+# TODO(phase-1B): verify against DE2 pin table before flashing.
+# set_location_assignment PIN_<X> -to SW[0]
+# ...
+
+# -- Red LEDs LEDR[17:0] -------------------------------------------
+# First 8 verified from alterade2-flake's de2-blinky; the remaining
+# 10 need to come from the DE2 pin table.
+set_location_assignment PIN_AE23 -to LEDR[0]
+set_location_assignment PIN_AF23 -to LEDR[1]
+set_location_assignment PIN_AB21 -to LEDR[2]
+set_location_assignment PIN_AC22 -to LEDR[3]
+set_location_assignment PIN_AD22 -to LEDR[4]
+set_location_assignment PIN_AD23 -to LEDR[5]
+set_location_assignment PIN_AD21 -to LEDR[6]
+set_location_assignment PIN_AC21 -to LEDR[7]
+# TODO(phase-1B): verify LEDR[8..17] pin assignments.
+# set_location_assignment PIN_<X> -to LEDR[8]
+# ...
+
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[0]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[1]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[2]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[4]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[5]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[6]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to LEDR[7]
+
+# -- Green LEDs LEDG[8:0] ------------------------------------------
+# TODO(phase-1B): verify against DE2 pin table.
+# set_location_assignment PIN_<X> -to LEDG[0]
+# ...
+
+# -- HD44780 LCD ---------------------------------------------------
+# The DE2 LCD has 11 relevant pins (8 data + RS + RW + EN) plus two
+# power controls (ON, BLON). All require verification from the pin
+# table before first bring-up.
+# TODO(phase-1B): verify against DE2 pin table.
+# set_location_assignment PIN_<X> -to LCD_DATA[0]
+# ...
+# set_location_assignment PIN_<X> -to LCD_RS
+# set_location_assignment PIN_<X> -to LCD_RW
+# set_location_assignment PIN_<X> -to LCD_EN
+# set_location_assignment PIN_<X> -to LCD_ON
+# set_location_assignment PIN_<X> -to LCD_BLON

@@ -70,6 +70,15 @@ library
     , containers     >=0.7  && <0.9
     , mtl            >=2.3  && <2.4
 
+library riski5-top
+  import:          warnings, language
+  hs-source-dirs:  app
+  exposed-modules: Top
+  build-depends:
+    , base
+    , clash-prelude
+    , riski5
+
 test-suite riski5-test
   import:         warnings, language
   type:           exitcode-stdio-1.0
