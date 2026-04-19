@@ -34,6 +34,7 @@ module Hello (
 ) where
 
 import Clash.Prelude (BitVector, Signed)
+import Control.Monad (zipWithM_)
 import Data.Bits ((.|.))
 import Data.Either qualified as DE
 import Data.Int (Int32)
@@ -90,44 +91,46 @@ helloFirmware = do
   -- with 80 000 dropped the leading 'H').
   delayCycles 200_000
 
-  -- LEDR bit 1 = LCD init completed.
-  ledrSet 0x03
-
-  -- Top line, left-aligned at DDRAM 0x00 (the cursor home after
-  -- Clear).
-  lcdString "Hello from"
-
-  -- Move the cursor to line 2, position 9 (DDRAM 0x49) so the
-  -- 7-char "Riski5!" right-aligns inside a 16-wide row.
-  lcdSetAddr 0x49
-
-  lcdString "Riski5!"
-
-  -- LEDR bit 2 = LCD string written.
-  ledrSet 0x07
-
-  -- JTAG UART banner.
+  -- JTAG UART banner (only happens once at boot).
   uartString "hello, world\n"
 
-  -- After the one-shot LCD + UART writes, run a free-running 24-bit
-  -- counter on the LEDs as a \"core is alive\" indicator:
-  --   * counter[7:0]   → LEDG[7:0]
-  --   * counter[23:8]  → LEDR[15:0]
-  -- Each loop iteration is 4 instructions (≈ 4 cycles on the
-  -- single-cycle core), so counter[0] toggles at ~6 MHz — too fast
-  -- for the eye, so the lower LEDs look half-bright. The upper bits
-  -- visibly count: LEDG[7] flickers a few times a second, LEDR[15]
-  -- changes once every several seconds.
+  -- Initialise the two 16-character scroll buffers in data BRAM.
+  -- Top line is left-padded with spaces, bottom line right-padded
+  -- with spaces, so both occupy the full 16-column row.
+  addi topBufReg x0 0x00 -- buffer base addresses in dmem (byte-stride)
+  addi botBufReg x0 0x10
+  initBuffer topBufReg "Hello from      "
+  initBuffer botBufReg "         Riski5!"
+
+  -- Initial paint so something appears before the first scroll tick.
+  redrawLine topBufReg 0x80
+  redrawLine botBufReg 0xC0
+
+  -- Counter starts at 0; it ticks once per scroll tick (i.e. 2 Hz),
+  -- so LEDG[0] toggles at 1 Hz and the full 24-bit cycle takes
+  -- ~97 days — comfortably above the \"at least 1 minute\" target
+  -- and visibly counting on the lower LEDs.
   addi countReg x0 0
 
   spin <- label
+  -- ~500 ms tick: 25 M cycles at 50 MHz keeps the LCD readable.
+  delayCycles 25_000_000
+
+  -- Top line scrolls right (last char wraps to the front).
+  rotateRight topBufReg
+  -- Bottom line scrolls left (first char wraps to the end).
+  rotateLeft botBufReg
+
+  -- Push both rotated buffers back to the LCD.
+  redrawLine topBufReg 0x80
+  redrawLine botBufReg 0xC0
+
+  -- Tick the visible 24-bit counter once per scroll.
   addi countReg countReg 1
-  -- Lower 8 bits → LEDG (offset 4 inside the GPIO MMIO window;
-  -- the GPIO module truncates the write data to its 9-bit width).
-  sw gpioReg countReg 4
-  -- Upper 16 bits → LEDR (offset 0; truncated to 18 bits).
+  sw gpioReg countReg 4 -- LEDG ← count[7:0]
   srli ledTmpReg countReg 8
-  sw gpioReg ledTmpReg 0
+  sw gpioReg ledTmpReg 0 -- LEDR ← count[23:8]
+
   j spin
 
 {- | The firmware assembled to 32-bit machine words. Exported so
@@ -149,6 +152,17 @@ tmpReg = x22
 delayReg = x24
 countReg = x25
 ledTmpReg = x26
+
+-- Scroll-buffer registers. Each buffer is 16 bytes in the data BRAM
+-- (one byte per character — packed via @lb@ / @sb@ to keep the
+-- footprint small).
+topBufReg, botBufReg, scratchReg, srcOffReg, dstOffReg, endOffReg :: Reg
+topBufReg = x29
+botBufReg = x30
+scratchReg = x31
+srcOffReg = x16
+dstOffReg = x17
+endOffReg = x18
 
 -- * Addressing helper ----------------------------------------------
 
@@ -216,6 +230,82 @@ delayCycles n = do
   loop <- label
   addi delayReg delayReg (-1 :: Signed 12)
   bne delayReg x0 loop
+
+-- * Scroll-buffer helpers ------------------------------------------
+
+{- | Write the 16-character contents of @str@ into the scroll buffer
+at @bufReg@, one character per byte (1-byte stride). Strings shorter
+than 16 chars are right-padded with spaces; longer strings are
+truncated.
+-}
+initBuffer :: Reg -> P.String -> Asm ()
+initBuffer bufReg str =
+  zipWithM_ writeChar [0 :: Int .. 15] padded
+ where
+  padded = P.take 16 (str P.++ P.repeat ' ')
+  writeChar i ch = do
+    addi tmpReg x0 (P.fromIntegral (P.fromEnum ch) :: Signed 12)
+    sb bufReg tmpReg (P.fromIntegral i :: Signed 12)
+
+{- | Rotate a 16-byte scroll buffer one slot to the right:
+@buf[15]→buf[0], buf[i]→buf[i+1]@ for @i < 15@.
+-}
+rotateRight :: Reg -> Asm ()
+rotateRight bufReg = do
+  -- Save buf[15] (the slot that wraps).
+  lbu scratchReg bufReg 15
+  -- Walk dst = 15 down to 1; src = 14 down to 0.
+  addi srcOffReg x0 14
+  addi dstOffReg x0 15
+  loopL <- label
+  add tmpReg bufReg srcOffReg
+  lbu tmpReg tmpReg 0
+  add ledTmpReg bufReg dstOffReg
+  sb ledTmpReg tmpReg 0
+  addi srcOffReg srcOffReg (-1)
+  addi dstOffReg dstOffReg (-1)
+  bne dstOffReg x0 loopL
+  -- Wrap: buf[0] = saved buf[15].
+  sb bufReg scratchReg 0
+
+{- | Rotate a 16-byte scroll buffer one slot to the left:
+@buf[0]→buf[15], buf[i]→buf[i-1]@ for @i > 0@.
+-}
+rotateLeft :: Reg -> Asm ()
+rotateLeft bufReg = do
+  -- Save buf[0] (the slot that wraps).
+  lbu scratchReg bufReg 0
+  -- Walk dst = 0 up to 14; src = 1 up to 15.
+  addi srcOffReg x0 1
+  addi dstOffReg x0 0
+  addi endOffReg x0 16
+  loopL <- label
+  add tmpReg bufReg srcOffReg
+  lbu tmpReg tmpReg 0
+  add ledTmpReg bufReg dstOffReg
+  sb ledTmpReg tmpReg 0
+  addi srcOffReg srcOffReg 1
+  addi dstOffReg dstOffReg 1
+  bne srcOffReg endOffReg loopL
+  -- Wrap: buf[15] = saved buf[0].
+  sb bufReg scratchReg 15
+
+{- | Set the LCD cursor to @ddramAddr@ (top line = 0x80, bottom =
+0xC0) then push all 16 characters from @bufReg@ to the LCD.
+Auto-increment of the AC takes care of column positions.
+-}
+redrawLine :: Reg -> Int -> Asm ()
+redrawLine bufReg ddramAddr = do
+  lcdCmd ddramAddr
+  addi srcOffReg x0 0
+  addi endOffReg x0 16
+  loopL <- label
+  add tmpReg bufReg srcOffReg
+  lbu tmpReg tmpReg 0
+  lcdWait
+  sw lcdReg tmpReg 0
+  addi srcOffReg srcOffReg 1
+  bne srcOffReg endOffReg loopL
 
 -- * GPIO helpers ---------------------------------------------------
 
