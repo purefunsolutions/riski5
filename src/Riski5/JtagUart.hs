@@ -33,6 +33,7 @@ module Riski5.JtagUart (
 ) where
 
 import Clash.Prelude hiding ((&&))
+import Riski5.MemMap (jtagUartBase)
 
 {- |
 Simulation-only functional model of the JTAG UART. The
@@ -65,9 +66,9 @@ jtagUartSim ::
 jtagUartSim selS addrS wdataS beS _ =
   (rdataS, txS)
  where
-  -- Decode the byte offset into DATA (=0) vs CONTROL (=4).
-  isDataS = (\s a -> s && slice d3 d2 a == (0b00 :: BitVector 2)) <$> selS <*> addrS
-  isCtrlS = (\s a -> s && slice d3 d2 a == (0b01 :: BitVector 2)) <$> selS <*> addrS
+  -- Decode the absolute MMIO address into DATA vs CONTROL.
+  isDataS = (\s a -> s && a == jtagUartBase + 0) <$> selS <*> addrS
+  isCtrlS = (\s a -> s && a == jtagUartBase + 4) <$> selS <*> addrS
 
   -- DATA reads always return 0 in simulation (RX FIFO empty).
   -- CONTROL reads return 1 (bit 0 = TX-ready is always asserted —
