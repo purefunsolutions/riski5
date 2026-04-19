@@ -13,11 +13,14 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T11 just landed; T12 is next)
+- (nothing — T12 just landed; T13 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T12. CSR file + M-mode traps.** `src/Riski5/CSR.hs`.
+- **T13. Bus + slaves skeleton.** `src/Riski5/{Bus,Bram,JtagUart}.hs`
+  + GPIO inside `Soc.hs`.
+- **T14. LCD controller.** `src/Riski5/Lcd.hs`.
+- **T15. SoC top.** `src/Riski5/Soc.hs`.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
@@ -141,6 +144,22 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     natural as a SoC than as a bare core. Tracked as
     T11-verilambda.
   - Total: 55 tests green.
+- **T12. CSR file + M-mode traps** (2026-04-19)
+  - `src/Riski5/CSR.hs` — M-mode CSR record (mstatus/mtvec/mepc/
+    mcause/mtval/mscratch), pure read/write functions, `applyTrap`
+    helper, and the numeric priv-spec cause constants. Other CSR
+    addresses read as zero and drop writes (to be tightened in a
+    later phase once we trap on unknown CSRs).
+  - `src/Riski5/Core.hs` rewrite: handleInstr now takes/returns a
+    Csrs record; CSRRW/S/C/WI/SI/CI are real reads+writes;
+    ECALL/EBREAK/illegal-instr/misaligned-load/misaligned-store
+    latch a trap (mepc ← pc, mcause ← cause, mtval ← context) and
+    jump to mtvec.base; MRET sets pc ← mepc. Out of flight-check
+    MEPC bumping is firmware's responsibility, matching the priv
+    spec.
+  - `test/TrapSpec.hs` — 8 HUnit cases covering every trap path
+    plus CSRRS/CSRRC set/clear semantics. All green; no bugs
+    found. Total: 63 tests green.
 
 ## Ongoing
 

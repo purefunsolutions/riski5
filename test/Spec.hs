@@ -11,6 +11,7 @@ import DecodeSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
 import Test.Tasty (defaultMain, testGroup)
+import TrapSpec qualified
 
 main :: IO ()
 main =
@@ -24,4 +25,5 @@ main =
       , ReferenceSpec.tests
       , CoreSpec.tests
       , CoreSimSpec.tests
+      , TrapSpec.tests
       ]

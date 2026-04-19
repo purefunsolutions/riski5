@@ -51,6 +51,7 @@ library
     Riski5.ALU
     Riski5.Asm
     Riski5.Core
+    Riski5.CSR
     Riski5.Decode
     Riski5.Encode
     Riski5.ISA
@@ -76,6 +77,7 @@ test-suite riski5-test
     DecodeSpec
     ReferenceSpec
     RegfileSpec
+    TrapSpec
 
   build-depends:
     , base
