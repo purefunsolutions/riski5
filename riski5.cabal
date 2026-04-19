@@ -50,6 +50,7 @@ library
     Riski5
     Riski5.ALU
     Riski5.Asm
+    Riski5.Core
     Riski5.Decode
     Riski5.Encode
     Riski5.ISA
@@ -70,6 +71,7 @@ test-suite riski5-test
   other-modules:
     AluSpec
     AsmSpec
+    CoreSpec
     DecodeSpec
     ReferenceSpec
     RegfileSpec

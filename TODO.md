@@ -13,12 +13,12 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T9 just landed; T10 is next)
+- (nothing — T10 just landed; T11 is next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T10. Pipelineless datapath (no CSR).** `src/Riski5/Core.hs`.
-- **T11. Whole-core sim via verilambda.** `test/CoreSpec.hs`.
+- **T11. Whole-core sim via verilambda.** Diff every `InstrCatalog`
+  program against `Riski5.Reference` via Verilator under verilambda.
 - **T12. CSR file + M-mode traps.** `src/Riski5/CSR.hs`.
 
 Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
@@ -102,17 +102,26 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     each passing 500–1000 random cases biased toward boundary
     values (0, ±1, signed/unsigned min/max, alternating patterns).
     Total now: 40 tests green in ≈ 100 ms.
-- **T9. Regfile on M4K** (2026-04-19)
-  - `src/Riski5/Regfile.hs` — 32×32 integer register file with two
-    read ports and one write port, backed by two `blockRam` instances
-    (≈ 2 M4K, trivially inside the 105-M4K budget). `x0` hard-wired
-    to zero on both read (address-compared mux) and write (write-enable
-    gated). Synchronous-read semantics (1-cycle output latency)
-    matching Cyclone II M4K behaviour.
-  - `test/RegfileSpec.hs` — 4 HUnit cases exercising x5 write→read
-    round-trip, writes-to-x0 dropped, reads-of-x0 always zero, two
-    read ports return independent values. Driven via Clash's
-    `sampleN` pure simulator. Total: 44 tests green.
+- **T9. Regfile on M4K** (2026-04-19, superseded by the async-read
+  rewrite committed immediately after)
+  - Original M4K-backed synchronous-read implementation landed, then
+    a follow-up commit switched to a register-array **async-read**
+    regfile (~1024 FFs + 32:1 mux on LEs). The async version is what
+    Core.hs consumes; the M4K option is deferred to the pipeline
+    phase (rationale in `Riski5.Regfile` header + CLAUDE.md).
+  - `test/RegfileSpec.hs` pins the async-read semantics (reset
+    cycle, same-cycle reads after writes commit on the clock edge,
+    x0 hard-wired zero). Total: 44 tests green.
+- **T10. Pipelineless datapath (no CSR)** (2026-04-19)
+  - `src/Riski5/Core.hs` — combinational dispatch table
+    (`handleInstr`) covering every RV32I + Zifencei + Zicsr + M-mode
+    mnemonic. CSRs and traps stubbed as NOP-advance until T12; load /
+    store / branch / JAL / JALR / LUI / AUIPC / R-type / I-type ALU
+    all wired correctly. Byte-enable + store-data shifting + load
+    sign-extension handled in-module (shared with future SoC bus).
+  - `test/CoreSpec.hs` — pure-Clash sanity check: PC advances by 4
+    per NOP cycle; ADDI sequence doesn't stall. Full verilambda-
+    driven diff against Reference lands in T11. Total: 46 tests.
 
 ## Ongoing
 

@@ -5,6 +5,7 @@ module Main (main) where
 
 import AluSpec qualified
 import AsmSpec qualified
+import CoreSpec qualified
 import DecodeSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
@@ -20,4 +21,5 @@ main =
       , AluSpec.tests
       , RegfileSpec.tests
       , ReferenceSpec.tests
+      , CoreSpec.tests
       ]
