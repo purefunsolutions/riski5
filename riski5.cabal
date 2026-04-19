@@ -41,6 +41,7 @@ common language
     LambdaCase
     NoStarIsType
     TypeFamilies
+    UndecidableInstances
 
 library
   import:          warnings, language
