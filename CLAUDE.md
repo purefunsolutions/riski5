@@ -76,8 +76,15 @@ policy, sim-layer issues are patched in verilambda.
 
 ## Hardware targeting rules (Cyclone II-specific)
 
-- Map regfile + program/data memory + cache tag/data arrays to M4K
-  (via Clash `blockRam`), never LUT-RAM.
+- Map program/data memory + cache tag/data arrays to M4K (via
+  Clash `blockRam`), never LUT-RAM. **Exception: the phase-1
+  regfile is an async-read register array (~1024 FFs + 32:1 read
+  mux on LEs), not M4K.** The pipelineless single-cycle design
+  can absorb at most one cycle of read latency per instruction —
+  that slot goes to the imem fetch. Moving the regfile back onto
+  M4K is on the menu when we pipeline the core (see `Riski5.Regfile`
+  header for the full rationale); a 2+ stage pipeline naturally
+  aligns regfile reads with an ID or EX stage.
 - Write the ALU adder as plain `+` on `BitVector`/`Signed` so Quartus
   infers Cyclone II carry chains; same for the PC and branch-target
   adders.

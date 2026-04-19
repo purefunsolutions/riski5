@@ -3,29 +3,46 @@
 
 {- |
 Module      : RegfileSpec
-Description : Regression tests for the register file.
+Description : Regression tests for the async-read register file.
 
-Drive 'Riski5.Regfile.regfile' from Clash's pure simulator, sampling
-a handful of cycles per test. Exercises the load-after-store round
-trip, the @x0@ hard-wired-zero behaviour (both read and write), and
-simultaneous independent reads from both ports.
+The regfile is a register-array with combinational reads (see
+'Riski5.Regfile'). These tests drive it through Clash's pure
+@sampleN@ simulator and confirm:
+
+ * A write at cycle N is visible at the read port on cycle N+1
+   (the write takes effect on the clock edge; the read is
+   combinational over the latched-vector state).
+ * Writes to @x0@ are silently dropped.
+ * Reads of @x0@ always return zero, regardless of history.
+ * The two read ports return independent values.
 -}
 module RegfileSpec (
   tests,
 ) where
 
-import Clash.Prelude (BitVector, HiddenClockResetEnable, Signal, System, clockGen, enableGen, fromList, resetGen, sampleN, withClockResetEnable)
+import Clash.Prelude (
+  BitVector,
+  HiddenClockResetEnable,
+  Signal,
+  System,
+  clockGen,
+  enableGen,
+  fromList,
+  resetGen,
+  sampleN,
+  withClockResetEnable,
+ )
 import Riski5.Regfile (regfile)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
-import Prelude (Bool (..), Int, Maybe (..), (++))
+import Prelude (Int, Maybe (..))
 import Prelude qualified as P
 
 tests :: TestTree
 tests =
   testGroup
     "Riski5.Regfile"
-    [ testCase "write then read x5 round-trips the value" case_writeReadX5
+    [ testCase "write cycle N, read cycle N+1 returns the value" case_writeReadX5
     , testCase "writes to x0 are ignored" case_writeX0Ignored
     , testCase "reads of x0 always return zero" case_readX0Zero
     , testCase "two read ports return independent values" case_twoReadPorts
@@ -49,71 +66,61 @@ simulateRegfile n rs1Stream rs2Stream wrStream =
         (HiddenClockResetEnable System) =>
         (Signal System (BitVector 32), Signal System (BitVector 32))
       go = regfile rs1Sig rs2Sig wrSig
-      (r1, r2) =
-        withClockResetEnable @System clockGen resetGen enableGen go
+      (r1, r2) = withClockResetEnable @System clockGen resetGen enableGen go
    in (sampleN n r1, sampleN n r2)
 
 -- * Cases ----------------------------------------------------------
 
 case_writeReadX5 :: Assertion
 case_writeReadX5 = do
-  -- Cycle 0: write 42 → x5, address rs1 = 5.
-  -- Cycle 1: idle, rs1 still = 5.
-  -- Cycle 2: idle, rs1 still = 5.
-  -- We expect the write to become visible a cycle or two later.
+  -- Cycle 0 is under reset (Clash's `resetGen` holds reset high for
+  -- one cycle), so the first write has to come on cycle 1 onwards.
+  --
+  -- Cycle 0: reset. Writes dropped.
+  -- Cycle 1: write 42 → x5. Read rs1 = 5 returns 0 (pre-commit).
+  -- Cycle 2: regs[5] = 42. Read rs1 = 5 returns 42.
   let (r1, _) =
         simulateRegfile
-          6
-          (P.replicate 6 5)
-          (P.replicate 6 0)
-          (Just (5, 42) : P.replicate 5 Nothing)
-  -- Somewhere in the first six samples the value 42 must appear.
-  assertEqual
-    "x5 read contains 42"
-    True
-    (42 `P.elem` r1)
+          4
+          [5, 5, 5, 5]
+          [0, 0, 0, 0]
+          [Nothing, Just (5, 42), Nothing, Nothing]
+  assertEqual "cycle 1: pre-commit read of x5" 0 (r1 P.!! 1)
+  assertEqual "cycle 2: post-commit read of x5" 42 (r1 P.!! 2)
+  assertEqual "cycle 3: value still there" 42 (r1 P.!! 3)
 
 case_writeX0Ignored :: Assertion
 case_writeX0Ignored = do
-  -- Attempt to write 0xDEADBEEF to x0. Read x0 afterwards; must be 0.
   let (r1, _) =
         simulateRegfile
-          6
-          (P.replicate 6 0)
-          (P.replicate 6 0)
-          (Just (0, 0xDEADBEEF) : P.replicate 5 Nothing)
-  assertEqual
-    "x0 always reads zero despite the write"
-    (P.replicate 6 0)
-    r1
+          4
+          [0, 0, 0, 0]
+          [0, 0, 0, 0]
+          [Just (0, 0xDEADBEEF), Nothing, Nothing, Nothing]
+  assertEqual "x0 stays 0 despite the write" [0, 0, 0, 0] r1
 
 case_readX0Zero :: Assertion
 case_readX0Zero = do
-  -- Write 42 to x5, but read x0 every cycle; must always be 0.
+  -- Write 42 to x5 but always read x0; every cycle must be 0.
   let (r1, _) =
         simulateRegfile
-          6
-          (P.replicate 6 0)
-          (P.replicate 6 0)
-          (Just (5, 42) : P.replicate 5 Nothing)
-  assertEqual
-    "x0 reads zero regardless of other writes"
-    (P.replicate 6 0)
-    r1
+          4
+          [0, 0, 0, 0]
+          [0, 0, 0, 0]
+          [Just (5, 42), Nothing, Nothing, Nothing]
+  assertEqual "x0 reads zero regardless of other writes" [0, 0, 0, 0] r1
 
 case_twoReadPorts :: Assertion
 case_twoReadPorts = do
-  -- Write 11 to x1, 22 to x2 on separate cycles; then read both.
-  let addrs1 = [0, 0, 0, 1, 1, 1] -- rs1 eventually points at x1
-      addrs2 = [0, 0, 0, 2, 2, 2] -- rs2 eventually points at x2
-      writes =
-        [ Just (1, 11) -- cycle 0
-        , Just (2, 22) -- cycle 1
-        , Nothing
-        , Nothing
-        , Nothing
-        , Nothing
-        ]
-      (r1, r2) = simulateRegfile 8 addrs1 addrs2 writes
-  assertEqual "x1 read contains 11" True (11 `P.elem` r1)
-  assertEqual "x2 read contains 22" True (22 `P.elem` r2)
+  -- Cycle 0: reset.
+  -- Cycle 1: write x1 = 11. rs1 = 1 reads 0 (pre-commit); rs2 = 2 reads 0.
+  -- Cycle 2: regs[1] = 11. Write x2 = 22. rs1 reads 11; rs2 reads 0.
+  -- Cycle 3: regs[2] = 22. rs1 reads 11; rs2 reads 22.
+  let (r1, r2) =
+        simulateRegfile
+          5
+          [1, 1, 1, 1, 1]
+          [2, 2, 2, 2, 2]
+          [Nothing, Just (1, 11), Just (2, 22), Nothing, Nothing]
+  assertEqual "cycle 3: rs1 (x1) = 11" 11 (r1 P.!! 3)
+  assertEqual "cycle 3: rs2 (x2) = 22" 22 (r2 P.!! 3)

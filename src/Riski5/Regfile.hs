@@ -1,43 +1,52 @@
 -- SPDX-FileCopyrightText: 2026 Mika Tammi
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Module      : Riski5.Regfile
-Description : RV32I integer register file (x0..x31) on M4K block RAM.
+Description : Async-read RV32I integer register file (x0..x31).
 
-Two read ports and one write port, mapped to Cyclone II M4K blocks
-via Clash's 'blockRam' primitive. One M4K block per read port (two
-total): Quartus can infer a single true-dual-port RAM for this
-pattern, but the explicit duplication is portable and costs nothing
-on this part — we have 105 M4Ks on the device and the register file
-is the cheapest possible use of two of them.
+The phase-1 core is pipelineless: one instruction retires per clock
+with the single concession that the instruction memory fetch
+absorbs a one-cycle BRAM latency (the @pc@ latched at cycle N−1
+arrives decoded at cycle N). The register file can't add another
+cycle of latency on top of that without turning the design into a
+real two-stage pipeline, so this module implements the 32 × 32
+integer register file as a **register-array with asynchronous
+reads**:
 
-@x0@ is hardwired to zero, implemented as a mux on the read side
-(address == 0 forces the output to 0) plus a write-enable gate
-(address == 0 drops the write). This avoids depending on the
-initial contents of the underlying BRAM, which makes the design
-simulation-friendly.
+* Storage: a @'Vec' 32 ('BitVector' 32)@ held in a single
+  'Clash.Prelude.register', i.e. 1024 flip-flops total.
+* Reads: combinational 32:1 selects on the current @rs1@ / @rs2@
+  addresses — value available **in the same clock cycle** the
+  address is presented.
+* Writes: applied on the clock edge via the normal register-next
+  function. @x0@ writes are dropped.
 
-Reads are one cycle delayed (standard synchronous-read BRAM
-behaviour on this part). The Core module accounts for that by
-presenting the read address during the decode stage so the result
-is ready in the execute stage.
+Cost on EP2C35: ~1024 flip-flops (each LE has one anyway) plus two
+32:1 muxes on 32-bit data ≈ 250–350 LEs of mux logic. In exchange
+we free up the two M4K blocks the earlier implementation used.
+
+Revisit when we pipeline the core: a real 2- or 5-stage pipeline
+can tolerate synchronous-read BRAMs for the regfile again, since
+the regfile read naturally aligns with an ID or EX pipeline stage.
+Until then, keeping reads async is the simplest way to honour
+\"one instruction retires per clock\" without adding hazard logic.
 -}
 module Riski5.Regfile (
   regfile,
 ) where
 
-import Clash.Prelude hiding (repeat)
+import Clash.Prelude hiding (repeat, (!!))
 import Clash.Prelude qualified as CP
 
-{- | 32x32 register file with synchronous-read ports.
+{- | 32×32 register file with **combinational** reads.
 
-@regfile rs1 rs2 wr@ returns @(rs1Data, rs2Data)@: the values
-observed at the register read ports @rs1@ and @rs2@, one clock
-cycle after their addresses were presented. The write port @wr@
-is @Just (rd, wdata)@ when a write is in flight, @Nothing@ when
-idle; writes to @x0@ are silently dropped.
+@regfile rs1 rs2 wr@ returns @(rs1Data, rs2Data)@ — the values at
+addresses @rs1@ and @rs2@ at the current clock cycle. @wr@ is
+@Just (rd, wdata)@ for a write this cycle, @Nothing@ otherwise;
+writes to @x0@ are dropped.
 -}
 regfile ::
   forall dom.
@@ -48,32 +57,23 @@ regfile ::
   Signal dom (BitVector 5) ->
   -- | write port: @Just (rd, value)@ or @Nothing@
   Signal dom (Maybe (BitVector 5, BitVector 32)) ->
-  -- | @(rs1Data, rs2Data)@
+  -- | @(rs1Data, rs2Data)@, available the same cycle the address is presented
   (Signal dom (BitVector 32), Signal dom (BitVector 32))
-regfile rs1 rs2 wr =
-  let writeGated = gateX0 <$> wr
-      rs1Raw = blockRam zeroInit (unpackAddr <$> rs1) writeGated
-      rs2Raw = blockRam zeroInit (unpackAddr <$> rs2) writeGated
-      -- x0 reads as zero regardless of what's in the BRAM; we check
-      -- against the *address* that was presented one cycle ago, so
-      -- delay the address by one cycle to align with the data.
-      rs1Addr = register 0 rs1
-      rs2Addr = register 0 rs2
-      zeroIfX0 a d = mux (a .==. pure 0) (pure 0) d
-   in ( zeroIfX0 rs1Addr rs1Raw
-      , zeroIfX0 rs2Addr rs2Raw
-      )
+regfile rs1 rs2 wr = (rs1Data, rs2Data)
  where
-  zeroInit :: Vec 32 (BitVector 32)
-  zeroInit = CP.repeat 0
+  regs :: Signal dom (Vec 32 (BitVector 32))
+  regs = register (CP.repeat 0) (applyWrite <$> regs <*> wr)
 
-  unpackAddr :: BitVector 5 -> Unsigned 5
-  unpackAddr = unpack
+  applyWrite :: Vec 32 (BitVector 32) -> Maybe (BitVector 5, BitVector 32) -> Vec 32 (BitVector 32)
+  applyWrite rs Nothing = rs
+  applyWrite rs (Just (a, v))
+    | a == 0 = rs
+    | otherwise = replace (unpack a :: Unsigned 5) v rs
 
-  -- A write to x0 is a no-op architecturally; swap it for 'Nothing'
-  -- so 'blockRam' never perturbs address 0 either.
-  gateX0 :: Maybe (BitVector 5, BitVector 32) -> Maybe (Unsigned 5, BitVector 32)
-  gateX0 Nothing = Nothing
-  gateX0 (Just (a, d))
-    | a == 0 = Nothing
-    | otherwise = Just (unpack a, d)
+  rs1Data = readRf <$> regs <*> rs1
+  rs2Data = readRf <$> regs <*> rs2
+
+  readRf :: Vec 32 (BitVector 32) -> BitVector 5 -> BitVector 32
+  readRf rs a
+    | a == 0 = 0
+    | otherwise = rs CP.!! (unpack a :: Unsigned 5)
