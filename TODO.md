@@ -13,14 +13,14 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T16 just landed; T17 next)
+- (nothing — T17 just landed; T18 next)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T17. Nix build + flash app.** `pkgs/riski5-core/package.nix`
-  (Clash → Verilog → Quartus → .sof), `apps/flash-riski5.nix`,
-  `apps/console.nix`. Altera JTAG UART IP integration lands here
-  alongside the synthesis flow.
+- **T18. Hello-from-Riski5 firmware.** `firmware/phase1/Hello.hs`
+  via `Riski5.Asm`, writes `hello, world\n` to UART and
+  `Hello from Riski5` to the LCD; `Emit.hs` dumps the assembled
+  program as a Quartus `.mif`.
 - **T11-verilambda.** Wrap T11's pure-Clash sim in a verilambda
   driver so the same diff runs through Verilator. Deferred until the
   SoC-with-BRAM interface stabilizes (T14), since the top-entity
@@ -222,6 +222,25 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     table before first flash. No pins invented.
   - `cabal build` across library + riski5-top sublib + tests all
     green; Quartus flow lands in T17.
+- **T17. Nix build + flash + console apps** (2026-04-19)
+  - `pkgs/riski5-core/package.nix` — mkDerivation that runs
+    `clash --verilog` on `app/Top.hs`, then `quartus_sh --flow
+    compile Riski5`, copies the produced `.sof` + reports + Verilog
+    into `$out`. Source filter keeps dist-newstyle / result /
+    .claude / .git / test/ out of the build closure.
+  - `apps/flash-riski5.nix` — writeShellApplication that
+    auto-detects a USB-Blaster via `jtagconfig` and pushes the .sof
+    with `quartus_pgm`. Mirrors alterade2-flake's flash-de2.
+  - `apps/console.nix` — writeShellApplication that launches
+    `nios2-terminal`; notes that Nios II EDS is a separate
+    download from Quartus and prints a clear message if the
+    binary isn't available.
+  - `pkgs/default.nix` — now re-exports `quartus-ii-13` from the
+    alterade2-flake input and wires the three new packages + two
+    apps into the flake output. `nix flake check` passes all
+    derivation evaluations. Actual `nix build .#riski5-core`
+    is deferred to hardware bring-up (T19) — needs Quartus
+    running + the user's ~4 GB Quartus tarball prefetched.
 
 ## Ongoing
 

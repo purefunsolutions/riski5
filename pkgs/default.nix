@@ -1,14 +1,19 @@
 # SPDX-FileCopyrightText: 2026 Mika Tammi
 # SPDX-License-Identifier: MIT OR BSD-3-Clause
 #
-# Phase-1A scaffold: no derivations yet. The core, SoC, firmware, and
-# flash app slot in as we progress through the T-tasks; see
-# `TODO.md` for the current state.
+# riski5 flake-parts perSystem. Exposes the synthesised .sof build
+# plus the flash + console helper apps.
 {inputs, ...}: {
-  perSystem = {system, ...}: let
-    # Quartus II is unfree → allowUnfree. Clash in nixpkgs 25.11 has
-    # skipped tests via alterade2-flake's overlay; we reuse the same
-    # import so Clash evaluates.
+  perSystem = {
+    self',
+    system,
+    ...
+  }: let
+    # Reuse alterade2-flake's nixpkgs overlay / Clash overrides so
+    # our Haskell + Quartus toolchains are identical to the sibling
+    # repo. In particular this inherits the allowUnfree / allowBroken
+    # flags and the dontCheck overrides for clash-lib / clash-ghc /
+    # clash-prelude.
     pkgs = import inputs.nixpkgs {
       inherit system;
       config = {
@@ -27,10 +32,37 @@
         })
       ];
     };
+
+    inherit (inputs.alterade2-flake.packages.${system}) quartus-ii-13;
   in {
     _module.args.pkgs = pkgs;
 
-    packages = {};
-    apps = {};
+    packages = {
+      riski5-core = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+      };
+
+      flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) riski5-core;
+      };
+
+      console = pkgs.callPackage ../apps/console.nix {
+        inherit quartus-ii-13;
+      };
+
+      default = self'.packages.riski5-core;
+    };
+
+    apps = {
+      flash-riski5 = {
+        type = "app";
+        program = "${self'.packages.flash-riski5}/bin/flash-riski5";
+      };
+      console = {
+        type = "app";
+        program = "${self'.packages.console}/bin/console";
+      };
+    };
   };
 }
