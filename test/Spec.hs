@@ -5,6 +5,7 @@ module Main (main) where
 
 import AsmSpec qualified
 import DecodeSpec qualified
+import ReferenceSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
 main :: IO ()
@@ -14,4 +15,5 @@ main =
       "riski5"
       [ DecodeSpec.tests
       , AsmSpec.tests
+      , ReferenceSpec.tests
       ]

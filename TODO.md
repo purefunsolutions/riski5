@@ -13,10 +13,7 @@ rules around maintaining it.
 
 ## In flight
 
-- **Tv2. Reference executor** [started 2026-04-19]
-  - `src/Riski5/Reference.hs` — a pure-Haskell RV32I interpreter to
-    serve as a golden oracle for differential testing. See
-    `docs/verification.md` for the full three-layer FV plan.
+- (nothing — ready to start phase 1B)
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
@@ -86,6 +83,18 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     phase 1B), Liquid Haskell (phase 2 opt-in).
   - `docs/verification.md` details each layer, what it buys us, and
     what it doesn't.
+- **Tv2. Reference executor** (2026-04-19)
+  - `src/Riski5/Reference.hs` — pure-Haskell RV32I + Zicsr + M-mode
+    interpreter. `step` fetches from memory, decodes, executes;
+    `run` bounds execution by step count. Traps thread through
+    `TrapCause` values.
+  - `Riski5.Asm` gained wrappers for `sub`/`slti`/`sltiu`/`xori`/
+    `ori`/`andi`/`slli`/`srli`/`srai` so reference tests can write
+    programs readably.
+  - `test/ReferenceSpec.hs` pins the reference's behaviour with 10
+    HUnit cases covering ADDI/LUI/ADD/SUB/BEQ (taken and not)/SW+LW
+    round-trip/SRAI/JAL/ECALL-trap/SLTI. All 24 tests pass
+    (14 original + 10 reference).
 
 ## Ongoing
 

@@ -35,6 +35,15 @@ module Riski5.Asm (
   -- requires)
   addi,
   add,
+  sub,
+  slti,
+  sltiu,
+  xori,
+  ori,
+  andi,
+  slli,
+  srli,
+  srai,
   lw,
   sw,
   lui,
@@ -215,6 +224,33 @@ addi rd rs1 imm = emit (Addi rd rs1 imm)
 
 add :: Reg -> Reg -> Reg -> Asm ()
 add rd rs1 rs2 = emit (Add rd rs1 rs2)
+
+sub :: Reg -> Reg -> Reg -> Asm ()
+sub rd rs1 rs2 = emit (Sub rd rs1 rs2)
+
+slti :: Reg -> Reg -> Signed 12 -> Asm ()
+slti rd rs1 imm = emit (Slti rd rs1 imm)
+
+sltiu :: Reg -> Reg -> Signed 12 -> Asm ()
+sltiu rd rs1 imm = emit (Sltiu rd rs1 imm)
+
+xori :: Reg -> Reg -> Signed 12 -> Asm ()
+xori rd rs1 imm = emit (Xori rd rs1 imm)
+
+ori :: Reg -> Reg -> Signed 12 -> Asm ()
+ori rd rs1 imm = emit (Ori rd rs1 imm)
+
+andi :: Reg -> Reg -> Signed 12 -> Asm ()
+andi rd rs1 imm = emit (Andi rd rs1 imm)
+
+slli :: Reg -> Reg -> BitVector 5 -> Asm ()
+slli rd rs1 shamt = emit (Slli rd rs1 shamt)
+
+srli :: Reg -> Reg -> BitVector 5 -> Asm ()
+srli rd rs1 shamt = emit (Srli rd rs1 shamt)
+
+srai :: Reg -> Reg -> BitVector 5 -> Asm ()
+srai rd rs1 shamt = emit (Srai rd rs1 shamt)
 
 lw :: Reg -> Reg -> Signed 12 -> Asm ()
 lw rd rs1 imm = emit (Lw rd rs1 imm)
