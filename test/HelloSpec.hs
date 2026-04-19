@@ -77,12 +77,11 @@ runHelloSoc nCycles =
 
 case_uart :: Assertion
 case_uart = do
-  -- The LCD init + 17 LCD characters each burn ~2 000 cycles in the
-  -- busy-wait window. The UART writes come after those, so we need
-  -- enough cycles for everything to drain: (4 init + 17 chars) ×
-  -- 2016 ≈ 42 000 + some setup overhead. Round up to 60 000 for
-  -- margin.
-  let trace = runHelloSoc 60_000
+  -- After the hardware-required HD44780 wake sequence + post-Clear
+  -- pause, the firmware spends ~1.35 M cycles in software delay
+  -- loops before any UART writes happen. We sample 2 M cycles to
+  -- give the LCD-string + UART-string phases plenty of headroom.
+  let trace = runHelloSoc 2_000_000
       txBytes = [b | SocOut {soUartTx = Just b} <- trace]
       txString :: String
       txString = P.map (P.toEnum . P.fromIntegral) txBytes
