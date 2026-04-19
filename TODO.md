@@ -13,14 +13,13 @@ rules around maintaining it.
 
 ## In flight
 
-- **T2. CLAUDE.md + TODO.md** [started 2026-04-19]
-  - `CLAUDE.md` seeded with all project conventions from the plan.
-  - `TODO.md` (this file) bootstraps the T1–T44 tracking.
+- **T3. Reference docs** [started 2026-04-19]
+  - Pin the RISC-V ISA spec PDF under `docs/riscv/`.
+  - Write `docs/riscv/README.md` (pin record + how to re-pin) and
+    `docs/references.md` (upstream repos we consult).
 
 ## Next up
 
-- **T3. Reference docs** — pin RISC-V ISA PDFs under `docs/riscv/`,
-  add `docs/riscv/README.md` and `docs/references.md`.
 - **T4. Type-level ISA.** `src/Riski5/ISA.hs`.
 - **T5. Encoder.** `src/Riski5/Encode.hs`.
 - **T6. Decoder + roundtrip tests.** `Decode.hs` + `DecodeSpec.hs`.
@@ -44,6 +43,12 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     `LICENSE-BSD`/`LICENSE-MIT`, placeholder `src/Riski5{,/ISA}.hs`,
     `README.md`.
   - `nix flake check` green, `cabal build` succeeds.
+- **T2. CLAUDE.md + TODO.md** (2026-04-19)
+  - `CLAUDE.md` captures design style, testing rule, Cyclone II
+    targeting rules, Altera IP / verilambda policies, memory map,
+    M4K budget discipline, task + blog disciplines, reference-doc
+    rules.
+  - `TODO.md` (this file) bootstraps T1–T44 tracking.
 
 ## Ongoing
 
