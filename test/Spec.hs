@@ -3,6 +3,7 @@
 
 module Main (main) where
 
+import AsmSpec qualified
 import DecodeSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 
@@ -12,4 +13,5 @@ main =
     testGroup
       "riski5"
       [ DecodeSpec.tests
+      , AsmSpec.tests
       ]

@@ -13,12 +13,15 @@ rules around maintaining it.
 
 ## In flight
 
-- **T6. Decoder + roundtrip tests** [started 2026-04-19]
-  - `src/Riski5/Decode.hs` + `test/DecodeSpec.hs`.
+- (nothing — phase 1A complete, awaiting signal to start phase 1B)
 
-## Next up
+## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
-- **T7. Asm eDSL.** `Asm.hs` + `AsmSpec.hs`.
+- **T8. ALU + tests.** `src/Riski5/ALU.hs`, `test/AluSpec.hs`.
+- **T9. Regfile on M4K.** `src/Riski5/Regfile.hs`.
+- **T10. Pipelineless datapath (no CSR).** `src/Riski5/Core.hs`.
+- **T11. Whole-core sim via verilambda.** `test/CoreSpec.hs`.
+- **T12. CSR file + M-mode traps.** `src/Riski5/CSR.hs`.
 
 Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
 
@@ -60,6 +63,20 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   - `src/Riski5/Encode.hs` — total `Instr -> BitVector 32` covering
     every constructor via rType/iType/shiftI/sType/bType/uType/jType
     helpers plus hard-coded ECALL/EBREAK/MRET encodings.
+- **T6. Decoder + roundtrip tests** (2026-04-19)
+  - `src/Riski5/Decode.hs` — total `BitVector 32 -> Maybe Instr` for
+    every RV32I + Zifencei + Zicsr + M-mode pattern; `Nothing` on
+    illegal (including RVC opcodes).
+  - `test/{Spec,DecodeSpec}.hs` — tasty + Hedgehog, 2 properties
+    passing 100 cases each.
+- **T7. Asm eDSL** (2026-04-19)
+  - `src/Riski5/Asm.hs` — state-monad assembler with `label` /
+    `labelUnplaced` / `placeAt`, real-instruction wrappers
+    (addi/add/lw/sw/lui/auipc/jal/jalr/ecall/ebreak/mret/csrrw/csrrs),
+    pseudo-ops (nop/mv/li/ret/j/jr/beqz/bnez/beq/bne/blt/bge/bltu/bgeu).
+    Two-pass resolver catches undefined labels + out-of-range offsets.
+  - `test/AsmSpec.hs` — 12 HUnit cases covering every pseudo-op and
+    label-dependent combinator. `cabal test` runs 14 tests green.
 
 ## Ongoing
 

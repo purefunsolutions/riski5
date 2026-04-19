@@ -48,6 +48,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Riski5
+    Riski5.Asm
     Riski5.Decode
     Riski5.Encode
     Riski5.ISA
@@ -55,17 +56,23 @@ library
   build-depends:
     , base           >=4.20 && <5
     , clash-prelude  ^>=1.8
+    , containers     >=0.7  && <0.9
+    , mtl            >=2.3  && <2.4
 
 test-suite riski5-test
   import:         warnings, language
   type:           exitcode-stdio-1.0
   main-is:        Spec.hs
   hs-source-dirs: test
-  other-modules:  DecodeSpec
+  other-modules:
+    AsmSpec
+    DecodeSpec
+
   build-depends:
     , base
     , clash-prelude
-    , hedgehog        >=1.4 && <2
+    , hedgehog        >=1.4  && <2
     , riski5
-    , tasty           >=1.5 && <1.6
-    , tasty-hedgehog  >=1.4 && <1.5
+    , tasty           >=1.5  && <1.6
+    , tasty-hedgehog  >=1.4  && <1.5
+    , tasty-hunit     >=0.10 && <0.11
