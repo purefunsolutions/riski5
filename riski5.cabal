@@ -48,6 +48,7 @@ library
   hs-source-dirs:  src
   exposed-modules:
     Riski5
+    Riski5.Encode
     Riski5.ISA
 
   build-depends:

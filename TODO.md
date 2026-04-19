@@ -13,13 +13,11 @@ rules around maintaining it.
 
 ## In flight
 
-- **T4. Type-level ISA** [started 2026-04-19]
-  - `src/Riski5/ISA.hs` — opcodes, formats, registers, CSR addresses,
-    `Instr` ADT.
+- **T5. Encoder** [started 2026-04-19]
+  - `src/Riski5/Encode.hs` — total `Instr -> BitVector 32`.
 
 ## Next up
 
-- **T5. Encoder.** `src/Riski5/Encode.hs`.
 - **T6. Decoder + roundtrip tests.** `Decode.hs` + `DecodeSpec.hs`.
 - **T7. Asm eDSL.** `Asm.hs` + `AsmSpec.hs`.
 
@@ -53,6 +51,12 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   - `docs/riscv/README.md` records the pin + how to re-pin.
   - `docs/references.md` links upstream RISC-V-in-Haskell / Clash /
     verification / DE2 references with one-line rationales.
+- **T4. Type-level ISA** (2026-04-19)
+  - `src/Riski5/ISA.hs` — `Reg` (x0..x31 + ABI names), `Csr` (12-bit
+    address + M-mode constants), `Opcode` with 7-bit bit patterns,
+    and `Instr` ADT covering all 47 RV32I + Zifencei + 6 Zicsr + MRET
+    instructions. Width-indexed immediates (`Signed 12/13/21`,
+    `BitVector 20/5`).
 
 ## Ongoing
 
