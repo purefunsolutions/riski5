@@ -37,12 +37,37 @@ module Riski5.Asm (
   labelUnplaced,
   placeAt,
 
-  -- * Real instruction wrappers (subset; extend as the firmware
+  -- * Real instruction wrappers — full RV32I + Zifencei + Zicsr +
+  -- M-mode coverage (every constructor in 'Riski5.ISA.Instr').
 
-  -- requires)
+  -- ** Upper-immediate / jumps
+  lui,
+  auipc,
+  jal,
+  jalr,
+
+  -- ** Conditional branches
+  beq,
+  bne,
+  blt,
+  bge,
+  bltu,
+  bgeu,
+
+  -- ** Loads
+  lb,
+  lh,
+  lw,
+  lbu,
+  lhu,
+
+  -- ** Stores
+  sb,
+  sh,
+  sw,
+
+  -- ** Integer register-immediate
   addi,
-  add,
-  sub,
   slti,
   sltiu,
   xori,
@@ -51,17 +76,35 @@ module Riski5.Asm (
   slli,
   srli,
   srai,
-  lw,
-  sw,
-  lui,
-  auipc,
-  jal,
-  jalr,
+
+  -- ** Integer register-register
+  add,
+  sub,
+  sll,
+  slt,
+  sltu,
+  xor_,
+  srl,
+  sra,
+  or_,
+  and_,
+
+  -- ** Memory-ordering (Zifencei)
+  fence,
+  fenceI,
+
+  -- ** Environment + privileged (M-mode)
   ecall,
   ebreak,
   mret,
+
+  -- ** Zicsr
   csrrw,
   csrrs,
+  csrrc,
+  csrrwi,
+  csrrsi,
+  csrrci,
 
   -- * Pseudo-instructions
   nop,
@@ -259,11 +302,83 @@ srli rd rs1 shamt = emit (Srli rd rs1 shamt)
 srai :: Reg -> Reg -> BitVector 5 -> Asm ()
 srai rd rs1 shamt = emit (Srai rd rs1 shamt)
 
+-- | @LB rd, imm(rs1)@ — load a sign-extended byte.
+lb :: Reg -> Reg -> Signed 12 -> Asm ()
+lb rd rs1 imm = emit (Lb rd rs1 imm)
+
+-- | @LH rd, imm(rs1)@ — load a sign-extended halfword.
+lh :: Reg -> Reg -> Signed 12 -> Asm ()
+lh rd rs1 imm = emit (Lh rd rs1 imm)
+
+-- | @LW rd, imm(rs1)@ — load a 32-bit word.
 lw :: Reg -> Reg -> Signed 12 -> Asm ()
 lw rd rs1 imm = emit (Lw rd rs1 imm)
 
+-- | @LBU rd, imm(rs1)@ — load a zero-extended byte.
+lbu :: Reg -> Reg -> Signed 12 -> Asm ()
+lbu rd rs1 imm = emit (Lbu rd rs1 imm)
+
+-- | @LHU rd, imm(rs1)@ — load a zero-extended halfword.
+lhu :: Reg -> Reg -> Signed 12 -> Asm ()
+lhu rd rs1 imm = emit (Lhu rd rs1 imm)
+
+-- | @SB rs2, imm(rs1)@ — store the low byte of @rs2@.
+sb :: Reg -> Reg -> Signed 12 -> Asm ()
+sb rs1 rs2 imm = emit (Sb rs1 rs2 imm)
+
+-- | @SH rs2, imm(rs1)@ — store the low halfword of @rs2@.
+sh :: Reg -> Reg -> Signed 12 -> Asm ()
+sh rs1 rs2 imm = emit (Sh rs1 rs2 imm)
+
+-- | @SW rs2, imm(rs1)@ — store all 32 bits of @rs2@.
 sw :: Reg -> Reg -> Signed 12 -> Asm ()
 sw rs1 rs2 imm = emit (Sw rs1 rs2 imm)
+
+-- | @SLL rd, rs1, rs2@ — shift left logical (low 5 bits of @rs2@).
+sll :: Reg -> Reg -> Reg -> Asm ()
+sll rd rs1 rs2 = emit (Sll rd rs1 rs2)
+
+-- | @SLT rd, rs1, rs2@ — set if @rs1@ < @rs2@ (signed).
+slt :: Reg -> Reg -> Reg -> Asm ()
+slt rd rs1 rs2 = emit (Slt rd rs1 rs2)
+
+-- | @SLTU rd, rs1, rs2@ — set if @rs1@ < @rs2@ (unsigned).
+sltu :: Reg -> Reg -> Reg -> Asm ()
+sltu rd rs1 rs2 = emit (Sltu rd rs1 rs2)
+
+{- | @XOR rd, rs1, rs2@ — bitwise exclusive-or. Named with a trailing
+underscore to avoid clashing with @Data.Bits.xor@ in user code.
+-}
+xor_ :: Reg -> Reg -> Reg -> Asm ()
+xor_ rd rs1 rs2 = emit (Xor rd rs1 rs2)
+
+-- | @SRL rd, rs1, rs2@ — shift right logical.
+srl :: Reg -> Reg -> Reg -> Asm ()
+srl rd rs1 rs2 = emit (Srl rd rs1 rs2)
+
+-- | @SRA rd, rs1, rs2@ — shift right arithmetic.
+sra :: Reg -> Reg -> Reg -> Asm ()
+sra rd rs1 rs2 = emit (Sra rd rs1 rs2)
+
+{- | @OR rd, rs1, rs2@ — bitwise or. Trailing underscore avoids
+clashing with @Prelude.or@ on @[Bool]@.
+-}
+or_ :: Reg -> Reg -> Reg -> Asm ()
+or_ rd rs1 rs2 = emit (Or rd rs1 rs2)
+
+{- | @AND rd, rs1, rs2@ — bitwise and. Trailing underscore avoids
+clashing with @Prelude.and@ on @[Bool]@.
+-}
+and_ :: Reg -> Reg -> Reg -> Asm ()
+and_ rd rs1 rs2 = emit (And rd rs1 rs2)
+
+-- | @FENCE pred, succ@ — memory ordering fence (Zifencei).
+fence :: BitVector 4 -> BitVector 4 -> Asm ()
+fence pred_ succ_ = emit (Fence pred_ succ_)
+
+-- | @FENCE.I@ — instruction-fetch fence.
+fenceI :: Asm ()
+fenceI = emit FenceI
 
 lui :: Reg -> BitVector 20 -> Asm ()
 lui rd imm = emit (Lui rd imm)
@@ -289,11 +404,30 @@ ebreak = emit Ebreak
 mret :: Asm ()
 mret = emit Mret
 
+-- | @CSRRW rd, csr, rs1@ — atomic read-write of a CSR.
 csrrw :: Reg -> Reg -> Csr -> Asm ()
 csrrw rd rs1 csr = emit (Csrrw rd rs1 csr)
 
+-- | @CSRRS rd, csr, rs1@ — atomic read-and-set CSR bits.
 csrrs :: Reg -> Reg -> Csr -> Asm ()
 csrrs rd rs1 csr = emit (Csrrs rd rs1 csr)
+
+-- | @CSRRC rd, csr, rs1@ — atomic read-and-clear CSR bits.
+csrrc :: Reg -> Reg -> Csr -> Asm ()
+csrrc rd rs1 csr = emit (Csrrc rd rs1 csr)
+
+-- | @CSRRWI rd, csr, uimm5@ — atomic read-write with a 5-bit
+-- zero-extended immediate.
+csrrwi :: Reg -> BitVector 5 -> Csr -> Asm ()
+csrrwi rd uimm csr = emit (Csrrwi rd uimm csr)
+
+-- | @CSRRSI rd, csr, uimm5@ — atomic read-and-set with immediate.
+csrrsi :: Reg -> BitVector 5 -> Csr -> Asm ()
+csrrsi rd uimm csr = emit (Csrrsi rd uimm csr)
+
+-- | @CSRRCI rd, csr, uimm5@ — atomic read-and-clear with immediate.
+csrrci :: Reg -> BitVector 5 -> Csr -> Asm ()
+csrrci rd uimm csr = emit (Csrrci rd uimm csr)
 
 -- * Pseudo-instructions ----------------------------------------------
 
