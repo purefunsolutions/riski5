@@ -60,10 +60,25 @@ in
       # Clash emits Verilog into ./verilog/Top.topEntity/ based on
       # the Synthesize annotation in app/Top.hs (named "riski5").
       # Top.hs imports Hello from firmware/phase1/, so include that
-      # source root too.
+      # source root too. Language extensions mirror the `common
+      # language` stanza in riski5.cabal, since clash --verilog
+      # doesn't read cabal.
       clash --verilog -fclash-hdlsyn Quartus \
         -isrc -iapp -ifirmware/phase1 \
-        app/Top.hs
+        -XGHC2021 \
+        -XDataKinds \
+        -XDeriveAnyClass \
+        -XDerivingStrategies \
+        -XLambdaCase \
+        -XNoStarIsType \
+        -XTypeFamilies \
+        -XUndecidableInstances \
+        -XFlexibleContexts \
+        -XScopedTypeVariables \
+        -XTemplateHaskell \
+        -XTypeOperators \
+        -XRecordWildCards \
+        Top
 
       # Quartus expects Riski5.qpf / Riski5.qsf / Riski5.sdc at the
       # build root. The .qsf references verilog/Top.topEntity/riski5.v
