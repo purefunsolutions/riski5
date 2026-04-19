@@ -101,7 +101,11 @@ topEntity clk rst keyS swS =
           lcdRwS = lcdRw . soLcdPins <$> outS
           lcdEnS = lcdE . soLcdPins <$> outS
           lcdOnS = pure high
-          lcdBlonS = pure high
+          -- LCD_BLON polarity on DE2 rev unclear from the user
+          -- manual; first hardware run with HIGH gave a backlit-off
+          -- LCD, so we drive LOW here. If that's wrong the backlight
+          -- just stays off — LCD power (LCD_ON) is independent.
+          lcdBlonS = pure low
        in (ledrS, ledgS, lcdDataS, lcdRsS, lcdRwS, lcdEnS, lcdOnS, lcdBlonS)
 
 {- | Exported Clash-usable top-entity annotation so
