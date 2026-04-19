@@ -59,7 +59,11 @@ in
 
       # Clash emits Verilog into ./verilog/Top.topEntity/ based on
       # the Synthesize annotation in app/Top.hs (named "riski5").
-      clash --verilog -fclash-hdlsyn Quartus -isrc -iapp app/Top.hs
+      # Top.hs imports Hello from firmware/phase1/, so include that
+      # source root too.
+      clash --verilog -fclash-hdlsyn Quartus \
+        -isrc -iapp -ifirmware/phase1 \
+        app/Top.hs
 
       # Quartus expects Riski5.qpf / Riski5.qsf / Riski5.sdc at the
       # build root. The .qsf references verilog/Top.topEntity/riski5.v
