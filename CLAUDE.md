@@ -41,6 +41,39 @@ agent + JTAG-UART diff. `test/InstrCatalog.hs` is the shared source;
 never duplicate a test between sim-only and hardware-only. A feature is
 not "done" until both layers are green.
 
+## Formal verification policy
+
+Three complementary layers, in rising order of strength and cost. See
+[docs/verification.md](./docs/verification.md) for the full plan.
+
+1. **Haskell-side differential testing against a reference executor**
+   (live from Day 1). `src/Riski5/Reference.hs` is a minimal pure-Haskell
+   RV32I interpreter — a golden oracle that Hedgehog properties compare
+   against. Not a formal proof, but the tightest standalone check we
+   can run without a hardware simulator. The reference is inspired by
+   `mit-plv/riscv-semantics` and can later be swapped for (or
+   cross-checked against) that upstream package; see
+   `docs/references.md` for the link.
+
+2. **RVFI + YosysHQ/riscv-formal** (lands at the end of phase 1B,
+   once `Core.hs` exists). RVFI tap ports get added to the core from
+   the start so the Verilog Clash emits is `riscv-formal`-ready.
+   SymbiYosys model-checks the Verilog against the RVFI contract
+   (register-file, memory, pc-advance, trap, CSR) for a few hundred
+   bounded cycles per instruction class. This is the industrial-grade
+   formal-proof layer.
+
+3. **Liquid Haskell on pure modules** (phase 2 opt-in, annotate
+   selectively). Refinement types for things the Haskell type system
+   can't express naturally — e.g. "B-type immediate bit 0 is always
+   zero", "`decode` is total across its domain", "FENCE `fm` field is
+   exactly 0 for non-TSO". Not adopted in phase 1 because the value
+   over the existing width-indexed types is marginal and the build
+   complexity (SMT + plugin pinning) is not.
+
+**No Verilator upstream contributions for now** — per the verilambda
+policy, sim-layer issues are patched in verilambda.
+
 ## Hardware targeting rules (Cyclone II-specific)
 
 - Map regfile + program/data memory + cache tag/data arrays to M4K

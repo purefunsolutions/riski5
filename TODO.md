@@ -13,7 +13,10 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 1A complete, awaiting signal to start phase 1B)
+- **Tv2. Reference executor** [started 2026-04-19]
+  - `src/Riski5/Reference.hs` — a pure-Haskell RV32I interpreter to
+    serve as a golden oracle for differential testing. See
+    `docs/verification.md` for the full three-layer FV plan.
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
@@ -77,6 +80,12 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
     Two-pass resolver catches undefined labels + out-of-range offsets.
   - `test/AsmSpec.hs` — 12 HUnit cases covering every pseudo-op and
     label-dependent combinator. `cabal test` runs 14 tests green.
+- **Tv1. Formal verification policy** (2026-04-19)
+  - `CLAUDE.md` adds the three-layer FV section: Reference-executor
+    differential testing (from Day 1), RVFI + riscv-formal (end of
+    phase 1B), Liquid Haskell (phase 2 opt-in).
+  - `docs/verification.md` details each layer, what it buys us, and
+    what it doesn't.
 
 ## Ongoing
 
