@@ -12,39 +12,53 @@
 
 {- |
 Module      : Riski5.Core
-Description : Pipelineless single-cycle RV32I core with M-mode CSRs + traps.
+Description : 2-stage pipelined RV32I core with M-mode CSRs + traps.
 
-One instruction retires per clock. The fetch path absorbs a
-1-cycle latency (PC latched at cycle N−1 → instruction arrives at
-cycle N); everything else — register read, ALU, branch comparator,
-CSR access, memory-access issue, writeback, trap latch — is
-combinational within the cycle. Writes to the register file, CSR
-file, and data memory take effect on the following clock edge.
+Two overlapping pipeline stages:
 
-The core's outside-world interface is deliberately tiny: an imem
-port that returns a 32-bit instruction for the current PC, a dmem
-port that takes an address / byte-enable / read-enable and returns
-read data, plus an observability output for the regfile writeback
-stream (ignored by real SoC tops). CSR state is fully internal.
+  * __F (fetch)__: the @pcFetch@ register presents the next
+    instruction address to the imem input port. imem is expected
+    to have synchronous-read semantics — the instruction for
+    @pcFetch@ at cycle N arrives on @imemData@ at cycle N+1.
 
-Trap handling, per the RISC-V priv spec (M-mode only):
+  * __X (execute)__: combinational decode + regfile read + ALU +
+    branch-compare + CSR access + memory-access issue + writeback,
+    all within one clock using @pcExec@ (= previous cycle's
+    @pcFetch@) and the current @imemData@ which by then reflects
+    that @pcExec@ address.
+
+Back-to-back sequential instructions retire at 1/clock in steady
+state. The only source of bubbles is a non-sequential PC change
+(taken branch, JAL, JALR, MRET, trap) which squashes the
+pre-fetched instruction on the next cycle.
+
+== Pipeline control
+
+  * __Stall__ (input): freezes every sequential register so
+    multi-cycle memory slaves can back-pressure cleanly.
+
+  * __Squash__: @squashNext@ register fires the cycle after this
+    cycle's X takes a PC change. On the squash cycle, @imemData@
+    is replaced with NOP in decode; regfile writeback, CSR write,
+    and dmem byte-enable are all suppressed.
+
+== Trap handling (M-mode only)
 
   * Illegal instruction: @mcause = 2@, @mtval = instruction bits@.
-  * Environment call from M-mode (ECALL): @mcause = 11@, @mtval = 0@.
-  * Breakpoint (EBREAK): @mcause = 3@, @mtval = 0@.
+  * ECALL from M-mode: @mcause = 11@, @mtval = 0@.
+  * EBREAK: @mcause = 3@, @mtval = 0@.
   * Load / store address misaligned: @mcause = 4@ / @6@,
     @mtval = faulting address@.
 
-On any trap: @mepc = pc@, @pc ← mtvec.base@, no regfile writeback,
-no data-memory write. @MRET@ copies @mepc@ back into @pc@ (no
-privilege-mode switch — there's only M-mode). No xIE/xPIE dance
-yet; interrupts arrive with 'Riski5.CSR' growth in a later phase.
+On any trap: @mepc = pcExec@, next fetch redirected to
+@mtvec.base@, writeback suppressed. @MRET@ copies @mepc@ back
+into @pcFetch@ via the non-sequential-PC path.
 -}
 module Riski5.Core (
   core,
 ) where
 
-import Clash.Prelude hiding (And, Xor, not, (!!))
+import Clash.Prelude hiding (And, Xor, not, (!!), (||))
 import Riski5.ALU (AluOp (..), BranchOp (..), alu, branchTaken)
 import Riski5.CSR (
   Csrs (..),
@@ -85,18 +99,16 @@ core ::
 
   Two PC-side outputs:
 
-    * @pcFetch@ drives the imem address input. In this pipelineless
-      core it's identical to @pcExec@ — both are just the current
-      PC register. In the future 2-stage pipelined core (phase 2),
-      @pcFetch@ will be the address being fetched this cycle and
-      @pcExec@ will be the address of the instruction currently in
-      the execute stage (= previous cycle's @pcFetch@). Tests that
-      assert against the PC of a retiring instruction should use
-      @pcExec@ so they stay valid across the pipelining refactor.
+    * @pcFetch@ drives the imem address input — the address being
+      *fetched* this cycle (= next instruction to execute).
+    * @pcExec@ is the address of the instruction currently being
+      *executed* in the X stage (one cycle behind @pcFetch@ in
+      steady state). Tests that assert against the PC of a
+      retiring instruction should use @pcExec@.
 
   @writeBack@ is @Just (rd, value)@ on cycles that commit a
   register-file write, @Nothing@ otherwise (and always @Nothing@ on
-  a trap cycle).
+  a trap / stalled / squashed cycle).
   -}
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
@@ -107,46 +119,108 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   )
 core imemData dmemRData stallS =
-  (pc, pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBackGated)
+  (pcFetch, pcExec, dmemAddr, dmemWdata, dmemBeGated, dmemRen, writeBackGated)
  where
-  -- ----- PC + CSR state (frozen on stall) ----------------------------
-  pc :: Signal dom (BitVector 32)
-  pc = register 0 (mux stallS pc pcNext)
+  -- ----- F-stage: pcFetch drives imem --------------------------------
+  pcFetch :: Signal dom (BitVector 32)
+  pcFetch = register 0 (mux stallS pcFetch pcFetchNext)
 
+  -- ----- X-stage PC: one cycle behind pcFetch ------------------------
+  pcExec :: Signal dom (BitVector 32)
+  pcExec = register 0 (mux stallS pcExec pcFetch)
+
+  -- ----- Squash register ---------------------------------------------
+  -- True on the cycle immediately after this cycle's X took a
+  -- non-sequential PC change. While squashNext is True, the
+  -- fetched-but-stale instruction in imemData is replaced with NOP
+  -- in decode and all side effects (writeback, CSR, dmem-write)
+  -- are suppressed. Frozen on stall.
+  --
+  -- Initial value 'True' also covers the very first cycle after
+  -- reset: @blockRam@ (and the register-wrapped imem in test
+  -- harnesses) has an undefined / init output on cycle 0 before
+  -- the first real read has propagated. Squash-on-reset means
+  -- that garbage never reaches decode.
+  squashNext :: Signal dom Bool
+  squashNext = register True (mux stallS squashNext pcChangedS)
+
+  -- ----- CSR state (frozen on stall or squash) -----------------------
   csrs :: Signal dom Csrs
-  csrs = register initCsrs (mux stallS csrs csrsNext)
+  csrs =
+    register
+      initCsrs
+      ( (\stall sq next cur -> if stall || sq then cur else next)
+          <$> stallS
+          <*> squashNext
+          <*> csrsNext
+          <*> csrs
+      )
 
-  -- Suppress regfile writeback during a stall so the load doesn't
-  -- commit garbage. The "real" writeBack of a load happens on the
-  -- non-stalled retire cycle.
+  -- Effective instruction word for the X stage: NOP on squash so
+  -- the stale pre-fetched instruction doesn't reach decode.
+  effectiveImemS :: Signal dom (BitVector 32)
+  effectiveImemS =
+    (\sq d -> if sq then 0x0000_0013 else d) <$> squashNext <*> imemData
+
+  -- Suppress regfile writeback on stall or squash.
   writeBackGated =
-    (\stall wb -> if stall then Nothing else wb)
+    (\stall sq wb -> if stall || sq then Nothing else wb)
       <$> stallS
+      <*> squashNext
       <*> writeBack
 
-  -- ----- Decode + operand extraction --------------------------------
+  -- Suppress memory-write byte-enable on stall or squash so a
+  -- stalled store doesn't double-commit and a squashed fake-store
+  -- doesn't commit at all.
+  dmemBeGated =
+    (\stall sq be -> if stall || sq then 0 else be)
+      <$> stallS
+      <*> squashNext
+      <*> dmemBe
+
+  -- ----- Decode + operand extraction ---------------------------------
   mInstr :: Signal dom (Maybe Instr)
-  mInstr = decode <$> imemData
+  mInstr = decode <$> effectiveImemS
 
   rs1Addr, rs2Addr :: Signal dom (BitVector 5)
-  rs1Addr = slice d19 d15 <$> imemData
-  rs2Addr = slice d24 d20 <$> imemData
+  rs1Addr = slice d19 d15 <$> effectiveImemS
+  rs2Addr = slice d24 d20 <$> effectiveImemS
 
-  (rs1V, rs2V) = regfile rs1Addr rs2Addr writeBack
+  (rs1V, rs2V) = regfile rs1Addr rs2Addr writeBackGated
 
-  -- ----- Combinational dispatch -------------------------------------
+  -- ----- Combinational dispatch --------------------------------------
   bundledOut =
     handleInstr
-      <$> pc
-      <*> imemData
+      <$> pcExec
+      <*> effectiveImemS
       <*> mInstr
       <*> rs1V
       <*> rs2V
       <*> dmemRData
       <*> csrs
 
-  (pcNext, csrsNext, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack) =
+  (pcNextRaw, csrsNext, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack) =
     unbundle bundledOut
+
+  -- pcFetchNext advances F one step ahead of X:
+  --   * sequential (pcNextRaw == pcExec + 4): pcFetch + 4 so the
+  --     next-next instruction is queued;
+  --   * non-sequential (branch / JAL / JALR / MRET / trap):
+  --     redirect F straight to the target.
+  pcFetchNext =
+    ( \pExec pcRaw pf ->
+        if pcRaw == pExec + 4
+          then pf + 4
+          else pcRaw
+    )
+      <$> pcExec
+      <*> pcNextRaw
+      <*> pcFetch
+
+  -- True when this cycle's X instruction caused a non-sequential
+  -- PC change. Becomes the squashNext register value for cycle N+1.
+  pcChangedS :: Signal dom Bool
+  pcChangedS = (\pExec pcRaw -> pcRaw /= pExec + 4) <$> pcExec <*> pcNextRaw
 
 -- * Combinational dispatch -----------------------------------------
 

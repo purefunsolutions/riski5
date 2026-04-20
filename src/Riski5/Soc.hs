@@ -53,6 +53,7 @@ module Riski5.Soc (
 
 import Clash.Prelude hiding (And, Xor, not)
 import Clash.Prelude qualified as CP
+import Data.Proxy (Proxy (..))
 import Riski5.Bram (bram)
 import Riski5.Core (core)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
@@ -128,10 +129,26 @@ soc progInit dataInit inS = outS
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS) =
     core imemDataS dmemRdataS stallS
 
-  -- ----- Instruction memory ------------------------------------
+  -- ----- Instruction memory (M4K-backed sync read) ------------
+  -- imem driven from the core's F-stage pcFetchS via Clash
+  -- blockRam. Quartus maps this to true M4K blocks, which (a)
+  -- recovers several thousand LEs that the distributed-LUT-RAM
+  -- imem consumed, and (b) breaks the giant N:1 read-mux out of
+  -- the critical path. The 1-cycle read latency matches the
+  -- pipelined core's F → X hand-off (see 'Riski5.Core').
   imemDataS :: Signal dom (BitVector 32)
   imemDataS =
-    bram progInit pcFetchS (CP.pure 0) (CP.pure 0)
+    blockRam progInit (pcFetchIdxS pcFetchS) (CP.pure Nothing)
+   where
+    nMax :: Unsigned 32
+    nMax = fromInteger (natVal (Proxy :: Proxy p))
+    pcFetchIdxS :: Signal dom (BitVector 32) -> Signal dom (Index p)
+    pcFetchIdxS = fmap pcToIdx
+    pcToIdx :: BitVector 32 -> Index p
+    pcToIdx b =
+      let w :: Unsigned 32
+          w = unpack (b `shiftR` 2)
+       in fromIntegral (w `mod` nMax)
 
   -- ----- Data memory (slave at 0x0000_0000 — shares addr space
   -- with imem for simplicity; programs pick a base above the code) --

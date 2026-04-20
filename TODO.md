@@ -203,6 +203,32 @@ for the next session's take:
   ratios and re-close timing. The 14% speed-mode win is already
   banked; phase 2 should compound on it.
 
+- **P2-H. Move HD44780 long-timing into the LCD controller FSM.**
+  Right now `Riski5.Lcd.lcd` holds `busy` high for `pulseCycles`
+  (16) + `idleCycles` (2 000) per write — enough for the common
+  37 µs command window but not the 1.52 ms Clear / Home. The
+  firmware currently fills that gap with a software
+  `delayCycles 200_000` after every Clear, plus a 1 000 000-cycle
+  Vcc-settle spin and 250 000-cycle post-wake delay. Move these
+  timings into the FSM:
+    * Distinguish Clear (0x01) and Return-home (0x02) command
+      bytes at the write point, set `idleCycles` to 76 000 for
+      those two, back to 2 000 otherwise.
+    * Add a power-on `StartupWait` state (1 000 000 cycles,
+      configurable) so the firmware doesn't need the Vcc-settle
+      spin.
+  Result: the hardware firmware shrinks (no explicit delay
+  loops), hardware-timing-correctness lives where it belongs,
+  and sim-time for any LCD-exercising test drops from millions
+  of cycles to whatever the real command sequence takes.
+
+- **P2-I. Minimal LCD-only simulation test.** Once P2-H lands,
+  add a sim test that writes a single character to the LCD and
+  asserts the correct @E@-pulse / @RS@ / @DATA@ sequence appears
+  on `LcdPins` — no LED counter, no SRAM, no scrolling. Fast
+  (~200 cycles), catches regressions in the LCD controller's
+  pulse timing and the core's MMIO-write path end-to-end.
+
 **Starting pointer: retry `core` refactor directly on master with
 the above test-side fixes prepared first, so the build never goes
 red. `pre-autosquash-backup` branch preserves this phase-1 end

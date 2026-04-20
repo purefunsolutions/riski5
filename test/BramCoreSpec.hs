@@ -146,12 +146,12 @@ uses word offsets 64..127 (byte addresses 0x100..0x1FC).
 -}
 runCore :: [BitVector 32] -> Int -> Map.Map Word32 Word32
 runCore program nSteps =
-  let cycles = nSteps P.+ 1 -- one extra cycle for reset
+  let cycles = nSteps P.+ 2 -- reset cycles (Clash System resetGen lasts longer than 1)
       trace =
         sampleN @System cycles $
           withClockResetEnable @System clockGen resetGen enableGen $
             simHarness program
-      wbs = P.drop 1 (P.map P.snd trace)
+      wbs = P.drop 2 (P.map P.snd trace) -- skip reset cycles
       updates = [(rdOf r, w32 v) | Just (r, v) <- wbs]
    in foldl' (P.flip (P.uncurry Map.insert)) Map.empty updates
  where
@@ -222,13 +222,17 @@ simHarness program =
       core imemDataS dmemDataS (CP.pure P.False)
 
     -- Instruction memory: BRAM read-only, address driven by
-    -- pcFetchS (the address being fetched this cycle).
+    -- pcFetchS. A 1-cycle register delay matches the pipelined
+    -- core's sync-read imem expectation.
     imemDataS =
-      bram
-        progVec
-        pcFetchS
-        (CP.pure 0)
-        (CP.pure 0)
+      CP.register
+        0x0000_0013
+        ( bram
+            progVec
+            pcFetchS
+            (CP.pure 0)
+            (CP.pure 0)
+        )
 
     -- Data memory: separate BRAM instance (same initial contents
     -- — any program data that needs preloading sits above the code

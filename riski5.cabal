@@ -107,6 +107,7 @@ test-suite riski5-test
     DecodeSpec
     HelloSpec
     LcdSpec
+    PipelineSpec
     ReferenceSpec
     RegfileSpec
     SocSpec

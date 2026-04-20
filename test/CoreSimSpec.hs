@@ -195,12 +195,12 @@ reconstructed register file state.
 -}
 runCore :: [BitVector 32] -> Int -> Map.Map Word32 Word32
 runCore words_ nSteps =
-  let cycles = nSteps P.+ 1 -- one extra cycle for reset
+  let cycles = nSteps P.+ 2 -- reset cycles (Clash System resetGen lasts longer than 1)
       trace =
         sampleN @System cycles $
           withClockResetEnable @System clockGen resetGen enableGen $
             simHarness words_
-      wbs = P.drop 1 (P.map P.snd trace) -- skip reset cycle
+      wbs = P.drop 2 (P.map P.snd trace) -- skip reset cycles
       updates = [(rdOf rd, w32 v) | Just (rd, v) <- wbs]
    in foldl' apply Map.empty updates
  where
@@ -267,9 +267,10 @@ simHarness program =
         let wordIdx :: CP.Unsigned 32
             wordIdx = unpack (pc `shiftR` 2)
          in P.fromIntegral wordIdx
-      -- imem driven by pcFetch; writeback trace paired with pcExec
-      -- so future pipelining doesn't invalidate the semantics.
-      imem = fmap (\pc -> progVec !! pcToIdx pc) pcFetchS
+      -- imem driven by pcFetch; 1-cycle register delay matches the
+      -- pipelined core's sync-read expectation. Writeback trace
+      -- paired with pcExec.
+      imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
       dmem = CP.pure 0
       (pcFetchS, pcExecS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
    in bundle (pcExecS, wbS)

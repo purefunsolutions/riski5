@@ -97,20 +97,21 @@ runProgram program nCycles =
          in P.fromIntegral w
       go :: (HiddenClockResetEnable CP.System) => Signal CP.System (BitVector 32, Maybe (BitVector 5, BitVector 32))
       go =
-        let -- imem driven by pcFetch; writeback trace paired with
-            -- pcExec so future pipelining doesn't shift the
-            -- asserted PC values.
-            imem = fmap (\pc -> progVec !! pcToIdx pc) pcFetchS
+        let -- imem driven by pcFetch; 1-cycle register delay matches
+            -- the pipelined core's sync-read expectation. Writeback
+            -- trace paired with pcExec.
+            imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
             dmem = CP.pure 0
             (pcFetchS, pcExecS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
          in bundle (pcExecS, wbS)
-   in sampleN @CP.System nCycles $
+   in sampleN @CP.System (nCycles P.+ 2) $
+        -- +2 for Clash System domain's reset-cycle + pipeline warmup.
         withClockResetEnable @CP.System clockGen resetGen enableGen go
 
 -- | Accumulate writebacks into a register-file state map.
 regsFrom :: [(BitVector 32, Maybe (BitVector 5, BitVector 32))] -> Map.Map Word32 Word32
 regsFrom trace =
-  let wbs = P.drop 1 (P.map P.snd trace) -- skip reset cycle
+  let wbs = P.drop 2 (P.map P.snd trace) -- skip reset cycles
       updates = [(rdOf r, w32 v) | Just (r, v) <- wbs]
    in foldl' (P.flip (P.uncurry Map.insert)) Map.empty updates
  where

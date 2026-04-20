@@ -95,11 +95,11 @@ simulateProgram n program =
     go =
       let
         dmem = fromList (P.repeat 0 :: [BitVector 32])
-        -- imem is driven by pcFetch (address being fetched THIS
-        -- cycle). Use pcExec for PC assertions — stays semantically
-        -- correct once the core pipelines and the two PCs differ
-        -- by one cycle.
-        imemSig = fmap imemOf pcFetch
+        -- imem is driven by pcFetch; the 1-cycle register delay
+        -- makes it look like the sync-read M4K blockRam the
+        -- pipelined core expects (pcFetch at cycle N-1 →
+        -- instruction at cycle N).
+        imemSig = CP.register 0x0000_0013 (fmap imemOf pcFetch)
         (pcFetch, outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem (CP.pure P.False)
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
@@ -109,9 +109,14 @@ simulateProgram n program =
    in
     samples
 
--- | Strip one cycle of reset from the head of a trace.
+-- | Strip reset + pipeline-warmup cycles from the head of a trace.
+-- Clash's default 'resetGen' asserts reset for more than one cycle
+-- on the 'System' domain; combined with the pipelined core's
+-- F → X hand-off, the first two observed samples have
+-- pcExec = 0 (reset value) before the first real instruction
+-- retires on sample 2.
 afterReset :: [a] -> [a]
-afterReset = P.drop 1
+afterReset = P.drop 2
 
 -- * Cases ----------------------------------------------------------
 
@@ -123,7 +128,7 @@ case_pcAdvance = do
         nop
         nop
         nop
-      trace = simulateProgram 6 prog
+      trace = simulateProgram 8 prog
       pcs = P.map (\(pc, _, _, _, _) -> pc) (afterReset trace)
   assertBool
     ("expected PC to advance 4 per cycle, got: " P.++ P.show pcs)
@@ -139,7 +144,7 @@ case_addiWb = do
         addi x1 x0 42
         addi x2 x0 7
         nop
-      trace = simulateProgram 5 prog
+      trace = simulateProgram 7 prog
       pcs = P.map (\(pc, _, _, _, _) -> pc) (afterReset trace)
   assertBool
     ("expected PC to advance 4 per cycle through ADDIs, got: " P.++ P.show pcs)
