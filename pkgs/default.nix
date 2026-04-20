@@ -34,12 +34,21 @@
     };
 
     inherit (inputs.alterade2-flake.packages.${system}) quartus-ii-13;
+    inherit (inputs.verilambda.packages.${system}) verilambda-shim-gen;
   in {
     _module.args.pkgs = pkgs;
 
     packages = {
       riski5-core = pkgs.callPackage ./riski5-core/package.nix {
         inherit quartus-ii-13;
+      };
+
+      # Verilator-compiled whole-SoC simulation library (Layer 1.75
+      # of docs/verification.md). Consumed by the riski5-hwsim-check
+      # derivation and, for local dev, by `cabal test --flag=hwsim`
+      # with RISKI5_SIM_LIB_DIR=$(readlink -f result)/lib.
+      riski5-sim = pkgs.callPackage ./riski5-sim/package.nix {
+        inherit quartus-ii-13 verilambda-shim-gen;
       };
 
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {

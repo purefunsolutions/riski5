@@ -53,245 +53,245 @@ in
     dontFixup = true;
 
     buildPhase = ''
-      runHook preBuild
+            runHook preBuild
 
-      export HOME=$(mktemp -d)
+            export HOME=$(mktemp -d)
 
-      # Clash emits Verilog into ./verilog/Top.topEntity/ based on
-      # the Synthesize annotation in app/Top.hs (named "riski5").
-      # Top.hs imports Hello from firmware/phase1/, so include that
-      # source root too. All per-feature language extensions live in
-      # the .hs files themselves; Clash just needs the GHC2021
-      # language standard and the two source roots.
-      #
-      # -XImplicitPrelude is explicit because Clash's CLI frontend
-      # defaults to NoImplicitPrelude (unlike cabal). Our modules
-      # use the `import Clash.Prelude hiding ((&&), ...)` pattern so
-      # the ISA constructors (And, Xor, ...) don't clash — that
-      # assumes Prelude is implicitly in scope to supply the hidden
-      # operators.
-      clash --verilog -fclash-hdlsyn Quartus \
-        -XGHC2021 -XImplicitPrelude \
-        -isrc -iapp -ifirmware/phase1 \
-        Top
+            # Clash emits Verilog into ./verilog/Top.topEntity/ based on
+            # the Synthesize annotation in app/Top.hs (named "riski5").
+            # Top.hs imports Hello from firmware/phase1/, so include that
+            # source root too. All per-feature language extensions live in
+            # the .hs files themselves; Clash just needs the GHC2021
+            # language standard and the two source roots.
+            #
+            # -XImplicitPrelude is explicit because Clash's CLI frontend
+            # defaults to NoImplicitPrelude (unlike cabal). Our modules
+            # use the `import Clash.Prelude hiding ((&&), ...)` pattern so
+            # the ISA constructors (And, Xor, ...) don't clash — that
+            # assumes Prelude is implicitly in scope to supply the hidden
+            # operators.
+            clash --verilog -fclash-hdlsyn Quartus \
+              -XGHC2021 -XImplicitPrelude \
+              -isrc -iapp -ifirmware/phase1 \
+              Top
 
-      # Quartus expects Riski5.qpf / Riski5.qsf / Riski5.sdc at the
-      # build root. The .qsf references verilog/Top.topEntity/riski5.v
-      # as its source file — matching what Clash just produced.
-      cp pkgs/riski5-core/Riski5.qpf .
-      cp pkgs/riski5-core/Riski5.qsf .
-      cp pkgs/riski5-core/Riski5.sdc .
+            # Quartus expects Riski5.qpf / Riski5.qsf / Riski5.sdc at the
+            # build root. The .qsf references verilog/Top.topEntity/riski5.v
+            # as its source file — matching what Clash just produced.
+            cp pkgs/riski5-core/Riski5.qpf .
+            cp pkgs/riski5-core/Riski5.qsf .
+            cp pkgs/riski5-core/Riski5.sdc .
 
-      # Generate the Altera JTAG UART IP. ip-generate reads the
-      # component's _hw.tcl plus user-supplied parameters and emits
-      # a synthesisable Verilog blob under ./altera-ip/jtag-uart/.
-      # Register the generated file as a VERILOG_FILE in the .qsf so
-      # Quartus links it with the rest of the design. The module
-      # name is riski5_jtag_uart (matches the --output-name below and
-      # the instantiation in riski5_top.v).
-      #
-      # Parameters:
-      #  - readBufferDepth=64, writeBufferDepth=64: match the real
-      #    Altera default (Nios II reference designs ship 64-byte
-      #    FIFOs). 64 bytes per direction = 128 bytes total, well
-      #    below the 1-M4K threshold so no block RAM is consumed.
-      mkdir -p altera-ip/jtag-uart
-      ip-generate \
-        --component-file=${quartus-ii-13}/share/altera13.0sp1/ip/altera/sopc_builder_ip/altera_avalon_jtag_uart/altera_avalon_jtag_uart_hw.tcl \
-        --output-directory=altera-ip/jtag-uart \
-        --output-name=riski5_jtag_uart \
-        --file-set=QUARTUS_SYNTH \
-        --language=VERILOG \
-        --system-info=DEVICE_FAMILY=CYCLONEII \
-        --system-info=DEVICE=EP2C35F672C6 \
-        --component-parameter=readBufferDepth=64 \
-        --component-parameter=writeBufferDepth=64
-      echo 'set_global_assignment -name VERILOG_FILE "altera-ip/jtag-uart/riski5_jtag_uart.v"' >> Riski5.qsf
+            # Generate the Altera JTAG UART IP. ip-generate reads the
+            # component's _hw.tcl plus user-supplied parameters and emits
+            # a synthesisable Verilog blob under ./altera-ip/jtag-uart/.
+            # Register the generated file as a VERILOG_FILE in the .qsf so
+            # Quartus links it with the rest of the design. The module
+            # name is riski5_jtag_uart (matches the --output-name below and
+            # the instantiation in riski5_top.v).
+            #
+            # Parameters:
+            #  - readBufferDepth=64, writeBufferDepth=64: match the real
+            #    Altera default (Nios II reference designs ship 64-byte
+            #    FIFOs). 64 bytes per direction = 128 bytes total, well
+            #    below the 1-M4K threshold so no block RAM is consumed.
+            mkdir -p altera-ip/jtag-uart
+            ip-generate \
+              --component-file=${quartus-ii-13}/share/altera13.0sp1/ip/altera/sopc_builder_ip/altera_avalon_jtag_uart/altera_avalon_jtag_uart_hw.tcl \
+              --output-directory=altera-ip/jtag-uart \
+              --output-name=riski5_jtag_uart \
+              --file-set=QUARTUS_SYNTH \
+              --language=VERILOG \
+              --system-info=DEVICE_FAMILY=CYCLONEII \
+              --system-info=DEVICE=EP2C35F672C6 \
+              --component-parameter=readBufferDepth=64 \
+              --component-parameter=writeBufferDepth=64
+            echo 'set_global_assignment -name VERILOG_FILE "altera-ip/jtag-uart/riski5_jtag_uart.v"' >> Riski5.qsf
 
-      # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
-      # instantiation. The Clash top now takes clk30 / rst30_n as
-      # inputs (rather than owning altpllSync internally), so this
-      # wrapper owns the PLL and the IP. Both the riski5 core and the
-      # JTAG UART share the same 40 MHz clock — one source of truth.
-      mkdir -p verilog/riski5_top
-      cat > verilog/riski5_top/riski5_top.v <<'EOF'
-// SPDX-License-Identifier: MIT OR BSD-3-Clause
-//
-// Top-level wrapper around the Clash-emitted `riski5` module.
-//
-// Responsibilities:
-//   1. Derive the 40 MHz core clock (clk30) from CLOCK_50 via a
-//      directly-instantiated altpll.
-//   2. Build rst30_n = KEY0 & pll_locked so the design holds reset
-//      until the PLL has locked and the user has released KEY0.
-//   3. Resolve the bidirectional SRAM_DQ bus from the core's
-//      SRAM_DQ_{O,OE,I} triplet.
-//   4. Instantiate the Altera altera_avalon_jtag_uart IP
-//      (module `riski5_jtag_uart`, produced by ip-generate earlier
-//      in this buildPhase) and bridge our 5-signal UART bus into
-//      its Avalon-MM slave interface.
-//
-// The JTAG UART rides the USB-Blaster JTAG tap — no external pins.
+            # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
+            # instantiation. The Clash top now takes clk30 / rst30_n as
+            # inputs (rather than owning altpllSync internally), so this
+            # wrapper owns the PLL and the IP. Both the riski5 core and the
+            # JTAG UART share the same 40 MHz clock — one source of truth.
+            mkdir -p verilog/riski5_top
+            cat > verilog/riski5_top/riski5_top.v <<'EOF'
+      // SPDX-License-Identifier: MIT OR BSD-3-Clause
+      //
+      // Top-level wrapper around the Clash-emitted `riski5` module.
+      //
+      // Responsibilities:
+      //   1. Derive the 40 MHz core clock (clk30) from CLOCK_50 via a
+      //      directly-instantiated altpll.
+      //   2. Build rst30_n = KEY0 & pll_locked so the design holds reset
+      //      until the PLL has locked and the user has released KEY0.
+      //   3. Resolve the bidirectional SRAM_DQ bus from the core's
+      //      SRAM_DQ_{O,OE,I} triplet.
+      //   4. Instantiate the Altera altera_avalon_jtag_uart IP
+      //      (module `riski5_jtag_uart`, produced by ip-generate earlier
+      //      in this buildPhase) and bridge our 5-signal UART bus into
+      //      its Avalon-MM slave interface.
+      //
+      // The JTAG UART rides the USB-Blaster JTAG tap — no external pins.
 
-module riski5_top (
-    input  wire        CLOCK_50,
-    input  wire        KEY0,
-    input  wire [3:0]  KEY,
-    input  wire [17:0] SW,
-    output wire [17:0] LEDR,
-    output wire [8:0]  LEDG,
-    output wire [7:0]  LCD_DATA,
-    output wire        LCD_RS,
-    output wire        LCD_RW,
-    output wire        LCD_EN,
-    output wire        LCD_ON,
-    output wire        LCD_BLON,
-    output wire [17:0] SRAM_ADDR,
-    inout  wire [15:0] SRAM_DQ,
-    output wire        SRAM_CE_N,
-    output wire        SRAM_OE_N,
-    output wire        SRAM_WE_N,
-    output wire        SRAM_UB_N,
-    output wire        SRAM_LB_N
-);
+      module riski5_top (
+          input  wire        CLOCK_50,
+          input  wire        KEY0,
+          input  wire [3:0]  KEY,
+          input  wire [17:0] SW,
+          output wire [17:0] LEDR,
+          output wire [8:0]  LEDG,
+          output wire [7:0]  LCD_DATA,
+          output wire        LCD_RS,
+          output wire        LCD_RW,
+          output wire        LCD_EN,
+          output wire        LCD_ON,
+          output wire        LCD_BLON,
+          output wire [17:0] SRAM_ADDR,
+          inout  wire [15:0] SRAM_DQ,
+          output wire        SRAM_CE_N,
+          output wire        SRAM_OE_N,
+          output wire        SRAM_WE_N,
+          output wire        SRAM_UB_N,
+          output wire        SRAM_LB_N
+      );
 
-  // ----- PLL: 50 MHz → 40 MHz ------------------------------------
-  wire [4:0] altpll_clk_vec;
-  wire       clk30 = altpll_clk_vec[0];
-  wire       pll_locked;
-  altpll u_altpll (
-      .areset (1'b0),
-      .inclk  ({1'b0, CLOCK_50}),
-      .clk    (altpll_clk_vec),
-      .locked (pll_locked),
-      .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
-      .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
-      .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
-      .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
-      .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
-      .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
-      .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
-      .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
-      .vcounderrange ()
-  );
-  defparam u_altpll.bandwidth_type        = "AUTO";
-  defparam u_altpll.clk0_divide_by        = 5;
-  defparam u_altpll.clk0_duty_cycle       = 50;
-  defparam u_altpll.clk0_multiply_by      = 3;
-  defparam u_altpll.clk0_phase_shift      = "0";
-  defparam u_altpll.compensate_clock      = "CLK0";
-  defparam u_altpll.inclk0_input_frequency = 20000;
-  defparam u_altpll.intended_device_family = "Cyclone II";
-  defparam u_altpll.lpm_type              = "altpll";
-  defparam u_altpll.operation_mode        = "NORMAL";
-  defparam u_altpll.port_clk0             = "PORT_USED";
-  defparam u_altpll.port_inclk0           = "PORT_USED";
-  defparam u_altpll.port_locked           = "PORT_USED";
-  defparam u_altpll.port_areset           = "PORT_USED";
-  defparam u_altpll.width_clock           = 5;
+        // ----- PLL: 50 MHz → 40 MHz ------------------------------------
+        wire [4:0] altpll_clk_vec;
+        wire       clk30 = altpll_clk_vec[0];
+        wire       pll_locked;
+        altpll u_altpll (
+            .areset (1'b0),
+            .inclk  ({1'b0, CLOCK_50}),
+            .clk    (altpll_clk_vec),
+            .locked (pll_locked),
+            .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
+            .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
+            .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
+            .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
+            .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
+            .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
+            .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
+            .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
+            .vcounderrange ()
+        );
+        defparam u_altpll.bandwidth_type        = "AUTO";
+        defparam u_altpll.clk0_divide_by        = 5;
+        defparam u_altpll.clk0_duty_cycle       = 50;
+        defparam u_altpll.clk0_multiply_by      = 3;
+        defparam u_altpll.clk0_phase_shift      = "0";
+        defparam u_altpll.compensate_clock      = "CLK0";
+        defparam u_altpll.inclk0_input_frequency = 20000;
+        defparam u_altpll.intended_device_family = "Cyclone II";
+        defparam u_altpll.lpm_type              = "altpll";
+        defparam u_altpll.operation_mode        = "NORMAL";
+        defparam u_altpll.port_clk0             = "PORT_USED";
+        defparam u_altpll.port_inclk0           = "PORT_USED";
+        defparam u_altpll.port_locked           = "PORT_USED";
+        defparam u_altpll.port_areset           = "PORT_USED";
+        defparam u_altpll.width_clock           = 5;
 
-  // Active-low reset: asserted (low) until the PLL locks AND KEY0
-  // has been released (KEY0 is active-low on the DE2).
-  wire rst30_n = KEY0 & pll_locked;
+        // Active-low reset: asserted (low) until the PLL locks AND KEY0
+        // has been released (KEY0 is active-low on the DE2).
+        wire rst30_n = KEY0 & pll_locked;
 
-  // ----- Bidirectional SRAM DQ resolution -----------------------
-  wire [15:0] sram_dq_o;
-  wire        sram_dq_oe;
-  assign SRAM_DQ = sram_dq_oe ? sram_dq_o : 16'bz;
+        // ----- Bidirectional SRAM DQ resolution -----------------------
+        wire [15:0] sram_dq_o;
+        wire        sram_dq_oe;
+        assign SRAM_DQ = sram_dq_oe ? sram_dq_o : 16'bz;
 
-  // ----- UART bus tap ⇄ Altera IP Avalon-MM slave ---------------
-  // Our bus carries byte addresses; the IP's av_address is 1 bit
-  // (word offset — 0 = DATA, 1 = CONTROL) because reads/writes are
-  // always 32-bit. Pick bit [2] of the byte address to produce that.
-  // Altera's Avalon-MM uses active-low read/write strobes, so we
-  // invert our active-high sel/be/re to get those.
-  wire        uart_sel;
-  wire [31:0] uart_addr;
-  wire [31:0] uart_wdata;
-  wire [3:0]  uart_be;
-  wire        uart_re;
-  wire [31:0] uart_rdata;
+        // ----- UART bus tap ⇄ Altera IP Avalon-MM slave ---------------
+        // Our bus carries byte addresses; the IP's av_address is 1 bit
+        // (word offset — 0 = DATA, 1 = CONTROL) because reads/writes are
+        // always 32-bit. Pick bit [2] of the byte address to produce that.
+        // Altera's Avalon-MM uses active-low read/write strobes, so we
+        // invert our active-high sel/be/re to get those.
+        wire        uart_sel;
+        wire [31:0] uart_addr;
+        wire [31:0] uart_wdata;
+        wire [3:0]  uart_be;
+        wire        uart_re;
+        wire [31:0] uart_rdata;
 
-  wire [31:0] jtag_uart_readdata;
-  wire        jtag_uart_waitrequest;
-  wire        jtag_uart_irq;
-  wire        jtag_uart_dataavailable;
-  wire        jtag_uart_readyfordata;
-  wire        jtag_uart_wr       = uart_sel & (uart_be != 4'b0);
-  wire        jtag_uart_rd       = uart_sel & uart_re;
-  wire        jtag_uart_write_n  = ~jtag_uart_wr;
-  wire        jtag_uart_read_n   = ~jtag_uart_rd;
+        wire [31:0] jtag_uart_readdata;
+        wire        jtag_uart_waitrequest;
+        wire        jtag_uart_irq;
+        wire        jtag_uart_dataavailable;
+        wire        jtag_uart_readyfordata;
+        wire        jtag_uart_wr       = uart_sel & (uart_be != 4'b0);
+        wire        jtag_uart_rd       = uart_sel & uart_re;
+        wire        jtag_uart_write_n  = ~jtag_uart_wr;
+        wire        jtag_uart_read_n   = ~jtag_uart_rd;
 
-  riski5_jtag_uart u_jtag_uart (
-      .clk            (clk30),
-      .rst_n          (rst30_n),
-      .av_chipselect  (uart_sel),
-      .av_address     (uart_addr[2]),
-      .av_read_n      (jtag_uart_read_n),
-      .av_write_n     (jtag_uart_write_n),
-      .av_writedata   (uart_wdata),
-      .av_readdata    (jtag_uart_readdata),
-      .av_waitrequest (jtag_uart_waitrequest),
-      .av_irq         (jtag_uart_irq),
-      .dataavailable  (jtag_uart_dataavailable),
-      .readyfordata   (jtag_uart_readyfordata)
-  );
-  // Feed read-data back to the core. UART_READY is the complement
-  // of av_waitrequest: the Altera IP asserts waitrequest for the
-  // first cycle of every Avalon-MM transaction while it latches
-  // av_writedata one cycle later than the master presents it. Our
-  // SoC's stall mechanism honours the low pulse so the core holds
-  // uart_wdata stable at the cycle the IP's TX FIFO captures it.
-  assign uart_rdata  = jtag_uart_readdata;
-  wire   uart_ready  = ~jtag_uart_waitrequest;
+        riski5_jtag_uart u_jtag_uart (
+            .clk            (clk30),
+            .rst_n          (rst30_n),
+            .av_chipselect  (uart_sel),
+            .av_address     (uart_addr[2]),
+            .av_read_n      (jtag_uart_read_n),
+            .av_write_n     (jtag_uart_write_n),
+            .av_writedata   (uart_wdata),
+            .av_readdata    (jtag_uart_readdata),
+            .av_waitrequest (jtag_uart_waitrequest),
+            .av_irq         (jtag_uart_irq),
+            .dataavailable  (jtag_uart_dataavailable),
+            .readyfordata   (jtag_uart_readyfordata)
+        );
+        // Feed read-data back to the core. UART_READY is the complement
+        // of av_waitrequest: the Altera IP asserts waitrequest for the
+        // first cycle of every Avalon-MM transaction while it latches
+        // av_writedata one cycle later than the master presents it. Our
+        // SoC's stall mechanism honours the low pulse so the core holds
+        // uart_wdata stable at the cycle the IP's TX FIFO captures it.
+        assign uart_rdata  = jtag_uart_readdata;
+        wire   uart_ready  = ~jtag_uart_waitrequest;
 
-  // ----- Clash riski5 core --------------------------------------
-  riski5 u_riski5 (
-      .CLOCK_30    (clk30),
-      .RESET_30_N  (rst30_n),
-      .KEY         (KEY),
-      .SW          (SW),
-      .SRAM_DQ_I   (SRAM_DQ),
-      .UART_RDATA  (uart_rdata),
-      .UART_READY  (uart_ready),
-      .LEDR        (LEDR),
-      .LEDG        (LEDG),
-      .LCD_DATA    (LCD_DATA),
-      .LCD_RS      (LCD_RS),
-      .LCD_RW      (LCD_RW),
-      .LCD_EN      (LCD_EN),
-      .LCD_ON      (LCD_ON),
-      .LCD_BLON    (LCD_BLON),
-      .SRAM_ADDR   (SRAM_ADDR),
-      .SRAM_DQ_O   (sram_dq_o),
-      .SRAM_DQ_OE  (sram_dq_oe),
-      .SRAM_CE_N   (SRAM_CE_N),
-      .SRAM_OE_N   (SRAM_OE_N),
-      .SRAM_WE_N   (SRAM_WE_N),
-      .SRAM_UB_N   (SRAM_UB_N),
-      .SRAM_LB_N   (SRAM_LB_N),
-      .UART_SEL    (uart_sel),
-      .UART_ADDR   (uart_addr),
-      .UART_WDATA  (uart_wdata),
-      .UART_BE     (uart_be),
-      .UART_RE     (uart_re)
-  );
+        // ----- Clash riski5 core --------------------------------------
+        riski5 u_riski5 (
+            .CLOCK_30    (clk30),
+            .RESET_30_N  (rst30_n),
+            .KEY         (KEY),
+            .SW          (SW),
+            .SRAM_DQ_I   (SRAM_DQ),
+            .UART_RDATA  (uart_rdata),
+            .UART_READY  (uart_ready),
+            .LEDR        (LEDR),
+            .LEDG        (LEDG),
+            .LCD_DATA    (LCD_DATA),
+            .LCD_RS      (LCD_RS),
+            .LCD_RW      (LCD_RW),
+            .LCD_EN      (LCD_EN),
+            .LCD_ON      (LCD_ON),
+            .LCD_BLON    (LCD_BLON),
+            .SRAM_ADDR   (SRAM_ADDR),
+            .SRAM_DQ_O   (sram_dq_o),
+            .SRAM_DQ_OE  (sram_dq_oe),
+            .SRAM_CE_N   (SRAM_CE_N),
+            .SRAM_OE_N   (SRAM_OE_N),
+            .SRAM_WE_N   (SRAM_WE_N),
+            .SRAM_UB_N   (SRAM_UB_N),
+            .SRAM_LB_N   (SRAM_LB_N),
+            .UART_SEL    (uart_sel),
+            .UART_ADDR   (uart_addr),
+            .UART_WDATA  (uart_wdata),
+            .UART_BE     (uart_be),
+            .UART_RE     (uart_re)
+        );
 
-endmodule
-EOF
-      echo 'set_global_assignment -name VERILOG_FILE "verilog/riski5_top/riski5_top.v"' >> Riski5.qsf
+      endmodule
+      EOF
+            echo 'set_global_assignment -name VERILOG_FILE "verilog/riski5_top/riski5_top.v"' >> Riski5.qsf
 
-      quartus_sh --flow compile Riski5 || {
-        echo ""
-        echo "NOTE: Quartus flow did not close cleanly."
-        echo "For first bring-up this is typically fine as long as a"
-        echo ".sof was produced; pin-assignment TODOs in the .qsf lead"
-        echo "to warnings rather than hard failures. Check output_files/"
-        echo "and the reports below."
-        echo ""
-      }
+            quartus_sh --flow compile Riski5 || {
+              echo ""
+              echo "NOTE: Quartus flow did not close cleanly."
+              echo "For first bring-up this is typically fine as long as a"
+              echo ".sof was produced; pin-assignment TODOs in the .qsf lead"
+              echo "to warnings rather than hard failures. Check output_files/"
+              echo "and the reports below."
+              echo ""
+            }
 
-      runHook postBuild
+            runHook postBuild
     '';
 
     installPhase = ''

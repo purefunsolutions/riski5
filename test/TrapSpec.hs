@@ -97,13 +97,15 @@ runProgram program nCycles =
          in P.fromIntegral w
       go :: (HiddenClockResetEnable CP.System) => Signal CP.System (BitVector 32, Maybe (BitVector 5, BitVector 32))
       go =
-        let -- imem driven by pcFetch; 1-cycle register delay matches
-            -- the pipelined core's sync-read expectation. Writeback
-            -- trace paired with pcExec.
-            imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
-            dmem = CP.pure 0
-            (pcFetchS, pcExecS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
-         in bundle (pcExecS, wbS)
+        let
+          -- imem driven by pcFetch; 1-cycle register delay matches
+          -- the pipelined core's sync-read expectation. Writeback
+          -- trace paired with pcExec.
+          imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
+          dmem = CP.pure 0
+          (pcFetchS, pcExecS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
+         in
+          bundle (pcExecS, wbS)
    in sampleN @CP.System (nCycles P.+ 2) $
         -- +2 for Clash System domain's reset-cycle + pipeline warmup.
         withClockResetEnable @CP.System clockGen resetGen enableGen go

@@ -55,11 +55,13 @@ it is talking to.
 -}
 data JtagUartBus = JtagUartBus
   { ubSel :: Bool
-  -- ^ address-decoded select: high iff the current bus transaction
-  -- targets the UART MMIO window
+  {- ^ address-decoded select: high iff the current bus transaction
+  targets the UART MMIO window
+  -}
   , ubAddr :: BitVector 32
-  -- ^ byte address (caller ensures this is in the UART window when
-  -- @ubSel@ is high)
+  {- ^ byte address (caller ensures this is in the UART window when
+  @ubSel@ is high)
+  -}
   , ubWdata :: BitVector 32
   -- ^ write data (low 8 bits meaningful for DATA writes)
   , ubBe :: BitVector 4
@@ -83,7 +85,6 @@ SoC as this @ready@ signal so the bus-level stall logic in
 sees a single-cycle path; the real IP in the Verilog wrapper drives
 it properly.
 -}
-
 
 {- |
 Simulation-only functional model of the JTAG UART. The

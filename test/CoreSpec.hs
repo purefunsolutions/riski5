@@ -109,12 +109,13 @@ simulateProgram n program =
    in
     samples
 
--- | Strip reset + pipeline-warmup cycles from the head of a trace.
--- Clash's default 'resetGen' asserts reset for more than one cycle
--- on the 'System' domain; combined with the pipelined core's
--- F → X hand-off, the first two observed samples have
--- pcExec = 0 (reset value) before the first real instruction
--- retires on sample 2.
+{- | Strip reset + pipeline-warmup cycles from the head of a trace.
+Clash's default 'resetGen' asserts reset for more than one cycle
+on the 'System' domain; combined with the pipelined core's
+F → X hand-off, the first two observed samples have
+pcExec = 0 (reset value) before the first real instruction
+retires on sample 2.
+-}
 afterReset :: [a] -> [a]
 afterReset = P.drop 2
 

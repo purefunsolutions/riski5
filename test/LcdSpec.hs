@@ -85,13 +85,15 @@ smallParams =
     , paramLongWait = 5
     }
 
--- | One simulated cycle of inputs (per-field lists avoid the need for
--- an NFDataX instance over a bundle type).
+{- | One simulated cycle of inputs (per-field lists avoid the need for
+an NFDataX instance over a bundle type).
+-}
 type Drive = (Bool, BitVector 32, BitVector 32, BitVector 4, Bool)
 
--- | Idle drive reads STATUS every cycle: 'dSel=True', @addr=STATUS@,
--- @be=0@, @read=True@. Good for observing busy + irq_pending
--- continuously without injecting spurious writes.
+{- | Idle drive reads STATUS every cycle: 'dSel=True', @addr=STATUS@,
+@be=0@, @read=True@. Good for observing busy + irq_pending
+continuously without injecting spurious writes.
+-}
 idle :: Drive
 idle = (True, lcdBase + 8, 0, 0, True)
 
@@ -154,9 +156,13 @@ case_userPulseWidth :: Assertion
 case_userPulseWidth = do
   -- Same short startup; we issue a DATA write at cycle 200 (safely after boot).
   let writeCycle = 200 :: Int
-      n = writeCycle + 1 + P.fromIntegral (paramSetupCycles smallParams)
-            + P.fromIntegral (paramPulseCycles smallParams)
-            + P.fromIntegral (paramShortWait smallParams) + 5
+      n =
+        writeCycle
+          + 1
+          + P.fromIntegral (paramSetupCycles smallParams)
+          + P.fromIntegral (paramPulseCycles smallParams)
+          + P.fromIntegral (paramShortWait smallParams)
+          + 5
       dataAddr = lcdBase + 0
       drives = P.replicate writeCycle idle P.++ [writeAt dataAddr 0xAB]
       trace = simLcd smallParams n drives

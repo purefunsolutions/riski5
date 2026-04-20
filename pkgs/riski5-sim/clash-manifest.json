@@ -1,5 +1,5 @@
 {
-    "_comment": "Hand-written manifest for riski5_sim_top. Verilambda's shim-gen consumes this to produce the C++ shim that exposes each port as a field in verilambda_riski5_sim_top_state_t. Keep in sync with verilog/riski5_sim_top.v.",
+    "_comment": "Hand-written manifest for riski5_sim_top. Verilambda's shim-gen consumes this to produce the C++ shim that exposes each port as a field in verilambda_riski5_sim_top_state_t. Keep in sync with verilog/riski5_sim_top.v. Port order is intentionally 32-bit, then 16-bit, then 8-bit so the emitted C struct has no internal padding — that keeps the Haskell-side Storable layout (see test/SocHwSim.hs) a flat sequence of peekByteOff offsets the compiler can verify against sizeOf.",
     "components": [
         "riski5_sim_top"
     ],
@@ -26,30 +26,31 @@
     "top_component": {
         "name": "riski5_sim_top",
         "ports_flat": [
+            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "SW",            "type_name": "[17:0]", "width": 18 },
+            { "direction": "out",                    "is_clock": false, "name": "LEDR",          "type_name": "[17:0]", "width": 18 },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_ADDR",     "type_name": "[17:0]", "width": 18 },
+
+            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "SRAM_DQ_I",     "type_name": "[15:0]", "width": 16 },
+            { "direction": "out",                    "is_clock": false, "name": "LEDG",          "type_name": "[8:0]",  "width": 9  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_DQ_O",     "type_name": "[15:0]", "width": 16 },
+
             { "direction": "in",  "domain": "Dom30", "is_clock": true,  "name": "clk",           "type_name": "",       "width": 1  },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "rst_n",         "type_name": "",       "width": 1  },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "KEY",           "type_name": "[3:0]",  "width": 4  },
-            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "SW",            "type_name": "[17:0]", "width": 18 },
-            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "SRAM_DQ_I",     "type_name": "[15:0]", "width": 16 },
-
-            { "direction": "out", "is_clock": false, "name": "LEDR",          "type_name": "[17:0]", "width": 18 },
-            { "direction": "out", "is_clock": false, "name": "LEDG",          "type_name": "[8:0]",  "width": 9  },
-            { "direction": "out", "is_clock": false, "name": "LCD_DATA",      "type_name": "[7:0]",  "width": 8  },
-            { "direction": "out", "is_clock": false, "name": "LCD_RS",        "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "LCD_RW",        "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "LCD_EN",        "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "LCD_ON",        "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "LCD_BLON",      "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_ADDR",     "type_name": "[17:0]", "width": 18 },
-            { "direction": "out", "is_clock": false, "name": "SRAM_DQ_O",     "type_name": "[15:0]", "width": 16 },
-            { "direction": "out", "is_clock": false, "name": "SRAM_DQ_OE",    "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_CE_N",     "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_OE_N",     "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_WE_N",     "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_UB_N",     "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "SRAM_LB_N",     "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "UART_TX_VALID", "type_name": "",       "width": 1  },
-            { "direction": "out", "is_clock": false, "name": "UART_TX_BYTE",  "type_name": "[7:0]",  "width": 8  }
+            { "direction": "out",                    "is_clock": false, "name": "LCD_DATA",      "type_name": "[7:0]",  "width": 8  },
+            { "direction": "out",                    "is_clock": false, "name": "LCD_RS",        "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "LCD_RW",        "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "LCD_EN",        "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "LCD_ON",        "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "LCD_BLON",      "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_DQ_OE",    "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_CE_N",     "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_OE_N",     "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_WE_N",     "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_UB_N",     "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "SRAM_LB_N",     "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "UART_TX_VALID", "type_name": "",       "width": 1  },
+            { "direction": "out",                    "is_clock": false, "name": "UART_TX_BYTE",  "type_name": "[7:0]",  "width": 8  }
         ]
     },
     "version": "unstable"

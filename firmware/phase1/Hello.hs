@@ -123,10 +123,11 @@ loadAddr rd addr = li rd (P.fromIntegral addr)
 
 -- * LCD helpers ----------------------------------------------------
 
--- | Spin on the LCD controller's busy flag (STATUS bit 0).
--- The controller runs its own Vcc-settle / wake / init sequence
--- at reset and enforces per-command timing internally, so this is
--- the only synchronisation firmware needs.
+{- | Spin on the LCD controller's busy flag (STATUS bit 0).
+The controller runs its own Vcc-settle / wake / init sequence
+at reset and enforces per-command timing internally, so this is
+the only synchronisation firmware needs.
+-}
 lcdWait :: Asm ()
 lcdWait = do
   waitL <- label

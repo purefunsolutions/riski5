@@ -38,6 +38,7 @@ module Riski5.Asm (
   placeAt,
 
   -- * Real instruction wrappers — full RV32I + Zifencei + Zicsr +
+
   -- M-mode coverage (every constructor in 'Riski5.ISA.Instr').
 
   -- ** Upper-immediate / jumps
@@ -416,8 +417,9 @@ csrrs rd rs1 csr = emit (Csrrs rd rs1 csr)
 csrrc :: Reg -> Reg -> Csr -> Asm ()
 csrrc rd rs1 csr = emit (Csrrc rd rs1 csr)
 
--- | @CSRRWI rd, csr, uimm5@ — atomic read-write with a 5-bit
--- zero-extended immediate.
+{- | @CSRRWI rd, csr, uimm5@ — atomic read-write with a 5-bit
+zero-extended immediate.
+-}
 csrrwi :: Reg -> BitVector 5 -> Csr -> Asm ()
 csrrwi rd uimm csr = emit (Csrrwi rd uimm csr)
 

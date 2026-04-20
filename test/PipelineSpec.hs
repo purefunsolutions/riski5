@@ -93,10 +93,11 @@ tests =
 
 type ProgSize = 64
 
--- | Run a program through the pipelined core with an async-Vec imem
--- wrapped in a 1-cycle register (matching the pipelined core's
--- sync-read expectation). Returns the @(pcExec, writeback, dmemAddr,
--- dmemBe)@ trace.
+{- | Run a program through the pipelined core with an async-Vec imem
+wrapped in a 1-cycle register (matching the pipelined core's
+sync-read expectation). Returns the @(pcExec, writeback, dmemAddr,
+dmemBe)@ trace.
+-}
 run ::
   Asm () ->
   Int ->
@@ -129,8 +130,9 @@ run prog nCycles =
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go
 
--- | Like 'run', but the third argument is the per-cycle stall pattern.
--- Cycles past the end of the pattern see @stall = False@.
+{- | Like 'run', but the third argument is the per-cycle stall pattern.
+Cycles past the end of the pattern see @stall = False@.
+-}
 runWithStall ::
   Asm () ->
   Int ->
@@ -166,8 +168,9 @@ runWithStall prog nCycles stallPattern =
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go
 
--- | Accumulate register-file state from a trace, skipping the reset +
--- pipeline-warmup cycles at the head.
+{- | Accumulate register-file state from a trace, skipping the reset +
+pipeline-warmup cycles at the head.
+-}
 regsFrom ::
   [(BitVector 32, Maybe (BitVector 5, BitVector 32), BitVector 32, BitVector 4)] ->
   Map.Map Word32 Word32
@@ -196,7 +199,8 @@ case_branchSquash = do
         -- BEQ x0 x0 (always taken). The following ADDI would set
         -- x1=99 if the bubble didn't squash it.
         beq x0 x0 skipL
-        addi x1 x0 99 -- *must* be squashed
+        addi x1 x0 99
+        -- \*must* be squashed
         placeAt skipL
         addi x1 x0 42 -- executes after the bubble
       trace = run prog 12
@@ -359,10 +363,10 @@ case_stallThroughSquash = do
         addi x1 x0 99 -- MUST NOT retire, even through a stall
         placeAt skipL
         addi x1 x0 7
-  -- Stall pattern: let the branch execute at cycle 2 (after reset
-  -- + warmup), then raise stall from cycle 3 for three cycles (the
-  -- squash cycle plus two bonus stalled cycles). Stall drops at
-  -- cycle 6.
+      -- Stall pattern: let the branch execute at cycle 2 (after reset
+      -- + warmup), then raise stall from cycle 3 for three cycles (the
+      -- squash cycle plus two bonus stalled cycles). Stall drops at
+      -- cycle 6.
       stallPattern = [P.False, P.False, P.False] P.++ P.replicate 3 P.True
       trace = runWithStall prog 15 stallPattern
       wbs = P.drop 2 [wb | (_, wb, _, _) <- trace]

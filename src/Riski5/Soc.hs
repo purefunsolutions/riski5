@@ -78,22 +78,25 @@ data SocIn = SocIn
   { siSwitches :: BitVector 18
   , siKeys :: BitVector 4
   , siSramDqIn :: BitVector 16
-  -- ^ What the off-chip SRAM is currently driving on @SRAM_DQ@.
-  -- Read combinationally on the cycle the controller is reading
-  -- (i.e. @SRAM_OE_N == 0@); ignored otherwise. In simulation,
-  -- the test harness wraps the SoC with 'Riski5.Sram.sramSim' to
-  -- provide a model of the off-chip chip.
+  {- ^ What the off-chip SRAM is currently driving on @SRAM_DQ@.
+  Read combinationally on the cycle the controller is reading
+  (i.e. @SRAM_OE_N == 0@); ignored otherwise. In simulation,
+  the test harness wraps the SoC with 'Riski5.Sram.sramSim' to
+  provide a model of the off-chip chip.
+  -}
   , siUartRdata :: BitVector 32
-  -- ^ Read data from the UART slave (either the Altera IP on
-  -- hardware or 'jtagUartSim' in simulation). Driven combinationally
-  -- from 'soUartBus' within the same cycle.
+  {- ^ Read data from the UART slave (either the Altera IP on
+  hardware or 'jtagUartSim' in simulation). Driven combinationally
+  from 'soUartBus' within the same cycle.
+  -}
   , siUartReady :: Bool
-  -- ^ Complement of the Altera IP's @av_waitrequest@. The IP
-  -- asserts waitrequest on the first cycle of every transaction
-  -- (it latches write-data one cycle after the master presents it);
-  -- until it deasserts we must hold bus signals. The 'jtagUartSim'
-  -- model returns constant @True@ because the sim model has no
-  -- registered write-data path.
+  {- ^ Complement of the Altera IP's @av_waitrequest@. The IP
+  asserts waitrequest on the first cycle of every transaction
+  (it latches write-data one cycle after the master presents it);
+  until it deasserts we must hold bus signals. The 'jtagUartSim'
+  model returns constant @True@ because the sim model has no
+  registered write-data path.
+  -}
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -106,16 +109,18 @@ data SocOut = SocOut
   , soLedG :: BitVector 9
   , soLcdPins :: LcdPins
   , soLcdIrq :: Bool
-  -- ^ Rising on the busy-falling edge of the LCD controller, held
-  -- until firmware writes-1-to-clear STATUS[1]. Wire through the
-  -- phase-3 PLIC when we have one; today the simulation harness
-  -- watches it so tests don't need to spin on the busy flag.
+  {- ^ Rising on the busy-falling edge of the LCD controller, held
+  until firmware writes-1-to-clear STATUS[1]. Wire through the
+  phase-3 PLIC when we have one; today the simulation harness
+  watches it so tests don't need to spin on the busy flag.
+  -}
   , soSramPins :: SramPins
   , soUartBus :: JtagUartBus
-  -- ^ Live bus tap for the UART slave. On hardware, routed through
-  -- 'app/Top.hs' to the Altera JTAG UART IP; in simulation,
-  -- 'socSim' pipes it into 'jtagUartSim' and feeds the resulting
-  -- read-data back into 'siUartRdata'.
+  {- ^ Live bus tap for the UART slave. On hardware, routed through
+  'app/Top.hs' to the Altera JTAG UART IP; in simulation,
+  'socSim' pipes it into 'jtagUartSim' and feeds the resulting
+  read-data back into 'siUartRdata'.
+  -}
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)

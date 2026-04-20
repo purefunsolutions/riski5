@@ -32,9 +32,16 @@
   python3,
   verilambda-shim-gen,
   haskellPackages,
-  clash-ghc,
-  clash-prelude,
-  clash-lib,
+  # The IP catalog ships with the quartus-ii-13 derivation (see
+  # alterade2-flake). We only need the JTAG UART IP in the sim
+  # derivation, so the caller passes in the ip-generate-produced
+  # riski5_jtag_uart.v as a build-time dependency (to avoid needing
+  # Quartus in every simulation consumer).
+  #
+  # For the first cut we invoke ip-generate directly here, same as
+  # riski5-core does. Later we may factor this into a shared
+  # derivation.
+  quartus-ii-13,
 }: let
   # Clash build: emit riski5.v from our Haskell sources. Same flow
   # as pkgs/riski5-core/package.nix's first phase, reused here so
@@ -47,21 +54,7 @@
       containers
       mtl
     ]);
-
-  # The IP catalog ships with the quartus-ii-13 derivation (see
-  # alterade2-flake). We only need the JTAG UART IP in the sim
-  # derivation, so the caller passes in the ip-generate-produced
-  # riski5_jtag_uart.v as a build-time dependency (to avoid needing
-  # Quartus in every simulation consumer).
-  #
-  # For the first cut we invoke ip-generate directly here, same as
-  # riski5-core does. Later we may factor this into a shared
-  # derivation.
-  quartus-ii-13 ? null,
 in
-  assert lib.asserts.assertMsg
-    (quartus-ii-13 != null)
-    "riski5-sim needs quartus-ii-13 to invoke ip-generate for the JTAG UART IP";
   stdenv.mkDerivation {
     pname = "riski5-sim";
     version = "0.1.0";
@@ -77,11 +70,17 @@ in
         && !(lib.hasPrefix ".git" base);
     };
 
+    # ghcWithClash FIRST: it provides `clash` + its plugin packages
+    # (ghc-typelits-knownnat, -natnormalise, -extra) via
+    # ghcWithPackages. verilambda-shim-gen is also a Haskell exe;
+    # if it lands in front of ghcWithClash its package DB shadows
+    # ours and Clash fails with
+    # `Could not find module GHC.TypeLits.KnownNat.Solver`.
     nativeBuildInputs = [
+      ghcWithClash
       verilator
       python3
       verilambda-shim-gen
-      ghcWithClash
       quartus-ii-13
     ];
 
@@ -96,7 +95,21 @@ in
       rm -rf "$BUILD"
       mkdir -p "$BUILD/cbits" "$BUILD/verilog"
 
-      # 1. Generate the JTAG UART IP Verilog. Same args as
+      # 1. Clash → riski5.v. Identical invocation to riski5-core.
+      #    IMPORTANT: must run BEFORE ip-generate. The Altera
+      #    ip-generate launches a Perl subprocess through the
+      #    bubblewrap-wrapped quartus-ii-13 FHS env, which leaks
+      #    stale GHC_PACKAGE_PATH / PERL5LIB / similar search-path
+      #    variables into the outer shell (an Altera FHS script
+      #    quirk; same behaviour is visible with a non-Nix Quartus
+      #    install as well). Running clash first avoids GHC ever
+      #    seeing the polluted environment.
+      clash --verilog -fclash-hdlsyn Quartus \
+        -XGHC2021 -XImplicitPrelude \
+        -isrc -iapp -ifirmware/phase1 \
+        Top
+
+      # 2. Generate the JTAG UART IP Verilog. Same args as
       #    pkgs/riski5-core/package.nix; parameters MUST match so
       #    the sim and synthesis versions of the IP agree.
       mkdir -p altera-ip/jtag-uart
@@ -110,12 +123,6 @@ in
         --system-info=DEVICE=EP2C35F672C6 \
         --component-parameter=readBufferDepth=64 \
         --component-parameter=writeBufferDepth=64
-
-      # 2. Clash → riski5.v. Identical invocation to riski5-core.
-      clash --verilog -fclash-hdlsyn Quartus \
-        -XGHC2021 -XImplicitPrelude \
-        -isrc -iapp -ifirmware/phase1 \
-        Top
 
       # 3. Assemble the Verilator input tree: all Verilog files +
       #    the manifest + the sim-top wrapper.
@@ -136,8 +143,22 @@ in
         --out-dir cbits
 
       # 5. verilator compiles every .v file + the shim into a lib.
+      #
+      # UNOPTFLAT fires because the Clash-emitted core has a
+      # combinational path from uart_wdata/uart_be (derived from
+      # the decoded store-instruction) back through the bus mux
+      # — Verilator's strict circular-comb detector flags this
+      # even though in practice the path is sequentially broken
+      # by PC+reg registers. Pipelining the core (phase 2+) will
+      # eliminate the warning naturally.
+      #
+      # We no longer need `--language 1364-2005` because the
+      # SystemVerilog-reserved-keyword collisions that appeared
+      # in Clash's first emitted Verilog (a `byte` signal from
+      # Riski5.Lcd + Riski5.Core) have been renamed at source
+      # — see the Haskell-side comments in both modules.
       verilator --cc --build --trace \
-        -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+        -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
         -CFLAGS -fPIC \
         --top-module riski5_sim_top \
         --Mdir obj_dir \

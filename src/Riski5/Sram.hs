@@ -87,8 +87,9 @@ data SramPins = SramPins
   { sramAddr :: BitVector 18
   , sramDqOut :: BitVector 16
   , sramDqOe :: Bool
-  -- ^ When 'True' the FPGA drives 'sramDqOut'; otherwise 'sramDqOut'
-  -- is ignored and the SRAM owns the bus.
+  {- ^ When 'True' the FPGA drives 'sramDqOut'; otherwise 'sramDqOut'
+  is ignored and the SRAM owns the bus.
+  -}
   , sramCeN :: Bit
   , sramOeN :: Bit
   , sramWeN :: Bit
@@ -131,11 +132,12 @@ sram ::
   Signal dom Bool ->
   -- | data driven by the SRAM on the previous half-cycle
   Signal dom (BitVector 16) ->
-  -- | @(rdata, pins, ready)@. @ready@ is False on the first cycle
-  -- of a read with a new address (the controller has issued
-  -- @SRAM_OE_N@ low but the registered @SRAM_DQ_I@ doesn't yet
-  -- reflect this address); the core uses it to stall. True for
-  -- writes, idles, and subsequent cycles of the same-address read.
+  {- | @(rdata, pins, ready)@. @ready@ is False on the first cycle
+  of a read with a new address (the controller has issued
+  @SRAM_OE_N@ low but the registered @SRAM_DQ_I@ doesn't yet
+  reflect this address); the core uses it to stall. True for
+  writes, idles, and subsequent cycles of the same-address read.
+  -}
   ( Signal dom (BitVector 32)
   , Signal dom SramPins
   , Signal dom Bool
@@ -176,7 +178,7 @@ sram selS addrS wdataS beS _renS sramDqInRawS =
     ( \op cur prev prevRead ->
         case op of
           SramOpIdle -> True
-          SramOpWrite{} -> True
+          SramOpWrite {} -> True
           SramOpRead -> prevRead && cur == prev
     )
       <$> sramOpS

@@ -90,9 +90,10 @@ core ::
   Signal dom (BitVector 32) ->
   -- | data memory read response (assumed same-cycle read)
   Signal dom (BitVector 32) ->
-  -- | back-pressure: when 'True', freeze all sequential state (PC,
-  -- CSR, regfile write). Lets multi-cycle slaves (e.g. SRAM) stall
-  -- the core until their data is valid.
+  {- | back-pressure: when 'True', freeze all sequential state (PC,
+  CSR, regfile write). Lets multi-cycle slaves (e.g. SRAM) stall
+  the core until their data is valid.
+  -}
   Signal dom Bool ->
   {- | @(pcFetch, pcExec, dmemAddr, dmemWdata, dmemByteEn,
   dmemReadEn, writeBack)@.
@@ -206,13 +207,26 @@ core imemData dmemRData stallS =
       <*> squashNext
       <*> writeBack
 
-  -- Suppress memory-write byte-enable on stall or squash so a
-  -- stalled store doesn't double-commit and a squashed fake-store
-  -- doesn't commit at all.
+  -- Suppress memory-write byte-enable only on squash. A squashed
+  -- fake-store must not commit. But we MUST NOT gate on stall
+  -- too: an Avalon-MM-style slave (e.g. the Altera JTAG UART IP)
+  -- drives @waitrequest@ combinationally as a function of the
+  -- master's @chipselect@ + @write_n@ + (be != 0), and the master
+  -- stalls as a function of @waitrequest@. Gating be=0 while
+  -- stalled therefore introduces the oscillation
+  --   stall=1 → be=0 → waitrequest=0 → stall=0 → be=be_native
+  --          → waitrequest=1 → stall=1 → …
+  -- — a combinational loop Verilator flags as UNOPTFLAT. The
+  -- Avalon-MM protocol already guarantees single-commit per
+  -- transaction: the slave latches @av_writedata@ once on the
+  -- cycle its internal ready condition is met, regardless of how
+  -- many cycles the master holds. SRAM writes don't stall at all
+  -- (the SRAM controller returns ready=True for writes), and
+  -- SRAM reads don't use @be@, so dropping the stall gating on
+  -- @dmemBe@ is safe across all phase-1 slaves.
   dmemBeGated =
-    (\stall sq be -> if stall || sq then 0 else be)
-      <$> stallS
-      <*> squashNext
+    (\sq be -> if sq then 0 else be)
+      <$> squashNext
       <*> dmemBe
 
   -- ----- Decode + operand extraction ---------------------------------
@@ -507,12 +521,15 @@ extendLoad width signed addr rdata = case (width, signed) of
   (4, _) -> rdata
   (2, True) -> pack (signExtendTo32 half)
   (2, False) -> resize half
-  (1, True) -> pack (signExtendTo32 byte)
-  (1, False) -> resize byte
+  (1, True) -> pack (signExtendTo32 loadByte)
+  (1, False) -> resize loadByte
   _ -> 0
  where
-  byte :: BitVector 8
-  byte = case slice d1 d0 addr of
+  -- Named @loadByte@ rather than @byte@ so the signal Clash emits
+  -- into the generated Verilog isn't a SystemVerilog reserved
+  -- keyword (Verilator 5 rejects the default name).
+  loadByte :: BitVector 8
+  loadByte = case slice d1 d0 addr of
     0 -> slice d7 d0 rdata
     1 -> slice d15 d8 rdata
     2 -> slice d23 d16 rdata

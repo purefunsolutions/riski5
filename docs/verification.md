@@ -61,8 +61,9 @@ Reach for it when a bug makes us want an independent oracle.
 
 ### Layer 1.75 — Verilator-backed whole-SoC simulation via verilambda
 
-**Status:** skeleton landed as of 2026-04-20; first real test to
-follow in the next working session.
+**Status:** live as of 2026-04-20 — first real test green, and it
+already caught a bug nobody else would have seen until silicon
+(see below).
 
 Layer 1 checks the CPU *core* against a Haskell semantics. It says
 nothing about the rest of the SoC — the bus decoder, the
@@ -88,18 +89,41 @@ test-suite. TX bytes land through a small `UART_TX_VALID` /
 `UART_TX_BYTE` tap inside `riski5_sim_top.v`, so the test harness
 sees each byte the IP's FIFO actually latches.
 
-Pieces:
+Pieces (all live):
 
   - [`pkgs/riski5-sim/verilog/riski5_sim_top.v`](../pkgs/riski5-sim/verilog/riski5_sim_top.v) —
     hand-written Verilator top wrapping `riski5` + `riski5_jtag_uart`.
   - [`pkgs/riski5-sim/package.nix`](../pkgs/riski5-sim/package.nix) —
-    Nix derivation producing `libVriski5_sim_top.a`.
+    Nix derivation producing `libVriski5_sim_top.a` +
+    `libverilated.a`.
   - [`pkgs/riski5-sim/clash-manifest.json`](../pkgs/riski5-sim/clash-manifest.json) —
-    hand-authored manifest describing the sim-top's ports.
-  - [`test/SocHwSim.hs`](../test/SocHwSim.hs) — currently a skeleton
-    test; the actual verilambda wiring + HKD port record + FFI
-    declarations + regression test for the 2026-04-20 UART bug land
-    in the next session.
+    hand-authored manifest describing the sim-top's ports. Field
+    order is 32-bit → 16-bit → 8-bit so the emitted C struct has
+    zero internal padding; the Haskell Storable mirror in
+    [`test/SocHwSim.hs`](../test/SocHwSim.hs) matches it byte-for-byte.
+  - [`test/SocHwSim.hs`](../test/SocHwSim.hs) — verilambda wiring
+    (HKD port record + Storable mirror + FFI + `SimBackend`) plus
+    the first real test, which runs the Hello firmware under the
+    Altera IP and asserts the UART TX stream begins with
+    `hello, world\n`.
+
+Activate with `cabal test --flag=hwsim`; under Nix, `nix build
+.#riski5-sim` produces `libVriski5_sim_top.a` and the test-suite
+links against it via `--extra-lib-dirs=${riski5-sim}/lib`.
+
+**What the first test already caught.** The Core.hs change that
+plumbed `UART_READY` into `stallS` wasn't enough on its own: the
+core also gated `dmemBe` to 0 on stall, which combined with the IP's
+`av_waitrequest = chipselect & ~write_n & (be != 0)` created a
+combinational loop (`stall=1 → be=0 → waitrequest=0 → stall=0 →
+be=be_native → waitrequest=1 → stall=1 → …`). Verilator's UNOPTFLAT
+detector flagged it; the sim then showed 0 UART bytes over 200k
+cycles. Dropping the `dmemBe` stall gating (safe because Avalon-MM
+slaves handle single-commit internally, SRAM writes don't stall,
+and SRAM reads don't use `be`) broke the loop. The same test, run
+against a spot-reverted copy of `Core.hs`, correctly reports zero
+bytes collected — i.e. it is a real regression fence, not a
+tautology.
 
 **What this buys us.** Catches peripheral-protocol bugs before
 hardware. The moment the first test compiles, it becomes the

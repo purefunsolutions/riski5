@@ -1,0 +1,28 @@
+-- SPDX-FileCopyrightText: 2026 Mika Tammi
+-- SPDX-License-Identifier: MIT OR BSD-3-Clause
+--
+-- riski5 cabal.project
+--
+-- The main package is the riski5 cabal project itself. The
+-- verilambda dependency is optional and only used by the hwsim
+-- cabal flag (test/SocHwSim.hs, our Verilator-backed SoC sim —
+-- see docs/verification.md §Layer 1.75).
+--
+-- We pull verilambda in as a `packages:` entry so `cabal test
+-- --flag=hwsim` resolves without having to publish verilambda
+-- to Hackage. The path is the one our `flake.nix` uses during
+-- active development; outside Nix, devs can override this in
+-- `cabal.project.local` (gitignored) if their verilambda
+-- checkout lives elsewhere.
+
+packages:
+  .
+  /home/mika/verilambda
+
+-- No tests from verilambda itself — they're covered by the
+-- verilambda flake, and building them from here drags extra
+-- deps (hedgehog, tasty-hedgehog) unnecessarily.
+tests: False
+
+package riski5
+  tests: True

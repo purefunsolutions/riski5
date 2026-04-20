@@ -218,10 +218,16 @@ nextBoot = \case
   BootEntry -> Just BootClear
   BootClear -> Nothing
 
--- | Post-wait for a user-issued transaction.
+{- | Post-wait for a user-issued transaction.
+
+The byte argument is named @dataByte@ rather than @byte@ because
+Clash propagates pattern-variable names into the emitted Verilog
+and @byte@ is a reserved keyword in SystemVerilog / Verilog-2005
+onward (Verilator 5 rejects the signal).
+-}
 userWaitFor :: LcdParams -> Bit -> BitVector 8 -> BitVector 32
-userWaitFor LcdParams {..} rs byte
-  | rs == low && (byte == 0x01 || byte == 0x02) = paramLongWait
+userWaitFor LcdParams {..} rs dataByte
+  | rs == low && (dataByte == 0x01 || dataByte == 0x02) = paramLongWait
   | otherwise = paramShortWait
 
 beginBoot :: LcdParams -> BootStep -> LcdState
@@ -235,13 +241,13 @@ beginBoot params step =
     (Just step)
 
 beginUser :: LcdParams -> Bit -> BitVector 8 -> LcdState
-beginUser params rs byte =
+beginUser params rs dataByte =
   Emit
     rs
-    byte
+    dataByte
     SetupPh
     (paramSetupCycles params - 1)
-    (userWaitFor params rs byte)
+    (userWaitFor params rs dataByte)
     Nothing
 
 -- * MMIO offsets ---------------------------------------------------
@@ -321,21 +327,21 @@ lcdWith params selS addrS wdataS beS _readEnS =
         case st of
           StartupSettle 0 -> beginBoot params BootWake1
           StartupSettle c -> StartupSettle (c - 1)
-          Emit rs byte SetupPh 0 w boot ->
-            Emit rs byte PulsePh (paramPulseCycles params - 1) w boot
-          Emit rs byte SetupPh c w boot ->
-            Emit rs byte SetupPh (c - 1) w boot
-          Emit rs byte PulsePh 0 w boot ->
-            Emit rs byte WaitPh (w - 1) w boot
-          Emit rs byte PulsePh c w boot ->
-            Emit rs byte PulsePh (c - 1) w boot
+          Emit rs dataByte SetupPh 0 w boot ->
+            Emit rs dataByte PulsePh (paramPulseCycles params - 1) w boot
+          Emit rs dataByte SetupPh c w boot ->
+            Emit rs dataByte SetupPh (c - 1) w boot
+          Emit rs dataByte PulsePh 0 w boot ->
+            Emit rs dataByte WaitPh (w - 1) w boot
+          Emit rs dataByte PulsePh c w boot ->
+            Emit rs dataByte PulsePh (c - 1) w boot
           Emit _ _ WaitPh 0 _ (Just bs) ->
             case nextBoot bs of
               Just nb -> beginBoot params nb
               Nothing -> Ready
           Emit _ _ WaitPh 0 _ Nothing -> Ready
-          Emit rs byte WaitPh c w boot ->
-            Emit rs byte WaitPh (c - 1) w boot
+          Emit rs dataByte WaitPh c w boot ->
+            Emit rs dataByte WaitPh (c - 1) w boot
           Ready -> case req of
             Just (rs, bits) -> beginUser params rs bits
             Nothing -> Ready

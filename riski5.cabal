@@ -26,6 +26,33 @@ source-repository head
   type:     git
   location: https://github.com/mikatammi/riski5
 
+-- The `hwsim` flag activates the Verilator-backed whole-SoC
+-- simulation test (test/SocHwSim.hs) that links against the
+-- riski5-sim Nix package's libVriski5_sim_top.a + libverilated.a.
+-- The flag is off by default so `cabal build` / `cabal test`
+-- continue to work without Verilator + the sim library present.
+--
+-- To enable locally:
+--
+--     nix build .#riski5-sim
+--     cabal test --flag=hwsim \
+--       --extra-lib-dirs=$(readlink -f result)/lib \
+--       --ghc-options='-optl-lVriski5_sim_top -optl-lverilated -optl-lstdc++'
+--
+-- Under CI / `nix build .#riski5-hwsim-check` these flags are
+-- passed automatically; see pkgs/riski5-hwsim-check/package.nix.
+--
+-- We keep build-type: Simple because Cabal 3.12 doesn't allow
+-- internal sublibraries (like riski5-top, riski5-firmware) under
+-- build-type: Custom.
+flag hwsim
+  description:
+    Enable the Verilator-backed whole-SoC simulation test
+    (test/SocHwSim.hs). Requires the riski5-sim Nix package.
+
+  default:     False
+  manual:      True
+
 common warnings
   ghc-options:
     -Wall -Wcompat -Widentities -Wincomplete-record-updates
@@ -125,3 +152,7 @@ test-suite riski5-test
     , tasty            >=1.5  && <1.6
     , tasty-hedgehog   >=1.4  && <1.5
     , tasty-hunit      >=0.10 && <0.11
+
+  if flag(hwsim)
+    cpp-options:   -DHWSIM
+    build-depends: verilambda

@@ -13,28 +13,51 @@ rules around maintaining it.
 
 ## In flight
 
-- **T-VF-1. Verilator SoC sim via verilambda (skeleton landed
-  2026-04-20; implementation next session).** Wrapping the
-  Clash-emitted `riski5.v` and the ip-generate-emitted
-  `riski5_jtag_uart.v` under a hand-written `riski5_sim_top.v` so
-  Verilator can drive the whole SoC and the Haskell test-suite
-  can observe per-byte UART TX traffic the Altera IP *actually*
-  latches. Prompted by the 2026-04-20 silicon bug where our
-  pure-Clash `jtagUartSim` model missed the real IP's 1-cycle
-  registered-write semantics and `hello, world\n` came out as NUL
-  bytes. Skeleton in place:
-    - `pkgs/riski5-sim/verilog/riski5_sim_top.v`
-    - `pkgs/riski5-sim/package.nix`
-    - `pkgs/riski5-sim/clash-manifest.json`
-    - `test/SocHwSim.hs` (placeholder; tests green at 90/90)
-  Next session: `Setup.hs` wiring, HKD port record, FFI declarations,
-  first regression test. Blocks **T19-continued**.
+- **T19-continued. Altera JTAG UART IP on hardware (unblocked —
+  T-VF-1 landed green).** The Avalon-MM stall plumbing
+  (`UART_READY` into `Riski5.Soc.stallS`) is verified in sim via
+  T-VF-1, and the sim caught one additional bug along the way:
+  `Riski5.Core.dmemBeGated` was gating `dmemBe` to 0 on stall,
+  which combined with Avalon-MM's combinational `waitrequest` to
+  form a loop (`stall=1 → be=0 → waitrequest=0 → stall=0 →
+  be=be_native → waitrequest=1 → stall=1 → …`). Fixed by gating
+  only on squash. Re-flashing the updated bitstream to the DE2 is
+  the remaining step.
 
-- **T19-continued. Altera JTAG UART IP on hardware (blocked by
-  T-VF-1).** The Avalon-MM stall plumbing (`UART_READY` into
-  `Riski5.Soc.stallS`) is committed (476be4e) but unverified on
-  silicon. Gating on T-VF-1 so we have a regression-fencing sim
-  harness before returning to whack-a-mole on the board.
+## Done since last compaction
+
+- **T-VF-1. Verilator SoC sim via verilambda (green as of
+  2026-04-20).** The skeleton landed earlier in the day got the
+  real meat:
+    - `test/SocHwSim.hs` — full HKD port record + 36-byte Storable
+      mirror + 4 `foreign import ccall` bindings + `SimBackend`
+      wiring. The port layout in `pkgs/riski5-sim/clash-manifest.json`
+      was reordered to 32-bit → 16-bit → 8-bit so the C struct has
+      zero internal padding (1-byte trailing pad only).
+    - First real test: boots the Hello firmware under the real
+      Altera IP Verilog, collects the UART TX byte stream via a
+      `UART_TX_VALID` / `UART_TX_BYTE` tap in `riski5_sim_top.v`,
+      asserts the stream begins with `hello, world\n`. Stops early
+      once 13 bytes are seen; total runtime ~0.1 s.
+    - Build plumbing: the `hwsim` cabal flag + `cabal.project`
+      entry pulling in verilambda as a sibling package;
+      `pkgs/riski5-sim/package.nix` exposed in the flake output;
+      devshell added the env-var hint for `RISKI5_SIM_LIB_DIR`.
+    - Two supporting fixes the first build shook out:
+      * Renamed the `byte` signal in `Riski5.Core.extendLoad`
+        (`loadByte`) and the `byte` pattern variable in
+        `Riski5.Lcd.{userWaitFor,beginUser,nextStateS}` (`dataByte`) —
+        SystemVerilog reserves `byte`, so Clash's emitted signals
+        tripped Verilator 5.
+      * Dropped the `dmemBe`-stall gating in `Riski5.Core` (see
+        T19-continued above — a real bug, not just a sim-only
+        workaround).
+    - Regression fence verified: against a spot-reverted copy of
+      `Core.hs`, the test correctly fails with "collected 0 bytes"
+      — this would have manifested on silicon as the 2026-04-20 NUL
+      bytes.
+    - All 90 tests pass (placeholder path without the flag, real
+      test under `--flag=hwsim`).
 
 - **T19. ✦ Hello on hardware.** First-flash succeeded (`Riski5.sof`
   loaded over USB-Blaster, LEDR shows `0x8F` proving the entire
