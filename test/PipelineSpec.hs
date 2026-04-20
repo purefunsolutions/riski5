@@ -124,7 +124,7 @@ run prog nCycles =
       go =
         let imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
             dmem = CP.pure 0
-            (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS) =
+            (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS, _) =
               core imem dmem (CP.pure P.False)
          in bundle (pcExecS, wbS, dAddrS, dBeS)
    in sampleN @CP.System nCycles $
@@ -162,7 +162,7 @@ runWithStall prog nCycles stallPattern =
         let imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
             dmem = CP.pure 0
             stallS = CP.fromList stallList
-            (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS) =
+            (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS, _) =
               core imem dmem stallS
          in bundle (pcExecS, wbS, dAddrS, dBeS)
    in sampleN @CP.System nCycles $

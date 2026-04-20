@@ -75,6 +75,7 @@ import Riski5.CSR (
 import Riski5.Decode (decode)
 import Riski5.ISA
 import Riski5.Regfile (regfile)
+import Riski5.Rvfi (Rvfi (..))
 
 {- |
 Top-level core entity. Inputs are the instruction word at the
@@ -110,6 +111,12 @@ core ::
   @writeBack@ is @Just (rd, value)@ on cycles that commit a
   register-file write, @Nothing@ otherwise (and always @Nothing@ on
   a trap / stalled / squashed cycle).
+
+  The final 'Rvfi' output bundles the observability signals the
+  [YosysHQ\/riscv-formal](https://github.com/YosysHQ/riscv-formal)
+  harness consumes. Callers that don't want RVFI (synthesis,
+  Clash-only tests) just discard it; the cost of carrying it on
+  the core output is a handful of unused signals.
   -}
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
@@ -118,9 +125,18 @@ core ::
   , Signal dom (BitVector 4) -- per-byte write-enable (0 = no write)
   , Signal dom Bool -- read enable
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
+  , Signal dom Rvfi -- RVFI observability bundle
   )
 core imemData dmemRData stallS =
-  (pcFetch, pcExec, dmemAddr, dmemWdata, dmemBeGated, dmemRen, writeBackGated)
+  ( pcFetch
+  , pcExec
+  , dmemAddr
+  , dmemWdata
+  , dmemBeGated
+  , dmemRen
+  , writeBackGated
+  , rvfiS
+  )
  where
   -- ----- F-stage: pcFetch drives imem --------------------------------
   pcFetch :: Signal dom (BitVector 32)
@@ -250,7 +266,7 @@ core imemData dmemRData stallS =
       <*> dmemRData
       <*> csrs
 
-  (pcNextRaw, csrsNext, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack) =
+  (pcNextRaw, csrsNext, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack, trapFiredS) =
     unbundle bundledOut
 
   -- pcFetchNext advances F one step ahead of X:
@@ -273,12 +289,124 @@ core imemData dmemRData stallS =
   pcChangedS :: Signal dom Bool
   pcChangedS = (\pExec pcRaw -> pcRaw /= pExec + 4) <$> pcExec <*> pcNextRaw
 
+  -- ----- RVFI observability (Riski5.Rvfi) ----------------------------
+  -- See docs/verification.md §Layer 2 for the contract. These
+  -- signals feed Riski5.FormalTop which emits the flat rvfi_*
+  -- ports YosysHQ/riscv-formal's harness consumes.
+  --
+  -- rvfi_valid: an instruction retires iff we're neither stalled
+  -- (multi-cycle slave hasn't released the bus yet) nor squashing
+  -- (pre-fetched instruction past a branch). A trapping instruction
+  -- also retires — rvfi_trap flags it separately.
+  rvfiValidS :: Signal dom Bool
+  rvfiValidS = (\st sq -> not st && not sq) <$> stallS <*> squashNext
+
+  -- Monotonic retire counter. Latches once per retire cycle.
+  rvfiOrderS :: Signal dom (BitVector 64)
+  rvfiOrderS =
+    register
+      0
+      ( (\v o -> if v then o + 1 else o)
+          <$> rvfiValidS
+          <*> rvfiOrderS
+      )
+
+  -- rfIntr: high on the first instruction executed in a trap
+  -- handler, i.e. this retire's pc_rdata /= the previous retire's
+  -- pc_wdata. Needs one cycle of history — register the previous
+  -- retire's pc_wdata.
+  prevPcWdataS :: Signal dom (BitVector 32)
+  prevPcWdataS =
+    register
+      0
+      ( (\v pw prev -> if v then pw else prev)
+          <$> rvfiValidS
+          <*> pcNextRaw
+          <*> prevPcWdataS
+      )
+
+  rvfiIntrS :: Signal dom Bool
+  rvfiIntrS =
+    (\v pr prev -> v && pr /= prev)
+      <$> rvfiValidS
+      <*> pcExec
+      <*> prevPcWdataS
+
+  -- rfRd / rfRdWdata: masked so that rd_wdata is zero when rd_addr
+  -- is zero. The RVFI spec requires this; the regfile already
+  -- ignores writes to x0, so the architectural state is right,
+  -- but the observability field must also reflect zero.
+  rvfiRdAddrS, rvfiRdWdataS :: Signal dom (BitVector 32)
+  rvfiRdAddrS = maybe 0 (resize . fst) <$> writeBack
+  rvfiRdWdataS =
+    ( \mwb -> case mwb of
+        Just (rd, val) | rd /= 0 -> val
+        _ -> 0
+    )
+      <$> writeBack
+
+  -- Memory-read byte mask: bytes of rfMemRdata the instruction
+  -- actually consumed. Derived from the instruction's opcode +
+  -- funct3 + address-low-bits; zero when the instruction isn't a
+  -- load. The shape mirrors 'byteEnable' (which is for stores).
+  rvfiMemRmaskS :: Signal dom (BitVector 4)
+  rvfiMemRmaskS =
+    (\ren insn addr -> if ren then loadMask insn addr else 0)
+      <$> dmemRen
+      <*> effectiveImemS
+      <*> dmemAddr
+
+  rvfiS :: Signal dom Rvfi
+  rvfiS =
+    ( \valid order insn trapped intr pcR pcW rs1V' rs2V' rdA rdW mAddr mRm mWm mRd mWd ->
+        Rvfi
+          { rfValid = if valid then 1 else 0
+          , rfOrder = order
+          , rfInsn = insn
+          , rfTrap = if trapped && valid then 1 else 0
+          , rfHalt = 0
+          , rfIntr = if intr then 1 else 0
+          , rfMode = 3
+          , rfIxl = 1
+          , rfRs1Addr = slice d19 d15 insn
+          , rfRs2Addr = slice d24 d20 insn
+          , rfRs1Rdata = rs1V'
+          , rfRs2Rdata = rs2V'
+          , rfRdAddr = resize rdA
+          , rfRdWdata = rdW
+          , rfMemAddr = mAddr
+          , rfMemRmask = mRm
+          , rfMemWmask = mWm
+          , rfMemRdata = mRd
+          , rfMemWdata = mWd
+          , rfPcRdata = pcR
+          , rfPcWdata = pcW
+          }
+    )
+      <$> rvfiValidS
+      <*> rvfiOrderS
+      <*> effectiveImemS
+      <*> trapFiredS
+      <*> rvfiIntrS
+      <*> pcExec
+      <*> pcNextRaw
+      <*> rs1V
+      <*> rs2V
+      <*> rvfiRdAddrS
+      <*> rvfiRdWdataS
+      <*> dmemAddr
+      <*> rvfiMemRmaskS
+      <*> dmemBeGated
+      <*> dmemRData
+      <*> dmemWdata
+
 -- * Combinational dispatch -----------------------------------------
 
 {- |
 Per-cycle output bundle. @pcNext@ and @csrsNext@ feed the core's
-two sequential registers; the remaining five signals drive memory
-and the regfile write port (consumed by 'Riski5.Regfile.regfile').
+two sequential registers; the next five signals drive memory and
+the regfile write port; the trailing @Bool@ tags whether this
+cycle's instruction raised a trap (consumed by the RVFI tap).
 -}
 type Out =
   ( BitVector 32 -- pcNext
@@ -288,6 +416,7 @@ type Out =
   , BitVector 4 -- dmemByteEn (0 = no write)
   , Bool -- dmemReadEn
   , Maybe (BitVector 5, BitVector 32) -- regfile writeback
+  , Bool -- trap fired this instruction (→ rvfi_trap)
   )
 
 {- |
@@ -370,7 +499,7 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   Mret ->
     -- Return to the saved pc (no xIE/xPIE dance yet — we don't have
     -- interrupt enables to juggle).
-    (cMepc cs, cs, 0, 0, 0, False, Nothing)
+    (cMepc cs, cs, 0, 0, 0, False, Nothing, False)
   -- ----- SYSTEM: Zicsr — register-source forms -------------------
   Csrrw rd _ csr ->
     let addr = unCsr csr
@@ -414,12 +543,12 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
 
 -- | PC advances by 4; no memory access, no regfile write, CSR unchanged.
 nop :: Csrs -> BitVector 32 -> Out
-nop cs p = (p + 4, cs, 0, 0, 0, False, Nothing)
+nop cs p = (p + 4, cs, 0, 0, 0, False, Nothing, False)
 
 -- | Register writeback (and optionally a non-sequential PC); CSR unchanged.
 regWb :: Csrs -> Reg -> BitVector 32 -> BitVector 32 -> Out
 regWb cs rd val nextPc =
-  (nextPc, cs, 0, 0, 0, False, Just (unReg rd, val))
+  (nextPc, cs, 0, 0, 0, False, Just (unReg rd, val), False)
 
 aluImm :: Csrs -> Reg -> AluOp -> BitVector 32 -> Signed 12 -> BitVector 32 -> Out
 aluImm cs rd op rs1V imm p = regWb cs rd (alu op rs1V (sxImm12 imm)) (p + 4)
@@ -455,7 +584,7 @@ doLoad cs rd off width signed rs1 rdata p =
         then trap causeLoadAddrMisaligned p addr cs
         else
           let loaded = extendLoad width signed addr rdata
-           in (p + 4, cs, addr, 0, 0, True, Just (unReg rd, loaded))
+           in (p + 4, cs, addr, 0, 0, True, Just (unReg rd, loaded), False)
 
 {- |
 Store: traps on misaligned access; otherwise issues the write to
@@ -481,7 +610,7 @@ doStore cs off base value width p =
         else
           let be = byteEnable width addr
               wdata = shiftStoreData width addr value
-           in (p + 4, cs, addr, wdata, be, False, Nothing)
+           in (p + 4, cs, addr, wdata, be, False, Nothing, False)
 
 -- | Branch: take it (PC ← PC + off) iff the comparator says so.
 doBranch ::
@@ -496,18 +625,19 @@ doBranch cs op a b off p =
   let taken = branchTaken op a b
       target = p + sxImm13 off
       pcNext = if taken then target else p + 4
-   in (pcNext, cs, 0, 0, 0, False, Nothing)
+   in (pcNext, cs, 0, 0, 0, False, Nothing, False)
 
 {- |
 Latch a trap: record @mcause@ / @mepc@ / @mtval@ in the CSR file,
 jump to @mtvec.base@ (bottom two bits cleared — direct mode).
-No regfile writeback, no memory access.
+No regfile writeback, no memory access. Sets the trap-fired bit
+so the RVFI tap can flag this cycle's @rvfi_trap = 1@.
 -}
 trap :: BitVector 32 -> BitVector 32 -> BitVector 32 -> Csrs -> Out
 trap cause epc tval cs =
   let cs' = applyTrap cause epc tval cs
       target = cMtvec cs .&. complement 3
-   in (target, cs', 0, 0, 0, False, Nothing)
+   in (target, cs', 0, 0, 0, False, Nothing, True)
 
 -- * Load / store byte-lane helpers ---------------------------------
 
@@ -543,6 +673,34 @@ extendLoad width signed addr rdata = case (width, signed) of
 -- | Sign-extend an n-bit value to 32 bits.
 signExtendTo32 :: forall n. (KnownNat n) => BitVector n -> Signed 32
 signExtendTo32 v = resize (unpack v :: Signed n)
+
+{- |
+Compute the RVFI @rvfi_mem_rmask@ for a load instruction: which
+bytes of 'dmemRData' the load actually consumed, based on the
+instruction's @funct3@ and the address's low two bits.
+
+Returns @0@ for any non-load opcode — the caller gates this on
+@dmemRen@ so stores and ALU ops never see anything but zero.
+-}
+loadMask :: BitVector 32 -> BitVector 32 -> BitVector 4
+loadMask instr addr
+  | slice d6 d0 instr /= 0b0000011 = 0 -- not LOAD opcode
+  | otherwise = case slice d14 d12 instr of
+      0b000 -> byteMask -- LB
+      0b100 -> byteMask -- LBU
+      0b001 -> halfMask -- LH
+      0b101 -> halfMask -- LHU
+      0b010 -> 0b1111 -- LW
+      _ -> 0
+ where
+  byteMask = case slice d1 d0 addr of
+    0 -> 0b0001
+    1 -> 0b0010
+    2 -> 0b0100
+    _ -> 0b1000
+  halfMask = case slice d1 d1 addr of
+    0 -> 0b0011
+    _ -> 0b1100
 
 -- | Per-byte write-enable: 4 bits, one per byte lane.
 byteEnable :: Int -> BitVector 32 -> BitVector 4

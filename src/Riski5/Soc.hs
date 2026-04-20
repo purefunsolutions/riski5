@@ -181,7 +181,7 @@ soc progInit dataInit inS = outS
   -- execute stage. In the phase-1 pipelineless core they're
   -- identical; phase-2 pipelining will make them differ by one
   -- cycle (fetch leads execute).
-  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS) =
+  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
     core imemDataS dmemRdataS stallS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
