@@ -66,6 +66,7 @@ import Riski5.CSR (
   causeBreakpoint,
   causeEcallFromM,
   causeIllegalInstr,
+  causeInstrAddrMisaligned,
   causeLoadAddrMisaligned,
   causeStoreAddrMisaligned,
   initCsrs,
@@ -356,6 +357,16 @@ core imemData dmemRData stallS =
       <*> effectiveImemS
       <*> dmemAddr
 
+  -- rfMemAddr must be word-aligned per the RVFI spec under
+  -- RISCV_FORMAL_ALIGNED_MEM — riscv-formal's insn_{lb,lh,lbu,lhu,sb,sh}
+  -- checks all use `spec_mem_addr = addr & ~3`. Our core's internal
+  -- @dmemAddr@ is the raw byte address for sub-word accesses, so
+  -- we mask it here at the observability tap. LW / SW addresses
+  -- are already aligned (or the core traps), so the mask is a
+  -- no-op for them.
+  rvfiMemAddrS :: Signal dom (BitVector 32)
+  rvfiMemAddrS = (\addr -> addr .&. complement 3) <$> dmemAddr
+
   rvfiS :: Signal dom Rvfi
   rvfiS =
     ( \valid order insn trapped intr pcR pcW rs1V' rs2V' rdA rdW mAddr mRm mWm mRd mWd ->
@@ -394,7 +405,7 @@ core imemData dmemRData stallS =
       <*> rs2V
       <*> rvfiRdAddrS
       <*> rvfiRdWdataS
-      <*> dmemAddr
+      <*> rvfiMemAddrS
       <*> rvfiMemRmaskS
       <*> dmemBeGated
       <*> dmemRData
@@ -447,11 +458,15 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   -- ----- J-type (JAL) --------------------------------------------
   Jal rd off ->
     let target = pc + sxImm21 off
-     in regWb cs rd (pc + 4) target
+     in if slice d1 d0 target /= 0
+          then trap causeInstrAddrMisaligned pc target cs
+          else regWb cs rd (pc + 4) target
   -- ----- I-type: JALR --------------------------------------------
   Jalr rd _ off ->
     let target = (rs1V + sxImm12 off) .&. complement 1
-     in regWb cs rd (pc + 4) target
+     in if slice d1 d0 target /= 0
+          then trap causeInstrAddrMisaligned pc target cs
+          else regWb cs rd (pc + 4) target
   -- ----- I-type: loads -------------------------------------------
   Lb rd _ off -> doLoad cs rd off 1 True rs1V memRData pc
   Lh rd _ off -> doLoad cs rd off 2 True rs1V memRData pc
@@ -625,7 +640,17 @@ doBranch cs op a b off p =
   let taken = branchTaken op a b
       target = p + sxImm13 off
       pcNext = if taken then target else p + 4
-   in (pcNext, cs, 0, 0, 0, False, Nothing, False)
+      -- RVFI spec (insn_{beq,bne,blt,bge,bltu,bgeu}): trap iff
+      -- @next_pc[1:0] != 0@, regardless of whether the branch is
+      -- taken. For a taken branch that's the target's alignment;
+      -- for a fall-through, it's @p + 4@, which only ends up
+      -- misaligned if @p@ is itself misaligned (the formal
+      -- harness can place a misaligned @p@ at cycle 0, so we
+      -- can't assume @pc@ is pre-aligned).
+      misaligned = slice d1 d0 pcNext /= 0
+   in if misaligned
+        then trap causeInstrAddrMisaligned p pcNext cs
+        else (pcNext, cs, 0, 0, 0, False, Nothing, False)
 
 {- |
 Latch a trap: record @mcause@ / @mepc@ / @mtval@ in the CSR file,
