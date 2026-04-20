@@ -161,15 +161,20 @@ for the next session's take:
     cycle ahead of execute. Tests that assert specific pcS
     sequences need reworking.
 
-- **P2-B. Test-harness update.** All 4 core-facing tests
-  (CoreSpec, CoreSimSpec, BramCoreSpec, TrapSpec) need:
-  * Wrap async imem lookup with `CP.register 0x0000_0013` so it
-    matches the pipelined core's sync-read expectation.
-  * Bump `cycles = nSteps + 1` → `nSteps + 2` for the extra
-    pipeline-warmup cycle.
-  * Rework pcS assertions: either change expected values (now
-    one ahead) OR add a second `pcExec` output to the core so
-    tests can inspect the executing instruction's PC directly.
+- **P2-B. Test-harness prep — done for the static part.** The
+  core's output tuple gained a `pcExec` signal alongside
+  `pcFetch`; all four core-facing tests (CoreSpec, CoreSimSpec,
+  BramCoreSpec, TrapSpec) now unpack the 7-tuple and pair writeback
+  traces with `pcExec`. Today `pcFetch == pcExec` so this is a
+  semantic no-op; after pipelining they split automatically.
+  Remaining prep that has to land **atomically with** the core
+  refactor (since they would break the pipelineless core
+  individually):
+  * Wrap each test's imem lookup with `CP.register 0x0000_0013`
+    so async-Vec lookup gains the 1-cycle delay the pipelined
+    core assumes.
+  * Bump `cycles = nSteps + 1` → `nSteps + 2` in CoreSimSpec +
+    BramCoreSpec for the pipeline-warmup cycle.
 
 - **P2-C. SoC update.** Switch `imemDataS` from `bram` to
   `blockRam` driven by `pcFetch`. This is where the ~7000 LE win
