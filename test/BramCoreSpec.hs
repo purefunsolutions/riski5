@@ -216,14 +216,17 @@ simHarness program =
     -- both ports. Reads are multiplexed based on the "read address"
     -- of the cycle. For imem we use pc, for dmem we use dmemAddr.
     -- Writes only come from dmem.
-    (pcS, dAddrS, dWdataS, dBeS, _dReS, wbS) =
+    -- pcFetchS drives imem; pcExecS would be used for writeback-
+    -- PC assertions (none in this test, so we discard it).
+    (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, _dReS, wbS) =
       core imemDataS dmemDataS (CP.pure P.False)
 
-    -- Instruction memory: BRAM read-only, address driven by PC.
+    -- Instruction memory: BRAM read-only, address driven by
+    -- pcFetchS (the address being fetched this cycle).
     imemDataS =
       bram
         progVec
-        pcS
+        pcFetchS
         (CP.pure 0)
         (CP.pure 0)
 
@@ -238,4 +241,4 @@ simHarness program =
         dWdataS
         dBeS
    in
-    bundle (pcS, wbS)
+    bundle (pcFetchS, wbS)

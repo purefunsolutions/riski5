@@ -120,13 +120,18 @@ soc progInit dataInit inS = outS
   -- The stall signal comes from the bus mux: any slave that needs
   -- multi-cycle service can deassert ready and the core freezes
   -- until the data settles.
-  (pcS, dAddrS, dWdataS, dBeS, dRenS, _wbS) =
+  -- The core now exposes two PC signals: 'pcFetchS' drives the
+  -- imem, 'pcExecS' is the PC of the instruction currently in the
+  -- execute stage. In the phase-1 pipelineless core they're
+  -- identical; phase-2 pipelining will make them differ by one
+  -- cycle (fetch leads execute).
+  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS) =
     core imemDataS dmemRdataS stallS
 
   -- ----- Instruction memory ------------------------------------
   imemDataS :: Signal dom (BitVector 32)
   imemDataS =
-    bram progInit pcS (CP.pure 0) (CP.pure 0)
+    bram progInit pcFetchS (CP.pure 0) (CP.pure 0)
 
   -- ----- Data memory (slave at 0x0000_0000 — shares addr space
   -- with imem for simplicity; programs pick a base above the code) --

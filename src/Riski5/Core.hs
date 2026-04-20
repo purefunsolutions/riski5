@@ -80,12 +80,26 @@ core ::
   -- CSR, regfile write). Lets multi-cycle slaves (e.g. SRAM) stall
   -- the core until their data is valid.
   Signal dom Bool ->
-  {- | @(pc, dmemAddr, dmemWdata, dmemByteEn, dmemReadEn, writeBack)@.
+  {- | @(pcFetch, pcExec, dmemAddr, dmemWdata, dmemByteEn,
+  dmemReadEn, writeBack)@.
+
+  Two PC-side outputs:
+
+    * @pcFetch@ drives the imem address input. In this pipelineless
+      core it's identical to @pcExec@ — both are just the current
+      PC register. In the future 2-stage pipelined core (phase 2),
+      @pcFetch@ will be the address being fetched this cycle and
+      @pcExec@ will be the address of the instruction currently in
+      the execute stage (= previous cycle's @pcFetch@). Tests that
+      assert against the PC of a retiring instruction should use
+      @pcExec@ so they stay valid across the pipelining refactor.
+
   @writeBack@ is @Just (rd, value)@ on cycles that commit a
   register-file write, @Nothing@ otherwise (and always @Nothing@ on
   a trap cycle).
   -}
-  ( Signal dom (BitVector 32) -- current PC, drives imem addr
+  ( Signal dom (BitVector 32) -- pcFetch — drives imem address
+  , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
   , Signal dom (BitVector 32) -- dmem address
   , Signal dom (BitVector 32) -- dmem write data
   , Signal dom (BitVector 4) -- per-byte write-enable (0 = no write)
@@ -93,7 +107,7 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   )
 core imemData dmemRData stallS =
-  (pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBackGated)
+  (pc, pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBackGated)
  where
   -- ----- PC + CSR state (frozen on stall) ----------------------------
   pc :: Signal dom (BitVector 32)

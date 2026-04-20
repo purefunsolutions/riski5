@@ -95,8 +95,12 @@ simulateProgram n program =
     go =
       let
         dmem = fromList (P.repeat 0 :: [BitVector 32])
-        imemSig = fmap imemOf outPc
-        (outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem (CP.pure P.False)
+        -- imem is driven by pcFetch (address being fetched THIS
+        -- cycle). Use pcExec for PC assertions — stays semantically
+        -- correct once the core pipelines and the two PCs differ
+        -- by one cycle.
+        imemSig = fmap imemOf pcFetch
+        (pcFetch, outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem (CP.pure P.False)
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
     samples =

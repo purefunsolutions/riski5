@@ -97,10 +97,13 @@ runProgram program nCycles =
          in P.fromIntegral w
       go :: (HiddenClockResetEnable CP.System) => Signal CP.System (BitVector 32, Maybe (BitVector 5, BitVector 32))
       go =
-        let imem = fmap (\pc -> progVec !! pcToIdx pc) pcS
+        let -- imem driven by pcFetch; writeback trace paired with
+            -- pcExec so future pipelining doesn't shift the
+            -- asserted PC values.
+            imem = fmap (\pc -> progVec !! pcToIdx pc) pcFetchS
             dmem = CP.pure 0
-            (pcS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
-         in bundle (pcS, wbS)
+            (pcFetchS, pcExecS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
+         in bundle (pcExecS, wbS)
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go
 
