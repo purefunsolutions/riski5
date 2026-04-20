@@ -122,6 +122,15 @@ Decision recorded here when made.
 - SDRAM: Altera IP first (phase 1D, T31–T39). Own Clash controller is
   the fallback (T32a–T36a) only if the IP fails to bring up.
 
+**Forward-looking — SoC configurability.** Phase 1 builds one concrete
+SoC. Phase 2+ grows a type-parameterised SoC generator: IP-provider
+choice per peripheral (Altera vs own-Clash), cache configurations,
+four core classes (tiny / little / big / performance). Every variant
+we ship along the way records Fmax / LE / M4K data that feeds that
+design. See
+[docs/future-soc-configurability.md](./docs/future-soc-configurability.md)
+for the full note.
+
 ## Verilambda policy
 
 verilambda (`github:purefunsolutions/verilambda`, our own Haskell
