@@ -106,30 +106,42 @@ helloFirmware = do
   redrawLine topBufReg 0x80
   redrawLine botBufReg 0xC0
 
-  -- Counter starts at 0; it ticks once per scroll tick (i.e. 2 Hz),
-  -- so LEDG[0] toggles at 1 Hz and the full 24-bit cycle takes
-  -- ~97 days — comfortably above the \"at least 1 minute\" target
-  -- and visibly counting on the lower LEDs.
+  -- Counter + dividers: count ticks at ~100 Hz (LEDG[0] visibly
+  -- flickers at 50 Hz, LEDR upper bits cycle on minute/hour
+  -- timescales). LCD scroll happens every 50 count ticks = 2 Hz.
   addi countReg x0 0
+  addi divReg x0 0
+  -- Inner counter-pacing loop is 2 instructions (addi + bne) ≈ 2
+  -- cycles. 250 000 inner iterations × 2 = 500 000 cycles between
+  -- count ticks → 100 Hz at 50 MHz.
+  li divMaxReg 250_000
+  addi scrollDivReg x0 0
 
   spin <- label
-  -- ~500 ms tick: 25 M cycles at 50 MHz keeps the LCD readable.
-  delayCycles 25_000_000
+  -- Inner pacing loop until next 100 Hz count tick.
+  innerL <- label
+  addi divReg divReg 1
+  bne divReg divMaxReg innerL
 
-  -- Top line scrolls right (last char wraps to the front).
-  rotateRight topBufReg
-  -- Bottom line scrolls left (first char wraps to the end).
-  rotateLeft botBufReg
-
-  -- Push both rotated buffers back to the LCD.
-  redrawLine topBufReg 0x80
-  redrawLine botBufReg 0xC0
-
-  -- Tick the visible 24-bit counter once per scroll.
+  -- One 100 Hz count tick: bump count + LEDs, reset divider.
   addi countReg countReg 1
   sw gpioReg countReg 4 -- LEDG ← count[7:0]
   srli ledTmpReg countReg 8
   sw gpioReg ledTmpReg 0 -- LEDR ← count[23:8]
+  addi divReg x0 0
+
+  -- Scroll-pacing: every 50 count ticks (= 0.5 s = 2 Hz), do one
+  -- LCD scroll step. Otherwise continue spinning.
+  addi scrollDivReg scrollDivReg 1
+  addi scratchReg x0 50
+  bne scrollDivReg scratchReg spin
+
+  -- Time to scroll: top line right, bottom line left, redraw.
+  rotateRight topBufReg
+  rotateLeft botBufReg
+  redrawLine topBufReg 0x80
+  redrawLine botBufReg 0xC0
+  addi scrollDivReg x0 0
 
   j spin
 
@@ -152,6 +164,15 @@ tmpReg = x22
 delayReg = x24
 countReg = x25
 ledTmpReg = x26
+
+-- Counter pacing + scroll pacing. The main loop ticks the visible
+-- 24-bit counter at ~100 Hz (one tick per @divMaxReg@ inner-loop
+-- iterations) and scrolls the LCD once every 50 ticks (= 2 Hz, slow
+-- enough to read).
+divReg, divMaxReg, scrollDivReg :: Reg
+divReg = x27
+divMaxReg = x28
+scrollDivReg = x19
 
 -- Scroll-buffer registers. Each buffer is 16 bytes in the data BRAM
 -- (one byte per character — packed via @lb@ / @sb@ to keep the
@@ -293,6 +314,12 @@ rotateLeft bufReg = do
 {- | Set the LCD cursor to @ddramAddr@ (top line = 0x80, bottom =
 0xC0) then push all 16 characters from @bufReg@ to the LCD.
 Auto-increment of the AC takes care of column positions.
+
+Note: 'lcdWait' polls the LCD STATUS register *into 'tmpReg'*, so we
+hold the character byte in 'ledTmpReg' across the wait — otherwise
+the @sw@ would write whatever STATUS read returned (zero, the
+not-busy value), which produces 16 CGRAM[0] characters on every
+row.
 -}
 redrawLine :: Reg -> Int -> Asm ()
 redrawLine bufReg ddramAddr = do
@@ -300,10 +327,10 @@ redrawLine bufReg ddramAddr = do
   addi srcOffReg x0 0
   addi endOffReg x0 16
   loopL <- label
-  add tmpReg bufReg srcOffReg
-  lbu tmpReg tmpReg 0
+  add ledTmpReg bufReg srcOffReg
+  lbu ledTmpReg ledTmpReg 0
   lcdWait
-  sw lcdReg tmpReg 0
+  sw lcdReg ledTmpReg 0
   addi srcOffReg srcOffReg 1
   bne srcOffReg endOffReg loopL
 
