@@ -26,16 +26,23 @@ rules around maintaining it.
     40 µs, HD44780 needs 1.52 ms to finish Clear/Home, so all
     subsequent character writes land in a busy chip and are
     dropped.
-- **T19a. LCD backlight investigation.** Both `LCD_BLON` polarities
-  give a dark backlight on a brand-new DE2. User confirmed the
-  PCB has no visible contrast trimmer near the LCD socket. Likely
-  causes to triage: (a) `LCD_BLON` is NC on this DE2 rev, with the
-  backlight wired to a fixed source; (b) the backlight needs both
-  `LCD_ON` and `LCD_BLON` driven through a specific transition;
-  (c) something on this rev's schematic differs from the User
-  Manual. Next step: pull the actual DE2 schematic PDF
-  (separate from the User Manual), trace the backlight LED's
-  power path, and confirm what controls it.
+- **T19a. LCD backlight investigation — investigated, deferred.**
+  Pulled the canonical DE2 schematic into
+  `docs/de2/DE2_Schematic.pdf` (the LCD page is on the same sheet
+  as the SRAM and HEX displays). The backlight circuit is:
+  `LCD_BLON → R14 (680Ω) → base of Q5 (8050 NPN) → 47Ω → BL pin
+  of LCD module U2`, emitter to GND. So `LCD_BLON` is **active-
+  HIGH** per schematic — `Top.hs` was updated back to drive HIGH.
+  Both polarities tested on this brand-new DE2 give a dark
+  backlight, and the LCD characters themselves render fine, so
+  the issue is on the hardware side: most likely either the LCD
+  module shipped with this DE2 revision wires its backlight
+  differently from the original Optrex part the schematic
+  documents, or there's a defect in the Q5 / R14 / BL-pin path
+  on this specific board. Black-on-grey HD44780 text is
+  perfectly readable in room light without backlight, so phase-
+  1B isn't blocked. Re-open if a fix needs physical access to
+  the board (multimeter on Q5, replace LCD module, etc.).
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
