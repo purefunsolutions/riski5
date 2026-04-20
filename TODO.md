@@ -79,6 +79,33 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   Phase-1C exposes the SRAM as **half-word (16-bit) memory only**;
   see also T31a below for the deferred 32-bit-word access work.
 
+- **T31b. Optimize the pipelineless single-cycle core — before
+  starting phase 2.** The current design closes at Fmax ≈ 36.6 MHz
+  (we run at 40 MHz via PLL, ~9 % over slow-corner) and uses
+  ≈ 8 943 LEs (27 % of EP2C35) with **0 M4K block-memory bits**.
+  Three obvious wins worth doing while the core is still simple,
+  *before* the architecture expands into multiple pipeline stages:
+  1. **Move the program / data memories onto M4K.** Right now
+     Quartus infers them as distributed LUT-RAM (which is why
+     LE count is ~5x the original ~1 600-LE estimate). Moving
+     to M4K via Clash's @blockRam@ recovers thousands of LEs
+     and frees them for caches / M-extension later. Need to
+     handle the 1-cycle BRAM read latency cleanly — easiest is
+     to align it with the natural one-cycle PC-to-imem path.
+  2. **Critical-path hunt.** Read @Riski5.fit.rpt@'s worst paths;
+     usual offenders on a single-cycle core are
+     ALU + branch-compare → writeback mux, the barrel shifter,
+     and the BRAM-read → decode → regfile-read chain. Any cone
+     we can shorten without adding pipeline registers is pure
+     fmax win.
+  3. **Move the regfile back onto M4K** if the pipeline-stage
+     work below makes it natural (currently the async-read
+     register array is the right call for the pipelineless
+     contract, see CLAUDE.md).
+  Doing this before the EX/MEM split keeps the optimisation
+  surface manageable; once we add stages, every change touches
+  more wires.
+
 - **T31a. SRAM 32-bit (word) accesses — deferred to phase 2+.**
   The phase-1C controller (`src/Riski5/Sram.hs`) drives the
   IS61LV25616-class chip 16 bits at a time. RV32I `lw` / `sw` to

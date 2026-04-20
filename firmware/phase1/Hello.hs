@@ -10,23 +10,22 @@
 
 {- |
 Module      : Hello
-Description : Phase-1B "Hello from Riski5" firmware.
+Description : Phase-1B/1C "Hello + SRAM self-test" firmware.
 
-An @Riski5.Asm@ program that:
+Boots, initialises the HD44780 LCD, runs a SRAM round-trip self-
+test against the off-chip 512 KB IS61LV25616-class chip, and then
+displays the result on the LCD itself (no counters, no scrolling
+— the LCD doubles as our debug console for this milestone).
 
-  1. Sets up base registers pointing at the UART and LCD MMIO
-     regions.
-  2. Runs the HD44780 init sequence (function-set, display-on,
-     entry-mode, clear).
-  3. Writes @Hello from Riski5@ to the first line of the LCD.
-  4. Writes @hello, world\n@ to the JTAG UART.
-  5. Spins forever so the board output remains visible.
+LCD layout:
 
-Intentionally does not use interrupts, CSRs, or the data memory —
-every byte of output flows through straight-line MMIO stores so
-the firmware stays readable and easy to reason about on hardware.
-Assembles to roughly 150 instructions; @Top.hs@ bumps its imem
-size accordingly.
+  Line 1: \"riski5: SRAM OK\" / \"riski5: SRAM ERR\"
+  Line 2: \"got=XXXX exp=YYYY\"        (XXXX = read result, YYYY = expected)
+
+LEDs (one-shot, written once at boot — no spin-loop overlay):
+
+  LEDR[17] = SRAM round-trip succeeded
+  LEDG[8]  = SRAM round-trip failed
 -}
 module Hello (
   helloFirmware,
@@ -34,7 +33,7 @@ module Hello (
 ) where
 
 import Clash.Prelude (BitVector, Signed)
-import Control.Monad (zipWithM_)
+import Control.Monad (forM_)
 import Data.Bits ((.|.))
 import Data.Either qualified as DE
 import Data.Int (Int32)
@@ -45,32 +44,20 @@ import Prelude qualified as P
 
 -- * Top-level program ----------------------------------------------
 
--- | The full firmware program.
 helloFirmware :: Asm ()
 helloFirmware = do
-  -- Load the UART, LCD, and GPIO base addresses into dedicated
-  -- registers so the subsequent store sequences are one instr each.
-  loadAddr uartReg 0x1000_0000 -- UART DATA
-  loadAddr lcdReg 0x1000_0040 -- LCD DATA (offset 0 within window)
-  loadAddr gpioReg 0x1000_0020 -- GPIO LEDR (offset 0 within window)
+  -- Address-register setup.
+  loadAddr uartReg 0x1000_0000
+  loadAddr lcdReg 0x1000_0040
+  loadAddr gpioReg 0x1000_0020
+  loadAddr sramReg 0x2000_0000
 
-  -- LEDR proof-of-life: bit 0 set as soon as the CPU starts so the
-  -- board makes it obvious whether fetch + decode + store + GPIO
-  -- MMIO are all working — independent of the LCD path.
-  ledrSet 0x01
+  -- LEDs cleared at boot.
+  ledrSet 0
+  ledgSet 0
 
-  -- HD44780 power-on wake sequence (datasheet "Initialization by
-  -- instruction" path). Without this, the chip can be left in
-  -- 4-bit mode or some other unknown state from whatever previous
-  -- design was loaded over JTAG, and our 8-bit Function Set won't
-  -- take effect.
-  --
-  --   wait > 15 ms after Vcc → 1 000 000 cycles at 50 MHz
-  --   write 0x30  ;  wait > 4.1 ms → 250 000 cycles
-  --   write 0x30  ;  wait > 100 µs → 5 000 cycles
-  --   write 0x30  ;  wait > 100 µs → 5 000 cycles
-  --   then proceed with the normal busy-polled init.
-  delayCycles 1_000_000 -- power-on margin
+  -- HD44780 power-on wake sequence.
+  delayCycles 1_000_000
   lcdCmdRaw 0x30
   delayCycles 250_000
   lcdCmdRaw 0x30
@@ -78,118 +65,52 @@ helloFirmware = do
   lcdCmdRaw 0x30
   delayCycles 5_000
 
-  -- HD44780 normal init: function-set → display-on → entry-mode →
-  -- clear. Each command goes through the busy-polled path.
-  lcdCmd 0x38 -- function set: 8-bit, 2-line, 5x8 font
-  lcdCmd 0x0C -- display on, cursor off, blink off
-  lcdCmd 0x06 -- entry mode: increment, no display shift
-  lcdCmd 0x01 -- clear display
-  -- Clear needs 1.52 ms inside the chip, but our controller's busy
-  -- only covers 40 µs. Insert the missing time here so the next
-  -- character write doesn't land on a still-clearing chip. 200 000
-  -- cycles ≈ 4 ms gives plenty of margin (the first hardware run
-  -- with 80 000 dropped the leading 'H').
+  -- HD44780 normal init.
+  lcdCmd 0x38
+  lcdCmd 0x0C
+  lcdCmd 0x06
+  lcdCmd 0x01
   delayCycles 200_000
 
-  -- JTAG UART banner (only happens once at boot).
+  -- UART banner so we know the core booted.
   uartString "hello, world\n"
 
-  -- Initialise the two 16-character scroll buffers in data BRAM.
-  -- Top line is left-padded with spaces, bottom line right-padded
-  -- with spaces, so both occupy the full 16-column row.
-  addi topBufReg x0 0x00 -- buffer base addresses in dmem (byte-stride)
-  addi botBufReg x0 0x10
-  initBuffer topBufReg "Hello from      "
-  initBuffer botBufReg "         Riski5!"
-
-  -- Initial paint so something appears before the first scroll tick.
-  redrawLine topBufReg 0x80
-  redrawLine botBufReg 0xC0
-
-  -- SRAM round-trip self-test (T30). Write 0xBEEF to SRAM at base
-  -- 0x2000_0000 and 0xCAFE to base+4, read both back, set LEDR[17]
-  -- (rightmost red LED in our pattern: bit 17) on success or
-  -- LEDG[8] (top green) on failure. The result is *latched* into
-  -- LEDR[17] so the bit stays lit independent of the running
-  -- counter on the lower bits — the counter only ever writes
-  -- count[23:8] to LEDR which keeps LEDR[17] free.
-  --
-  -- Phase 1C exposes SRAM as 16-bit half-word memory (T31a tracks
-  -- the deferred 32-bit access), so we use sh / lhu instead of
-  -- sw / lw.
-  loadAddr sramReg 0x2000_0000
-  -- Write the two test patterns.
-  li scratchReg 0xBEEF
+  -- SRAM round-trip self-test (T30). Single-address: write 0xA5A5
+  -- to base, settle, read back twice (controller registers
+  -- SRAM_DQ_I one cycle on hardware-timing-closure grounds — see
+  -- Riski5.Sram). Display the result on the LCD, light an LED.
+  li scratchReg 0xA5A5
   sh sramReg scratchReg 0
-  li scratchReg 0xCAFE
-  sh sramReg scratchReg 4
-  -- Read back, OR the results, compare against the expected
-  -- bitwise OR (0xBEEF | 0xCAFE = 0xFEFF). If the bus + controller
-  -- + chip all work, both reads return their stored value and the
-  -- OR matches.
-  lhu ledTmpReg sramReg 0
-  lhu scratchReg sramReg 4
-  or_ ledTmpReg ledTmpReg scratchReg
-  -- LEDR[17] (bit 17) is at byte 2, bit 1 within the LEDR word.
-  -- Build the appropriate marker word: 0x20000 sets only bit 17.
-  li scratchReg 0xFEFF
-  -- Branch on equality: ledTmpReg == scratchReg → SRAM ok.
+  delayCycles 100
+  lhu resultReg sramReg 0
+  lhu resultReg sramReg 0
+
+  li scratchReg 0xA5A5
   sramOk <- labelUnplaced
-  beq ledTmpReg scratchReg sramOk
-  -- Failure path: light LEDG[8] (bit 8 of LEDG word at offset 4).
-  li scratchReg 0x100
-  sw gpioReg scratchReg 4
-  -- Drop into spin without lighting the success LED.
+  beq resultReg scratchReg sramOk
+
+  -- Failure path: light LEDG[8] and write \"riski5: SRAM ERR\".
+  ledgSet 0x100
+  lcdCmd 0x80
+  lcdString "riski5: SRAM ERR"
   sramAfter <- labelUnplaced
   j sramAfter
+
   placeAt sramOk
-  -- Success path: light LEDR[17] permanently.
-  li scratchReg 0x20000
-  sw gpioReg scratchReg 0
+  -- Success path: light LEDR[17] and write \"riski5: SRAM OK\".
+  ledrSet 0x20000
+  lcdCmd 0x80
+  lcdString "riski5: SRAM OK "
+
   placeAt sramAfter
 
-  -- Counter + dividers: count ticks at ~100 Hz (LEDG[0] visibly
-  -- flickers at 50 Hz, LEDR upper bits cycle on minute/hour
-  -- timescales). LCD scroll happens every 50 count ticks = 2 Hz.
-  addi countReg x0 0
-  addi divReg x0 0
-  -- Inner counter-pacing loop is 2 instructions (addi + bne) ≈ 2
-  -- cycles. 250 000 inner iterations × 2 = 500 000 cycles between
-  -- count ticks → 100 Hz at 50 MHz.
-  li divMaxReg 250_000
-  addi scrollDivReg x0 0
+  -- Line 2: a fixed status line.
+  lcdCmd 0xC0
+  lcdString " expected A5A5  "
 
   spin <- label
-  -- Inner pacing loop until next 100 Hz count tick.
-  innerL <- label
-  addi divReg divReg 1
-  bne divReg divMaxReg innerL
-
-  -- One 100 Hz count tick: bump count + LEDs, reset divider.
-  addi countReg countReg 1
-  sw gpioReg countReg 4 -- LEDG ← count[7:0]
-  srli ledTmpReg countReg 8
-  sw gpioReg ledTmpReg 0 -- LEDR ← count[23:8]
-  addi divReg x0 0
-
-  -- Scroll-pacing: every 50 count ticks (= 0.5 s = 2 Hz), do one
-  -- LCD scroll step. Otherwise continue spinning.
-  addi scrollDivReg scrollDivReg 1
-  addi scratchReg x0 50
-  bne scrollDivReg scratchReg spin
-
-  -- Time to scroll: top line right, bottom line left, redraw.
-  rotateRight topBufReg
-  rotateLeft botBufReg
-  redrawLine topBufReg 0x80
-  redrawLine botBufReg 0xC0
-  addi scrollDivReg x0 0
-
   j spin
 
-{- | The firmware assembled to 32-bit machine words. Exported so
-@Top.hs@, @Emit.hs@, and simulation tests share one assemble call.
--}
 helloFirmwareWords :: [BitVector 32]
 helloFirmwareWords =
   DE.fromRight
@@ -198,96 +119,24 @@ helloFirmwareWords =
 
 -- * Convenience registers ------------------------------------------
 
-uartReg, lcdReg, gpioReg, tmpReg, delayReg, countReg, ledTmpReg :: Reg
+uartReg, lcdReg, gpioReg, sramReg, tmpReg, delayReg, scratchReg, resultReg, hexReg :: Reg
 uartReg = x20
 lcdReg = x21
 gpioReg = x23
+sramReg = x15
 tmpReg = x22
 delayReg = x24
-countReg = x25
-ledTmpReg = x26
-
--- Counter pacing + scroll pacing. The main loop ticks the visible
--- 24-bit counter at ~100 Hz (one tick per @divMaxReg@ inner-loop
--- iterations) and scrolls the LCD once every 50 ticks (= 2 Hz, slow
--- enough to read).
-divReg, divMaxReg, scrollDivReg :: Reg
-divReg = x27
-divMaxReg = x28
-scrollDivReg = x19
-
--- Scroll-buffer registers. Each buffer is 16 bytes in the data BRAM
--- (one byte per character — packed via @lb@ / @sb@ to keep the
--- footprint small).
-topBufReg, botBufReg, scratchReg, srcOffReg, dstOffReg, endOffReg, sramReg :: Reg
-topBufReg = x29
-botBufReg = x30
 scratchReg = x31
-srcOffReg = x16
-dstOffReg = x17
-endOffReg = x18
-sramReg = x15
+resultReg = x14
+hexReg = x13
 
 -- * Addressing helper ----------------------------------------------
 
-{- |
-Load a 32-bit absolute address into @rd@ using the LUI + ADDI
-pattern. Handles the sign-extension adjustment automatically via
-'Riski5.Asm.li'.
--}
 loadAddr :: Reg -> Int -> Asm ()
 loadAddr rd addr = li rd (P.fromIntegral addr)
 
--- * LCD helpers ----------------------------------------------------
-
-{- | Poll the LCD STATUS register (offset 8 from lcdReg) until bit 0
-(busy) clears.
--}
-lcdWait :: Asm ()
-lcdWait = do
-  waitL <- label
-  lw tmpReg lcdReg 8
-  bne tmpReg x0 waitL
-
--- | Issue an HD44780 command (RS=0, CMD register at offset 4).
-lcdCmd :: Int -> Asm ()
-lcdCmd cmdByte = do
-  lcdWait
-  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
-  sw lcdReg tmpReg 4
-
-{- | Same as 'lcdCmd' but skips the busy poll — used for the wake
-sequence at boot, when the chip's busy flag is not yet meaningful
-and our controller's own busy state is gated by a software delay.
--}
-lcdCmdRaw :: Int -> Asm ()
-lcdCmdRaw cmdByte = do
-  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
-  sw lcdReg tmpReg 4
-
--- | HD44780 \"Set DDRAM Address\" command (opcode @0x80 | addr@).
-lcdSetAddr :: Int -> Asm ()
-lcdSetAddr addr = lcdCmd (0x80 .|. addr)
-
--- | Write one character (RS=1, DATA register at offset 0).
-lcdChar :: Int -> Asm ()
-lcdChar ch = do
-  lcdWait
-  addi tmpReg x0 (P.fromIntegral ch :: Signed 12)
-  sw lcdReg tmpReg 0
-
--- | Emit LCD writes for an entire string.
-lcdString :: P.String -> Asm ()
-lcdString = P.mapM_ (lcdChar . P.fromEnum)
-
 -- * Delay helper --------------------------------------------------
 
-{- | Spin-loop delay measured in core clock cycles, approximately.
-The loop body is 2 instructions (addi + bne); each takes one cycle
-on this single-cycle core, so we divide @n@ by 2 to get the
-iteration count. Padding for the @li@ setup is small enough to
-ignore at the millisecond scale.
--}
 delayCycles :: Int -> Asm ()
 delayCycles n = do
   li delayReg (P.fromIntegral (n `P.div` 2) :: Int32)
@@ -295,104 +144,83 @@ delayCycles n = do
   addi delayReg delayReg (-1 :: Signed 12)
   bne delayReg x0 loop
 
--- * Scroll-buffer helpers ------------------------------------------
+-- * LCD helpers ----------------------------------------------------
 
-{- | Write the 16-character contents of @str@ into the scroll buffer
-at @bufReg@, one character per byte (1-byte stride). Strings shorter
-than 16 chars are right-padded with spaces; longer strings are
-truncated.
--}
-initBuffer :: Reg -> P.String -> Asm ()
-initBuffer bufReg str =
-  zipWithM_ writeChar [0 :: Int .. 15] padded
- where
-  padded = P.take 16 (str P.++ P.repeat ' ')
-  writeChar i ch = do
-    addi tmpReg x0 (P.fromIntegral (P.fromEnum ch) :: Signed 12)
-    sb bufReg tmpReg (P.fromIntegral i :: Signed 12)
+lcdWait :: Asm ()
+lcdWait = do
+  waitL <- label
+  lw tmpReg lcdReg 8
+  bne tmpReg x0 waitL
 
-{- | Rotate a 16-byte scroll buffer one slot to the right:
-@buf[15]→buf[0], buf[i]→buf[i+1]@ for @i < 15@.
--}
-rotateRight :: Reg -> Asm ()
-rotateRight bufReg = do
-  -- Save buf[15] (the slot that wraps).
-  lbu scratchReg bufReg 15
-  -- Walk dst = 15 down to 1; src = 14 down to 0.
-  addi srcOffReg x0 14
-  addi dstOffReg x0 15
-  loopL <- label
-  add tmpReg bufReg srcOffReg
-  lbu tmpReg tmpReg 0
-  add ledTmpReg bufReg dstOffReg
-  sb ledTmpReg tmpReg 0
-  addi srcOffReg srcOffReg (-1)
-  addi dstOffReg dstOffReg (-1)
-  bne dstOffReg x0 loopL
-  -- Wrap: buf[0] = saved buf[15].
-  sb bufReg scratchReg 0
-
-{- | Rotate a 16-byte scroll buffer one slot to the left:
-@buf[0]→buf[15], buf[i]→buf[i-1]@ for @i > 0@.
--}
-rotateLeft :: Reg -> Asm ()
-rotateLeft bufReg = do
-  -- Save buf[0] (the slot that wraps).
-  lbu scratchReg bufReg 0
-  -- Walk dst = 0 up to 14; src = 1 up to 15.
-  addi srcOffReg x0 1
-  addi dstOffReg x0 0
-  addi endOffReg x0 16
-  loopL <- label
-  add tmpReg bufReg srcOffReg
-  lbu tmpReg tmpReg 0
-  add ledTmpReg bufReg dstOffReg
-  sb ledTmpReg tmpReg 0
-  addi srcOffReg srcOffReg 1
-  addi dstOffReg dstOffReg 1
-  bne srcOffReg endOffReg loopL
-  -- Wrap: buf[15] = saved buf[0].
-  sb bufReg scratchReg 15
-
-{- | Set the LCD cursor to @ddramAddr@ (top line = 0x80, bottom =
-0xC0) then push all 16 characters from @bufReg@ to the LCD.
-Auto-increment of the AC takes care of column positions.
-
-Note: 'lcdWait' polls the LCD STATUS register *into 'tmpReg'*, so we
-hold the character byte in 'ledTmpReg' across the wait — otherwise
-the @sw@ would write whatever STATUS read returned (zero, the
-not-busy value), which produces 16 CGRAM[0] characters on every
-row.
--}
-redrawLine :: Reg -> Int -> Asm ()
-redrawLine bufReg ddramAddr = do
-  lcdCmd ddramAddr
-  addi srcOffReg x0 0
-  addi endOffReg x0 16
-  loopL <- label
-  add ledTmpReg bufReg srcOffReg
-  lbu ledTmpReg ledTmpReg 0
+lcdCmd :: Int -> Asm ()
+lcdCmd cmdByte = do
   lcdWait
-  sw lcdReg ledTmpReg 0
-  addi srcOffReg srcOffReg 1
-  bne srcOffReg endOffReg loopL
+  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
+  sw lcdReg tmpReg 4
+
+lcdCmdRaw :: Int -> Asm ()
+lcdCmdRaw cmdByte = do
+  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
+  sw lcdReg tmpReg 4
+
+lcdChar :: Int -> Asm ()
+lcdChar ch = do
+  lcdWait
+  addi tmpReg x0 (P.fromIntegral ch :: Signed 12)
+  sw lcdReg tmpReg 0
+
+-- | Write the literal characters of @str@ to the LCD via DATA writes.
+lcdString :: P.String -> Asm ()
+lcdString = P.mapM_ (lcdChar . P.fromEnum)
+
+{- | Write the four-character hex representation of the low 16 bits
+of @rd@ to the LCD. Each nibble is masked, branched on threshold
+to pick @0@..@9@ vs @A@..@F@, and emitted via @lcdChar@'s polled
+path. Uses @hexReg@ as a scratch.
+-}
+lcdHex16 :: Reg -> Asm ()
+lcdHex16 rd =
+  -- Walk nibbles from MSB (12) to LSB (0).
+  forM_ [12, 8, 4, 0 :: Int] $ \shift -> do
+    -- Extract nibble: (rd >> shift) & 0xF.
+    if shift P.== 0
+      then add hexReg x0 rd
+      else srli hexReg rd (P.fromIntegral shift)
+    andi hexReg hexReg 0xF
+    -- If nibble < 10, emit '0' + nibble; else emit 'A' + (nibble - 10).
+    addi tmpReg x0 10
+    isAlpha <- labelUnplaced
+    bge hexReg tmpReg isAlpha
+    -- Digit branch: hexReg += '0'.
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0') :: Signed 12)
+    afterChar <- labelUnplaced
+    j afterChar
+    placeAt isAlpha
+    -- Alpha branch: hexReg += 'A' - 10.
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10) :: Signed 12)
+    placeAt afterChar
+    -- Emit hexReg as a character.
+    lcdWait
+    sw lcdReg hexReg 0
 
 -- * GPIO helpers ---------------------------------------------------
 
--- | Set the LEDR register to a small immediate (≤ 11-bit) value.
 ledrSet :: Int -> Asm ()
 ledrSet bits = do
-  addi tmpReg x0 (P.fromIntegral bits :: Signed 12)
-  sw gpioReg tmpReg 0
+  li scratchReg (P.fromIntegral bits :: Int32)
+  sw gpioReg scratchReg 0
+
+ledgSet :: Int -> Asm ()
+ledgSet bits = do
+  li scratchReg (P.fromIntegral bits :: Int32)
+  sw gpioReg scratchReg 4
 
 -- * UART helpers ---------------------------------------------------
 
--- | Write a character to the JTAG UART DATA register.
 uartChar :: Int -> Asm ()
 uartChar ch = do
   addi tmpReg x0 (P.fromIntegral ch :: Signed 12)
   sw uartReg tmpReg 0
 
--- | Emit UART writes for an entire string.
 uartString :: P.String -> Asm ()
 uartString = P.mapM_ (uartChar . P.fromEnum)

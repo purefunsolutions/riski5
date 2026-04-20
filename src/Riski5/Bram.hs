@@ -36,6 +36,7 @@ module Riski5.Bram (
 
 import Clash.Prelude
 import Clash.Prelude qualified as CP
+import Data.Proxy (Proxy (..))
 
 {- | Word-addressable async-read RAM with byte-enable writes.
 
@@ -96,12 +97,18 @@ bram initContents addrS wdataS beS = rdata
   -- Strip the low two bits of the byte-address and wrap modulo the
   -- memory size. Out-of-range addresses wrap rather than trap; the
   -- bus decoder in 'Riski5.MemMap' should prevent them from reaching
-  -- us in practice.
+  -- us in practice. Note: 'fromIntegral' on @Unsigned 32 → Index n@
+  -- produces an undefined ('X') value when the source exceeds @n@,
+  -- which would then propagate through the BRAM read into the bus
+  -- mux even though the slave-select dropped the result. Force a
+  -- defined wraparound with explicit @mod@.
   wordIndex :: BitVector 32 -> Index n
   wordIndex addr =
-    let wordOff :: BitVector 32
-        wordOff = addr `shiftR` 2
-     in fromIntegral (unpack wordOff :: Unsigned 32)
+    let wordOff :: Unsigned 32
+        wordOff = unpack (addr `shiftR` 2)
+        nMax :: Unsigned 32
+        nMax = fromInteger (natVal (Proxy :: Proxy n))
+     in fromIntegral (wordOff `mod` nMax)
 
 -- | Merge @new@ into @old@ byte-by-byte based on the byte-enable mask.
 mergeBytes :: BitVector 32 -> BitVector 32 -> BitVector 4 -> BitVector 32
