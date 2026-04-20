@@ -47,7 +47,7 @@ import Riski5.Asm (Asm, assemble)
 import Riski5.Asm qualified as Asm
 import Riski5.ISA
 import Riski5.MemMap (jtagUartBase)
-import Riski5.Soc (SocIn (..), SocOut (..), soc)
+import Riski5.Soc (SocInSim (..), SocOut (..), SocOutSim (..), socSim)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, assertFailure, testCase)
 import Prelude (Either (..), IO, Int, Maybe (..), error, ($), (.))
@@ -102,7 +102,7 @@ progLedr = do
 {- | Simulate the SoC with the given program for @n@ cycles, returning
 the observed output trace.
 -}
-runSoc :: Asm () -> Int -> [SocOut]
+runSoc :: Asm () -> Int -> [SocOutSim]
 runSoc prog nCycles =
   case assemble prog of
     Left err -> error ("assemble failed: " P.++ P.show err)
@@ -113,11 +113,11 @@ runSoc prog nCycles =
           dataVec :: Vec 128 (BitVector 32)
           dataVec = CP.repeat 0
           inputSig =
-            fromList (P.repeat (SocIn {siSwitches = 0, siKeys = 0xF, siSramDqIn = 0}))
+            fromList (P.repeat (SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0}))
           go ::
             (HiddenClockResetEnable System) =>
-            Signal System SocOut
-          go = soc progVec dataVec inputSig
+            Signal System SocOutSim
+          go = socSim progVec dataVec inputSig
        in sampleN @System nCycles $
             withClockResetEnable @System clockGen resetGen enableGen go
 
@@ -126,7 +126,7 @@ runSoc prog nCycles =
 case_hi :: Assertion
 case_hi = do
   let trace = runSoc progHi 30
-      txBytes = [b | SocOut {soUartTx = Just b} <- trace]
+      txBytes = [b | SocOutSim {sosUartTx = Just b} <- trace]
   case txBytes of
     [h, i_] -> do
       assertEqual "first byte = 'H'" 0x48 h
@@ -137,7 +137,7 @@ case_hi = do
 case_ledr :: Assertion
 case_ledr = do
   let trace = runSoc progLedr 20
-      ledrs = P.map soLedR trace
+      ledrs = P.map (soLedR . sosOut) trace
   -- Somewhere in the first 20 cycles, LEDR should carry 0x15.
   assertEqual
     "LEDR contains 0x15"

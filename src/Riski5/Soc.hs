@@ -47,8 +47,11 @@ core simply executes from address 0.
 -}
 module Riski5.Soc (
   soc,
+  socSim,
   SocIn (..),
+  SocInSim (..),
   SocOut (..),
+  SocOutSim (..),
 ) where
 
 import Clash.Prelude hiding (And, Xor, not)
@@ -57,13 +60,19 @@ import Data.Proxy (Proxy (..))
 import Riski5.Bram (bram)
 import Riski5.Core (core)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
-import Riski5.JtagUart (jtagUartSim)
+import Riski5.JtagUart (JtagUartBus (..), jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sram (SramPins (..), sram)
 
 {- |
 Inputs the SoC reads from the board.
+
+The UART read-data channel @siUartRdata@ is an externalised bus tap:
+the SoC's bus decoder produces a UART-slave select via 'soUartBus'
+and the slave (either the Altera IP on hardware or 'jtagUartSim' in
+simulation) drives @siUartRdata@ back in the same cycle. Tests use
+'socSim' which wires this loop up automatically.
 -}
 data SocIn = SocIn
   { siSwitches :: BitVector 18
@@ -74,15 +83,23 @@ data SocIn = SocIn
   -- (i.e. @SRAM_OE_N == 0@); ignored otherwise. In simulation,
   -- the test harness wraps the SoC with 'Riski5.Sram.sramSim' to
   -- provide a model of the off-chip chip.
+  , siUartRdata :: BitVector 32
+  -- ^ Read data from the UART slave (either the Altera IP on
+  -- hardware or 'jtagUartSim' in simulation). Driven combinationally
+  -- from 'soUartBus' within the same cycle.
+  , siUartReady :: Bool
+  -- ^ Complement of the Altera IP's @av_waitrequest@. The IP
+  -- asserts waitrequest on the first cycle of every transaction
+  -- (it latches write-data one cycle after the master presents it);
+  -- until it deasserts we must hold bus signals. The 'jtagUartSim'
+  -- model returns constant @True@ because the sim model has no
+  -- registered write-data path.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
 
 {- |
-Outputs the SoC drives to the board (and, for the UART, to the
-simulation harness). In real hardware, @soUartTx@ is latched into
-the Altera JTAG UART IP instead; the 'Maybe' surface here is just
-an observability channel for Clash simulation.
+Outputs the SoC drives to the board.
 -}
 data SocOut = SocOut
   { soLedR :: BitVector 18
@@ -94,7 +111,35 @@ data SocOut = SocOut
   -- phase-3 PLIC when we have one; today the simulation harness
   -- watches it so tests don't need to spin on the busy flag.
   , soSramPins :: SramPins
-  , soUartTx :: Maybe (BitVector 8)
+  , soUartBus :: JtagUartBus
+  -- ^ Live bus tap for the UART slave. On hardware, routed through
+  -- 'app/Top.hs' to the Altera JTAG UART IP; in simulation,
+  -- 'socSim' pipes it into 'jtagUartSim' and feeds the resulting
+  -- read-data back into 'siUartRdata'.
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Simpler inputs for the sim wrapper 'socSim' — identical to 'SocIn'
+minus the UART read-data field (which 'socSim' fills in itself from
+the sim UART model).
+-}
+data SocInSim = SocInSim
+  { sisSwitches :: BitVector 18
+  , sisKeys :: BitVector 4
+  , sisSramDqIn :: BitVector 16
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Output bundle from 'socSim': the full 'SocOut' plus the TX byte that
+'jtagUartSim' observed this cycle, for tests to assert against.
+-}
+data SocOutSim = SocOutSim
+  { sosOut :: SocOut
+  , sosUartTx :: Maybe (BitVector 8)
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -168,10 +213,30 @@ soc progInit dataInit inS = outS
   dBeSForBram =
     (\sel be -> if sel then be else 0) <$> bramSelS <*> dBeS
 
-  -- ----- JTAG UART ---------------------------------------------
+  -- ----- JTAG UART (bus externalised) --------------------------
+  -- The UART slave lives outside the SoC boundary: we expose the
+  -- selected bus signals via 'soUartBus' and receive the read-data
+  -- back on 'siUartRdata'. For sim, 'socSim' wires that loop up to
+  -- 'jtagUartSim'; for hardware, 'app/Top.hs' wires it to the
+  -- Altera @altera_avalon_jtag_uart@ IP instantiated in
+  -- @pkgs/riski5-core@'s Verilog wrapper.
   jtagSelS = (\a -> slaveOf a == SlaveJtagUart) <$> dAddrS
-  (uartRdataS, uartTxS) =
-    jtagUartSim jtagSelS dAddrS dWdataS dBeS dRenS
+  uartRdataS = siUartRdata <$> inS
+  uartBusS =
+    ( \sel a wd be re ->
+        JtagUartBus
+          { ubSel = sel
+          , ubAddr = a
+          , ubWdata = wd
+          , ubBe = be
+          , ubRe = re
+          }
+    )
+      <$> jtagSelS
+      <*> dAddrS
+      <*> dWdataS
+      <*> dBeS
+      <*> dRenS
 
   -- ----- LCD ---------------------------------------------------
   -- The LCD controller runs its own HD44780 wake + init sequence
@@ -199,15 +264,21 @@ soc progInit dataInit inS = outS
     sram sramSelS dAddrS dWdataS dBeS dRenS sramDqInS
 
   -- Bus-level stall: any selected slave can deassert ready. Today
-  -- only SRAM does so; BRAM / GPIO / LCD / UART are single-cycle.
+  -- SRAM stalls on read-latency and UART stalls for the
+  -- 1-cycle-registered @av_waitrequest@ the Altera
+  -- @altera_avalon_jtag_uart@ IP asserts on the first cycle of every
+  -- Avalon-MM transaction. BRAM / GPIO / LCD are single-cycle.
+  uartReadyS = siUartReady <$> inS
   stallS =
-    ( \s sramRdy ->
+    ( \s sramRdy uartRdy ->
         case s of
           SlaveSram -> not sramRdy
+          SlaveJtagUart -> not uartRdy
           _ -> False
     )
       <$> (slaveOf <$> dAddrS)
       <*> sramReadyS
+      <*> uartReadyS
 
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
@@ -230,18 +301,56 @@ soc progInit dataInit inS = outS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins lcdIrq sramPins uartTx ->
+    ( \gpo lcdPins lcdIrq sramPins uartBus ->
         SocOut
           { soLedR = gpoLedR gpo
           , soLedG = gpoLedG gpo
           , soLcdPins = lcdPins
           , soLcdIrq = lcdIrq
           , soSramPins = sramPins
-          , soUartTx = uartTx
+          , soUartBus = uartBus
           }
     )
       <$> gpOutS
       <*> lcdPinsS
       <*> lcdIrqS
       <*> sramPinsS
-      <*> uartTxS
+      <*> uartBusS
+
+{- |
+Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
+boundary. Test harnesses use this rather than 'soc' so they don't
+have to materialise a UART model themselves, and so they can observe
+TX bytes through 'sosUartTx'.
+-}
+socSim ::
+  forall dom p d.
+  ( HiddenClockResetEnable dom
+  , KnownNat p
+  , 1 <= p
+  , KnownNat d
+  , 1 <= d
+  ) =>
+  Vec p (BitVector 32) ->
+  Vec d (BitVector 32) ->
+  Signal dom SocInSim ->
+  Signal dom SocOutSim
+socSim progInit dataInit inSimS = outSimS
+ where
+  fullInS =
+    ( \SocInSim {..} ur ->
+        SocIn
+          { siSwitches = sisSwitches
+          , siKeys = sisKeys
+          , siSramDqIn = sisSramDqIn
+          , siUartRdata = ur
+          , siUartReady = True
+          }
+    )
+      <$> inSimS
+      <*> uartRdataS
+  outS = soc progInit dataInit fullInS
+  busS = soUartBus <$> outS
+  (uartRdataS, uartTxS) =
+    jtagUartSim (ubSel <$> busS) (ubAddr <$> busS) (ubWdata <$> busS) (ubBe <$> busS) (ubRe <$> busS)
+  outSimS = (\o t -> SocOutSim {sosOut = o, sosUartTx = t}) <$> outS <*> uartTxS

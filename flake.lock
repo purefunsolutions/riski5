@@ -11,8 +11,8 @@
         "verilambda": "verilambda"
       },
       "locked": {
-        "lastModified": 1776643324,
-        "narHash": "sha256-/zlRadnvcKx5D32R/kDC+wFArAOcr3LHptBWuVJWLMA=",
+        "lastModified": 1776698854,
+        "narHash": "sha256-8SkgsiE+g/y/RLgyHdDRAVYWmExUooOYJjYHsKhN990=",
         "path": "/home/mika/alterade2-flake",
         "type": "path"
       },
@@ -286,8 +286,8 @@
         "treefmt-nix": "treefmt-nix_2"
       },
       "locked": {
-        "lastModified": 1776614759,
-        "narHash": "sha256-ta1mW/raMdda+bD7KQBGOv6GXKUKDGU+5Mp9zvXH1BM=",
+        "lastModified": 1776688975,
+        "narHash": "sha256-nZbqSK7Uz+k4PosZJ+9y0XJBeBot3DRy4JOzGEcFUto=",
         "path": "/home/mika/verilambda",
         "type": "path"
       },

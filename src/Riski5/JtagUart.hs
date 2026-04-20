@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -35,11 +36,54 @@ interrupt enables, activity flags). Phase-1 firmware uses only
 TX-ready + DATA, so we model that much and extend as needed.
 -}
 module Riski5.JtagUart (
+  JtagUartBus (..),
   jtagUartSim,
 ) where
 
 import Clash.Prelude hiding ((&&))
 import Riski5.MemMap (jtagUartBase)
+
+{- |
+Externalised UART slave bus. The SoC exposes these five signals on
+its top boundary (via 'Riski5.Soc.soUartBus') instead of owning the
+UART implementation internally. A test harness plugs 'jtagUartSim'
+back in at that boundary; a synthesis wrapper plugs the real Altera
+@altera_avalon_jtag_uart@ IP in at the same boundary. Keeping the
+seam at the bus — rather than inside the SoC — is what lets sim and
+hardware diverge cleanly without the core knowing which implementation
+it is talking to.
+-}
+data JtagUartBus = JtagUartBus
+  { ubSel :: Bool
+  -- ^ address-decoded select: high iff the current bus transaction
+  -- targets the UART MMIO window
+  , ubAddr :: BitVector 32
+  -- ^ byte address (caller ensures this is in the UART window when
+  -- @ubSel@ is high)
+  , ubWdata :: BitVector 32
+  -- ^ write data (low 8 bits meaningful for DATA writes)
+  , ubBe :: BitVector 4
+  -- ^ byte-enable; @0@ means no write this cycle
+  , ubRe :: Bool
+  -- ^ read enable
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Altera's @altera_avalon_jtag_uart@ IP is an Avalon-MM slave that
+registers the write-data one cycle after the master first presents
+@av_chipselect@ + @av_write_n@. In Avalon-MM terms this shows up as
+@av_waitrequest@ being asserted for the first cycle of every
+transaction — the master must hold signals until waitrequest
+deasserts. We plumb the complement of @av_waitrequest@ back into the
+SoC as this @ready@ signal so the bus-level stall logic in
+'Riski5.Soc' can freeze the core for that one cycle.
+'jtagUartSim' always returns @True@ here (no latency) so simulation
+sees a single-cycle path; the real IP in the Verilog wrapper drives
+it properly.
+-}
+
 
 {- |
 Simulation-only functional model of the JTAG UART. The

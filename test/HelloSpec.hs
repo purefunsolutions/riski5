@@ -43,7 +43,7 @@ import Clash.Prelude qualified as CP
 import Clash.Sized.Vector qualified as V
 import Riski5.Asm
 import Riski5.ISA
-import Riski5.Soc (SocIn (..), SocOut (..), soc)
+import Riski5.Soc (SocInSim (..), SocOutSim (..), socSim)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
 import Prelude (Either (..), Int, Maybe (..), String, error, ($), (.))
@@ -89,7 +89,7 @@ helloProgWords = case assemble helloProg of
 
 -- * Harness --------------------------------------------------------
 
-runHelloSoc :: Int -> [SocOut]
+runHelloSoc :: Int -> [SocOutSim]
 runHelloSoc nCycles =
   let progVec :: Vec 128 (BitVector 32)
       progVec =
@@ -98,11 +98,11 @@ runHelloSoc nCycles =
       dataVec :: Vec 64 (BitVector 32)
       dataVec = CP.repeat 0
       inputSig =
-        fromList (P.repeat SocIn {siSwitches = 0, siKeys = 0xF, siSramDqIn = 0})
+        fromList (P.repeat SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0})
       go ::
         (HiddenClockResetEnable System) =>
-        Signal System SocOut
-      go = soc progVec dataVec inputSig
+        Signal System SocOutSim
+      go = socSim progVec dataVec inputSig
    in sampleN @System nCycles $
         withClockResetEnable @System clockGen resetGen enableGen go
 
@@ -114,7 +114,7 @@ case_uart = do
   -- The pipelined core retires roughly one per cycle, so 200 cycles
   -- is plenty.
   let trace = runHelloSoc 200
-      txBytes = [b | SocOut {soUartTx = Just b} <- trace]
+      txBytes = [b | SocOutSim {sosUartTx = Just b} <- trace]
       txString :: String
       txString = P.map (P.toEnum . P.fromIntegral) txBytes
   assertEqual ("UART TX bytes (got " P.++ P.show (P.length txBytes) P.++ ")") "hello, world\n" txString
