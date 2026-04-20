@@ -131,16 +131,58 @@ sram ::
   Signal dom Bool ->
   -- | data driven by the SRAM on the previous half-cycle
   Signal dom (BitVector 16) ->
-  -- | @(rdata, pins)@
+  -- | @(rdata, pins, ready)@. @ready@ is False on the first cycle
+  -- of a read with a new address (the controller has issued
+  -- @SRAM_OE_N@ low but the registered @SRAM_DQ_I@ doesn't yet
+  -- reflect this address); the core uses it to stall. True for
+  -- writes, idles, and subsequent cycles of the same-address read.
   ( Signal dom (BitVector 32)
   , Signal dom SramPins
+  , Signal dom Bool
   )
-sram selS addrS wdataS beS _renS sramDqInS =
-  (rdataS, pinsS)
+sram selS addrS wdataS beS _renS sramDqInRawS =
+  (rdataS, pinsS, readyS)
  where
+  -- Register the off-chip SRAM data input once, *inside* the
+  -- controller. This costs one cycle of read latency in exchange
+  -- for round-trip slack on real hardware. At 40 MHz we have 25 ns
+  -- per cycle and the unregistered path
+  --   SRAM_ADDR pin → SRAM 10 ns access → SRAM_DQ pin → bus mux
+  --   → core writeback flop
+  -- consumes ~25–30 ns end-to-end, which doesn't close timing on
+  -- the slow corner. Registering at the FPGA input gives the input
+  -- flop a full cycle to capture, and the firmware compensates by
+  -- doing each SRAM read twice (first arms the pipeline, second
+  -- collects). Phase-2 pipelining will fold this into the EX/MEM
+  -- stage and the second-read kludge goes away.
+  sramDqInS = register 0 sramDqInRawS
   -- The CPU address is byte-addressed, but the SRAM is half-word
   -- organised. Drop bit 0 to form the chip address.
   sramAddrS = (\a -> slice d18 d1 (a - sramBase)) <$> addrS
+
+  -- Track the previous-cycle SRAM address + read-state so we can
+  -- emit a back-pressure 'ready' signal: a freshly-issued read
+  -- needs one cycle to flow address→pin→SRAM→pin→input register;
+  -- ready stays low for that first cycle so the core stalls.
+  prevAddrS = register 0 sramAddrS
+  isReadOpS =
+    ( \op -> case op of
+        SramOpRead -> True
+        _ -> False
+    )
+      <$> sramOpS
+  prevWasReadS = register False isReadOpS
+  readyS =
+    ( \op cur prev prevRead ->
+        case op of
+          SramOpIdle -> True
+          SramOpWrite{} -> True
+          SramOpRead -> prevRead && cur == prev
+    )
+      <$> sramOpS
+      <*> sramAddrS
+      <*> prevAddrS
+      <*> prevWasReadS
 
   -- Byte lane within the addressed half-word — picks which byte of
   -- a halfword gets routed into the upper / lower SRAM lanes.
@@ -269,11 +311,13 @@ sramSim ::
   Signal dom (BitVector 32) ->
   Signal dom (BitVector 4) ->
   Signal dom Bool ->
+  -- | @(rdata, pins, store, ready)@
   ( Signal dom (BitVector 32)
   , Signal dom SramPins
   , Signal dom (Vec n (BitVector 16))
+  , Signal dom Bool
   )
-sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS)
+sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS, readyS)
  where
   -- Storage: register over Vec n (BitVector 16). Updates on the
   -- next clock edge after a write request lands.
@@ -291,7 +335,7 @@ sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS)
       <$> storeS
       <*> addrS
 
-  (rdataS, pinsS) = sram selS addrS wdataS beS renS dqInS
+  (rdataS, pinsS, readyS) = sram selS addrS wdataS beS renS dqInS
 
   -- Apply the controller's pin output to the model on each cycle.
   nextStoreS =

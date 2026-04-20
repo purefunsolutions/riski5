@@ -76,6 +76,10 @@ core ::
   Signal dom (BitVector 32) ->
   -- | data memory read response (assumed same-cycle read)
   Signal dom (BitVector 32) ->
+  -- | back-pressure: when 'True', freeze all sequential state (PC,
+  -- CSR, regfile write). Lets multi-cycle slaves (e.g. SRAM) stall
+  -- the core until their data is valid.
+  Signal dom Bool ->
   {- | @(pc, dmemAddr, dmemWdata, dmemByteEn, dmemReadEn, writeBack)@.
   @writeBack@ is @Just (rd, value)@ on cycles that commit a
   register-file write, @Nothing@ otherwise (and always @Nothing@ on
@@ -88,15 +92,23 @@ core ::
   , Signal dom Bool -- read enable
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   )
-core imemData dmemRData =
-  (pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack)
+core imemData dmemRData stallS =
+  (pc, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBackGated)
  where
-  -- ----- PC + CSR state ---------------------------------------------
+  -- ----- PC + CSR state (frozen on stall) ----------------------------
   pc :: Signal dom (BitVector 32)
-  pc = register 0 pcNext
+  pc = register 0 (mux stallS pc pcNext)
 
   csrs :: Signal dom Csrs
-  csrs = register initCsrs csrsNext
+  csrs = register initCsrs (mux stallS csrs csrsNext)
+
+  -- Suppress regfile writeback during a stall so the load doesn't
+  -- commit garbage. The "real" writeBack of a load happens on the
+  -- non-stalled retire cycle.
+  writeBackGated =
+    (\stall wb -> if stall then Nothing else wb)
+      <$> stallS
+      <*> writeBack
 
   -- ----- Decode + operand extraction --------------------------------
   mInstr :: Signal dom (Maybe Instr)

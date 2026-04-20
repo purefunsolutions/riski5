@@ -269,7 +269,7 @@ simHarness program =
          in P.fromIntegral wordIdx
       imem = fmap (\pc -> progVec !! pcToIdx pc) pcS
       dmem = CP.pure 0
-      (pcS, _, _, _, _, wbS) = core imem dmem
+      (pcS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
    in bundle (pcS, wbS)
 
 -- | Type-level sugar for @fromIntegral (natVal ...)@.

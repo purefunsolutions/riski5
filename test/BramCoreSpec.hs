@@ -217,7 +217,7 @@ simHarness program =
     -- of the cycle. For imem we use pc, for dmem we use dmemAddr.
     -- Writes only come from dmem.
     (pcS, dAddrS, dWdataS, dBeS, _dReS, wbS) =
-      core imemDataS dmemDataS
+      core imemDataS dmemDataS (CP.pure P.False)
 
     -- Instruction memory: BRAM read-only, address driven by PC.
     imemDataS =

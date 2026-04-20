@@ -117,8 +117,11 @@ soc ::
 soc progInit dataInit inS = outS
  where
   -- ----- Core instance -----------------------------------------
+  -- The stall signal comes from the bus mux: any slave that needs
+  -- multi-cycle service can deassert ready and the core freezes
+  -- until the data settles.
   (pcS, dAddrS, dWdataS, dBeS, dRenS, _wbS) =
-    core imemDataS dmemRdataS
+    core imemDataS dmemRdataS stallS
 
   -- ----- Instruction memory ------------------------------------
   imemDataS :: Signal dom (BitVector 32)
@@ -157,10 +160,23 @@ soc progInit dataInit inS = outS
   -- ----- SRAM (off-chip 512 KB IS61LV25616-class) --------------
   -- Pure half-word controller — see 'Riski5.Sram' for the
   -- pipelineless 16-bit-only contract (T31a tracks 32-bit access).
+  -- 'sramReadyS' is False on the first cycle of a freshly-issued
+  -- read; the core stalls via 'stallS' until it goes True.
   sramSelS = (\a -> slaveOf a == SlaveSram) <$> dAddrS
   sramDqInS = siSramDqIn <$> inS
-  (sramRdataS, sramPinsS) =
+  (sramRdataS, sramPinsS, sramReadyS) =
     sram sramSelS dAddrS dWdataS dBeS dRenS sramDqInS
+
+  -- Bus-level stall: any selected slave can deassert ready. Today
+  -- only SRAM does so; BRAM / GPIO / LCD / UART are single-cycle.
+  stallS =
+    ( \s sramRdy ->
+        case s of
+          SlaveSram -> not sramRdy
+          _ -> False
+    )
+      <$> (slaveOf <$> dAddrS)
+      <*> sramReadyS
 
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)

@@ -96,7 +96,7 @@ simulateProgram n program =
       let
         dmem = fromList (P.repeat 0 :: [BitVector 32])
         imemSig = fmap imemOf outPc
-        (outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem
+        (outPc, dAddr, dWdata, dBe, dRen, _wb) = core imemSig dmem (CP.pure P.False)
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
     samples =

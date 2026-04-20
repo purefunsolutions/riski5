@@ -99,7 +99,7 @@ runProgram program nCycles =
       go =
         let imem = fmap (\pc -> progVec !! pcToIdx pc) pcS
             dmem = CP.pure 0
-            (pcS, _, _, _, _, wbS) = core imem dmem
+            (pcS, _, _, _, _, wbS) = core imem dmem (CP.pure P.False)
          in bundle (pcS, wbS)
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go

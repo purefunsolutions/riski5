@@ -75,7 +75,7 @@ runSram n sels addrs wdatas bes =
       initial = CP.repeat 0
       go :: (HiddenClockResetEnable System) => Signal System (BitVector 32)
       go =
-        let (rdata, _pins, _store) = sramSim initial selS addrS wdataS beS renS
+        let (rdata, _pins, _store, _ready) = sramSim initial selS addrS wdataS beS renS
          in rdata
    in sampleN @System n $
         withClockResetEnable @System clockGen resetGen enableGen go
@@ -86,18 +86,20 @@ case_halfWord :: Assertion
 case_halfWord = do
   -- Cycle 0: reset. Cycle 1: SH 0xBEEF to address sramBase.
   -- Cycle 2: read back from same address.
+  -- The controller registers its dqIn input (one cycle of read
+  -- latency on hardware-timing-closure grounds — see comment in
+  -- 'Riski5.Sram.sram'), so the rdata trace is delayed by one
+  -- cycle compared to the unregistered model. Firmware compensates
+  -- by issuing each SRAM read twice.
   let writeAddr = sramBase
       readAddr = sramBase
-      -- sequence: idle, write, read, read, ...
       sels = [False, True, True] P.++ P.repeat True
       addrs = [0, writeAddr, readAddr] P.++ P.repeat readAddr
       wdatas = [0, 0xDEAD_BEEF, 0] P.++ P.repeat 0
-      bes = [0, 0b0011, 0] P.++ P.repeat 0 -- LH = both bytes of low half
-      trace = runSram 6 sels addrs wdatas bes
-  -- Cycle 3 sees the committed value (write request lands on cycle
-  -- 1→2 edge; read on cycle 2 uses the *new* store from the cycle
-  -- 2→3 edge).
-  assertEqual "rdata after write" 0x0000_BEEF (trace P.!! 3)
+      bes = [0, 0b0011, 0] P.++ P.repeat 0
+      trace = runSram 8 sels addrs wdatas bes
+  -- One cycle later than the unregistered design.
+  assertEqual "rdata after write (registered)" 0x0000_BEEF (trace P.!! 4)
 
 case_byteSelectivity :: Assertion
 case_byteSelectivity = do
@@ -119,11 +121,10 @@ case_byteSelectivity = do
       bes =
         [0, 0b0011, 0b0011, 0b0001, 0]
           P.++ P.repeat 0
-      trace = runSram 8 sels addrs wdatas bes
-  -- After three writes (cycles 1..3) the read on cycle 4 sees the
-  -- committed state from the cycle 3→4 edge: low byte = 0x99,
-  -- high byte preserved at 0xAA.
-  assertEqual "high byte preserved after byte write" 0x0000_AA99 (trace P.!! 5)
+      trace = runSram 10 sels addrs wdatas bes
+  -- One cycle of registered-input latency on top of the previous
+  -- expected timing.
+  assertEqual "high byte preserved after byte write" 0x0000_AA99 (trace P.!! 6)
 
 case_baseOffset :: Assertion
 case_baseOffset = do
@@ -139,8 +140,8 @@ case_baseOffset = do
       addrs = [0, addr0, addr2, addr0, addr2] P.++ P.repeat addr2
       wdatas = [0, 0x0000_1111, 0x0000_2222, 0, 0] P.++ P.repeat 0
       bes = [0, 0b0011, 0b0011, 0, 0] P.++ P.repeat 0
-      trace = runSram 8 sels addrs wdatas bes
-  -- Cycle 3: read at addr0; both writes have committed by now.
-  assertEqual "addr0 reads 0x1111" 0x0000_1111 (trace P.!! 3)
-  -- Cycle 4: read at addr2.
-  assertEqual "addr2 reads 0x2222" 0x0000_2222 (trace P.!! 4)
+      trace = runSram 10 sels addrs wdatas bes
+  -- One cycle of registered-input latency: read presented at cycle
+  -- 3, latched at cycle 4, observable on rdata at cycle 4.
+  assertEqual "addr0 reads 0x1111" 0x0000_1111 (trace P.!! 4)
+  assertEqual "addr2 reads 0x2222" 0x0000_2222 (trace P.!! 5)
