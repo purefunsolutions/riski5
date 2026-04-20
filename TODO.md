@@ -203,24 +203,23 @@ for the next session's take:
   ratios and re-close timing. The 14% speed-mode win is already
   banked; phase 2 should compound on it.
 
-- **P2-H. Move HD44780 long-timing into the LCD controller FSM.**
-  Right now `Riski5.Lcd.lcd` holds `busy` high for `pulseCycles`
-  (16) + `idleCycles` (2 000) per write — enough for the common
-  37 µs command window but not the 1.52 ms Clear / Home. The
-  firmware currently fills that gap with a software
-  `delayCycles 200_000` after every Clear, plus a 1 000 000-cycle
-  Vcc-settle spin and 250 000-cycle post-wake delay. Move these
-  timings into the FSM:
-    * Distinguish Clear (0x01) and Return-home (0x02) command
-      bytes at the write point, set `idleCycles` to 76 000 for
-      those two, back to 2 000 otherwise.
-    * Add a power-on `StartupWait` state (1 000 000 cycles,
-      configurable) so the firmware doesn't need the Vcc-settle
-      spin.
-  Result: the hardware firmware shrinks (no explicit delay
-  loops), hardware-timing-correctness lives where it belongs,
-  and sim-time for any LCD-exercising test drops from millions
-  of cycles to whatever the real command sequence takes.
+- **P2-H. ✓ Self-timed HD44780 controller with IRQ.** Done.
+  `Riski5.Lcd` now runs its own Vcc-settle (1.5 M cycles) + full
+  HD44780 wake sequence (3×0x30, then function-set 0x38, display-
+  on 0x0C, entry-mode 0x06, clear 0x01) autonomously at reset,
+  and picks the right per-command post-pulse wait (80 k cycles
+  for Clear / Return-home; 2 k cycles for everything else). The
+  firmware dropped ~30 lines of `delayCycles` + raw 0x30 writes
+  and now just spin-waits on the `busy` flag before each write.
+  A new IRQ output line asserts on the busy-falling edge when
+  `CTRL[0]` is set; `STATUS[1]` is a sticky W1C pending flag so
+  the CPU can sleep instead of polling (first concrete peripheral
+  following the "don't require CPU polling" rule below).
+  `SocOut` now exposes `soLcdIrq` so phase-3's PLIC can wire it
+  in without an interface change. 4 new LcdSpec tests (parameter-
+  ised over a shrunk startup window so they run in milliseconds)
+  cover the boot-sequence byte order, user-write pulse timing,
+  IRQ latch, and IRQ enable gating. All 89 tests still green.
 
 - **P2-I. Minimal LCD-only simulation test.** Once P2-H lands,
   add a sim test that writes a single character to the LCD and
@@ -228,6 +227,94 @@ for the next session's take:
   on `LcdPins` — no LED counter, no SRAM, no scrolling. Fast
   (~200 cycles), catches regressions in the LCD controller's
   pulse timing and the core's MMIO-write path end-to-end.
+
+## Linux-friendly design rules (applied phase 3 onwards)
+
+The end goal is running Linux on riski5 with *minimal* custom
+driver work. The bus and peripheral decisions below are chosen
+so the kernel uses upstream drivers wherever possible; our
+custom design only needs a device-tree entry to bind them.
+
+- **Bus: memory-mapped, byte-addressable, simple, no reordering.**
+  Linux's `ioremap` + `readl` / `writel` / `readw` / `writeb`
+  work on anything matching this — our current `Riski5.Bus` does.
+  The specific protocol (custom Clash bus / Avalon-MM / Wishbone
+  / AXI4-Lite) is invisible to Linux. Adopt Avalon-MM for our
+  next refactor so Altera IP (JTAG UART, SDRAM controller, future
+  PCIe on newer boards) drops in without a bridge.
+
+- **Peripherals as platform devices via device tree.** Each
+  peripheral gets a DTS node with `compatible`, `reg`,
+  `interrupts`. The Linux build loads a matching driver by
+  `compatible` string. No bus discovery, no hotplug.
+
+- **Use standard register layouts where upstream drivers exist.**
+  For each peripheral pick the cheapest path to "zero new driver
+  code":
+  * **UART**: 16550 / NS16550A layout → `drivers/tty/serial/8250_of.c`.
+  * **Timer**: RISC-V CLINT layout → `drivers/clocksource/timer-riscv.c`.
+  * **Interrupt controller**: SiFive PLIC layout →
+    `drivers/irqchip/irq-sifive-plic.c`.
+  * **GPIO**: `gpio-mmio` supported layouts.
+  * **Ethernet (DM9000A on DE2)**:
+    `drivers/net/ethernet/davicom/dm9000.c` already works.
+    Our job is only to memory-map the chip's two registers
+    (INDEX + DATA) through the bus and wire `ENET_INT` into
+    the PLIC. No NIC driver to write.
+  * **LCD (HD44780)**: no upstream driver matches our MMIO shape
+    (the kernel's `drivers/auxdisplay/hd44780.c` is for
+    GPIO-bitbanged modules). Plan: small misc or framebuffer
+    driver, maybe ~200 lines. Acceptable — the LCD is not on
+    the critical path for bringup.
+
+- **Interrupts go through a PLIC.** A per-slave `irq` line gets
+  aggregated by a PLIC-compatible block into `mip.meip`; the
+  core's trap logic fires on enabled external interrupts. This
+  replaces the polling pattern for every peripheral — matches
+  the user's general "peripherals signal the CPU, not the other
+  way around" principle.
+
+- **Peripheral blocks expose their own completion / busy via
+  interrupt.** No firmware busy-polling. See P2-H for the first
+  concrete example (LCD generates an IRQ when the write
+  completes instead of the CPU polling the busy bit).
+
+### Phase-3 tasks that apply these rules
+
+- **T-LI1. PLIC-compatible interrupt controller.**
+  `src/Riski5/Plic.hs` — per-slave interrupt inputs, priority,
+  enable/pending register layout compatible with SiFive PLIC.
+  DT compatible = `"sifive,plic-1.0.0"`. Core's trap logic
+  gains external-interrupt handling (`mip.meip`, `mie.meie`).
+
+- **T-LI2. 16550-compatible UART.** Replace the Altera-specific
+  JTAG UART in @Riski5.JtagUart@ with a 16550-layout MMIO block
+  (RBR/THR/IER/IIR/FCR/LCR/MCR/LSR/MSR/SCR in the canonical
+  byte offsets). Wire its TX / RX to the USB-Blaster via the
+  same JTAG UART IP we currently use — only the memory-mapped
+  layer becomes 16550. DT compatible = `"ns16550a"`.
+
+- **T-LI3. RISC-V CLINT.** `src/Riski5/Clint.hs` — `mtime`,
+  `mtimecmp[0]`, `msip[0]` at the standard layout. Replaces
+  firmware's `delayCycles` busy-waits with timer interrupts.
+  DT compatible = `"sifive,clint0"`.
+
+- **T-LI4. Avalon-MM bus adapter.** Convert our custom bus to
+  Avalon-MM semantics so Altera's JTAG UART IP, SDRAM
+  controller, and (eventually) DM9000 bridge plug in without
+  a translation layer.
+
+- **T-LI5. DM9000 Ethernet wrap.** The DE2 carries a Davicom
+  DM9000A 10/100 MAC+PHY on a parallel 16-bit bus (confirmed
+  from `docs/de2/DE2_Schematic.pdf`). Our hardware side: pin
+  assignments, memory-mapped INDEX + DATA registers, `ENET_INT`
+  pin into the PLIC. Zero Linux driver work —
+  `drivers/net/ethernet/davicom/dm9000.c` binds by DT
+  `compatible = "davicom,dm9000"`.
+
+- **T-LI6. Device tree.** `docs/dts/riski5.dts` describes the
+  full SoC memory map + interrupts + CPU + PLIC + CLINT for
+  the Linux kernel to bind against.
 
 **Starting pointer: retry `core` refactor directly on master with
 the above test-side fixes prepared first, so the build never goes

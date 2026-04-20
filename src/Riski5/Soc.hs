@@ -88,6 +88,11 @@ data SocOut = SocOut
   { soLedR :: BitVector 18
   , soLedG :: BitVector 9
   , soLcdPins :: LcdPins
+  , soLcdIrq :: Bool
+  -- ^ Rising on the busy-falling edge of the LCD controller, held
+  -- until firmware writes-1-to-clear STATUS[1]. Wire through the
+  -- phase-3 PLIC when we have one; today the simulation harness
+  -- watches it so tests don't need to spin on the busy flag.
   , soSramPins :: SramPins
   , soUartTx :: Maybe (BitVector 8)
   }
@@ -169,8 +174,12 @@ soc progInit dataInit inS = outS
     jtagUartSim jtagSelS dAddrS dWdataS dBeS dRenS
 
   -- ----- LCD ---------------------------------------------------
+  -- The LCD controller runs its own HD44780 wake + init sequence
+  -- from reset, handles per-command timing, and raises an IRQ on
+  -- each busy-falling edge. Firmware can polling on STATUS[0] as
+  -- before, or enable the IRQ via CTRL[0] and sleep until woken.
   lcdSelS = (\a -> slaveOf a == SlaveLcd) <$> dAddrS
-  (lcdRdataS, lcdPinsS) =
+  (lcdRdataS, lcdPinsS, lcdIrqS) =
     lcd lcdSelS dAddrS dWdataS dBeS dRenS
 
   -- ----- GPIO --------------------------------------------------
@@ -221,16 +230,18 @@ soc progInit dataInit inS = outS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins sramPins uartTx ->
+    ( \gpo lcdPins lcdIrq sramPins uartTx ->
         SocOut
           { soLedR = gpoLedR gpo
           , soLedG = gpoLedG gpo
           , soLcdPins = lcdPins
+          , soLcdIrq = lcdIrq
           , soSramPins = sramPins
           , soUartTx = uartTx
           }
     )
       <$> gpOutS
       <*> lcdPinsS
+      <*> lcdIrqS
       <*> sramPinsS
       <*> uartTxS

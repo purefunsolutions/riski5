@@ -34,7 +34,6 @@ module Hello (
 
 import Clash.Prelude (BitVector, Signed)
 import Control.Monad (forM_)
-import Data.Bits ((.|.))
 import Data.Either qualified as DE
 import Data.Int (Int32)
 import Riski5.Asm
@@ -56,23 +55,10 @@ helloFirmware = do
   ledrSet 0
   ledgSet 0
 
-  -- HD44780 power-on wake sequence.
-  delayCycles 1_000_000
-  lcdCmdRaw 0x30
-  delayCycles 250_000
-  lcdCmdRaw 0x30
-  delayCycles 5_000
-  lcdCmdRaw 0x30
-  delayCycles 5_000
-
-  -- HD44780 normal init.
-  lcdCmd 0x38
-  lcdCmd 0x0C
-  lcdCmd 0x06
-  lcdCmd 0x01
-  delayCycles 200_000
-
-  -- UART banner so we know the core booted.
+  -- UART banner so we know the core booted. The LCD controller is
+  -- running its own Vcc-settle + HD44780 wake + init sequence in
+  -- the background; firmware's first LCD write will spin on the
+  -- busy flag until that completes.
   uartString "hello, world\n"
 
   -- SRAM round-trip self-test (T30). Single-address: write 0xA5A5
@@ -120,13 +106,12 @@ helloFirmwareWords =
 
 -- * Convenience registers ------------------------------------------
 
-uartReg, lcdReg, gpioReg, sramReg, tmpReg, delayReg, scratchReg, resultReg, hexReg :: Reg
+uartReg, lcdReg, gpioReg, sramReg, tmpReg, scratchReg, resultReg, hexReg :: Reg
 uartReg = x20
 lcdReg = x21
 gpioReg = x23
 sramReg = x15
 tmpReg = x22
-delayReg = x24
 scratchReg = x31
 resultReg = x14
 hexReg = x13
@@ -136,17 +121,12 @@ hexReg = x13
 loadAddr :: Reg -> Int -> Asm ()
 loadAddr rd addr = li rd (P.fromIntegral addr)
 
--- * Delay helper --------------------------------------------------
-
-delayCycles :: Int -> Asm ()
-delayCycles n = do
-  li delayReg (P.fromIntegral (n `P.div` 2) :: Int32)
-  loop <- label
-  addi delayReg delayReg (-1 :: Signed 12)
-  bne delayReg x0 loop
-
 -- * LCD helpers ----------------------------------------------------
 
+-- | Spin on the LCD controller's busy flag (STATUS bit 0).
+-- The controller runs its own Vcc-settle / wake / init sequence
+-- at reset and enforces per-command timing internally, so this is
+-- the only synchronisation firmware needs.
 lcdWait :: Asm ()
 lcdWait = do
   waitL <- label
@@ -156,11 +136,6 @@ lcdWait = do
 lcdCmd :: Int -> Asm ()
 lcdCmd cmdByte = do
   lcdWait
-  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
-  sw lcdReg tmpReg 4
-
-lcdCmdRaw :: Int -> Asm ()
-lcdCmdRaw cmdByte = do
   addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
   sw lcdReg tmpReg 4
 
