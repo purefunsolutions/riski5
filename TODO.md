@@ -79,32 +79,34 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   Phase-1C exposes the SRAM as **half-word (16-bit) memory only**;
   see also T31a below for the deferred 32-bit-word access work.
 
-- **T31b. Optimize the pipelineless single-cycle core — before
-  starting phase 2.** The current design closes at Fmax ≈ 36.6 MHz
-  (we run at 40 MHz via PLL, ~9 % over slow-corner) and uses
-  ≈ 8 943 LEs (27 % of EP2C35) with **0 M4K block-memory bits**.
-  Three obvious wins worth doing while the core is still simple,
-  *before* the architecture expands into multiple pipeline stages:
-  1. **Move the program / data memories onto M4K.** Right now
-     Quartus infers them as distributed LUT-RAM (which is why
-     LE count is ~5x the original ~1 600-LE estimate). Moving
-     to M4K via Clash's @blockRam@ recovers thousands of LEs
-     and frees them for caches / M-extension later. Need to
-     handle the 1-cycle BRAM read latency cleanly — easiest is
-     to align it with the natural one-cycle PC-to-imem path.
-  2. **Critical-path hunt.** Read @Riski5.fit.rpt@'s worst paths;
-     usual offenders on a single-cycle core are
-     ALU + branch-compare → writeback mux, the barrel shifter,
-     and the BRAM-read → decode → regfile-read chain. Any cone
-     we can shorten without adding pipeline registers is pure
-     fmax win.
-  3. **Move the regfile back onto M4K** if the pipeline-stage
-     work below makes it natural (currently the async-read
-     register array is the right call for the pipelineless
-     contract, see CLAUDE.md).
-  Doing this before the EX/MEM split keeps the optimisation
-  surface manageable; once we add stages, every change touches
-  more wires.
+- **T31b. Optimize the pipelineless single-cycle core — explored;
+  most gains deferred to phase 2.**
+  * **Done**: switched Quartus to OPTIMIZATION_TECHNIQUE SPEED
+    plus physical-synthesis combo-logic / register-duplication /
+    register-retiming at EXTRA effort. Fmax 36.59 → **41.63 MHz**
+    (+14 %), LEs 8943 → 8557. Free win, kept.
+  * **Tried + reverted**: moved imem to M4K via a `bramSyncRead`
+    variant and routed its per-fetch ready signal through the
+    stall path. LEs only dropped ~150 and Fmax *regressed* to
+    35.36 MHz — the stall-on-every-fetch approach added a LUT
+    to every register's feedback that Quartus couldn't retime
+    through, and the 2-cycles-per-instruction penalty halved
+    throughput. Real M4K / regfile / critical-path gains need
+    proper pipelining with overlapping fetch + execute stages,
+    which is phase 2.
+  * **Still to try (phase 2 territory)**: proper EX/MEM split
+    with overlapping stages, M4K regfile, barrel-shifter
+    rework, maybe a PLL re-target to push the 40 MHz core clock
+    higher now that there's slack.
+
+- **T31d. STA-reported critical path is PC → regfile array.**
+  The top ~100 slack-negative paths in the phase-1C fit report
+  all run from `pc[N]` (PC register output) to `regs[M]` (regfile
+  register array), with ~27 ns data delay vs 25 ns cycle. The
+  path is the full single-cycle chain:
+  PC → imem LUT-RAM 256:1 mux → decode → regfile read mux →
+  ALU → writeback mux → regs[rd]. Any meaningful shortening
+  needs a pipeline boundary somewhere in that chain — phase 2.
 
 - **T31a. SRAM 32-bit (word) accesses — partially unblocked,
   still phase 2.** The bus + core now carry a back-pressure
