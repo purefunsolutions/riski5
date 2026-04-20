@@ -106,18 +106,23 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   surface manageable; once we add stages, every change touches
   more wires.
 
-- **T31a. SRAM 32-bit (word) accesses — deferred to phase 2+.**
-  The phase-1C controller (`src/Riski5/Sram.hs`) drives the
-  IS61LV25616-class chip 16 bits at a time. RV32I `lw` / `sw` to
-  SRAM addresses can't be supported single-cycle without core
-  surgery, because a 32-bit access needs two consecutive SRAM
-  half-word transfers and the pipelineless core has no stall
-  mechanism. Land this once the core gains pipeline stages
-  (phase 2): an EX/MEM boundary opens up a stall slot we can use
-  to back-pressure the second half-word. The controller's bus
-  interface stays the same; the core/bus just gain a `ready`
-  signal that the SRAM slave deasserts during the second
-  half-word cycle.
+- **T31a. SRAM 32-bit (word) accesses — partially unblocked,
+  still phase 2.** The bus + core now carry a back-pressure
+  `ready` signal (T31c, below), so multi-cycle slaves can stall
+  the core. The remaining work for 32-bit SRAM access is just
+  the controller-side state machine that issues two half-word
+  reads/writes in sequence and only asserts `ready` after the
+  second one settles. Lift to phase 2 alongside pipelining so
+  the natural EX/MEM split absorbs the back-pressure cleanly.
+
+- **T31c. Core back-pressure / multi-cycle memory — done in
+  phase 1C.** Added a `ready` output from `Riski5.Sram.sram`
+  (False on the first cycle of a freshly-issued read, True on
+  subsequent same-address cycles plus all writes / idles). SoC's
+  bus mux feeds it as `stall` to the core; `core` freezes its
+  PC, CSR, and regfile-writeback registers while stalled.
+  Firmware no longer needs explicit settle delays around SRAM
+  accesses — `sh` followed by `lhu` works directly.
 - **Phase 1D** (T32–T39): SDRAM via Altera IP + tests + firmware demo.
 - **Phase 1D fallback** (T32a–T36a): own Clash SDRAM controller, only
   if Altera IP doesn't bring up cleanly.
