@@ -59,6 +59,57 @@ for the decoder/encoder roundtrip, (b) introducing a new Haskell
 dependency with GHC-version constraints is complexity we can postpone.
 Reach for it when a bug makes us want an independent oracle.
 
+### Layer 1.75 — Verilator-backed whole-SoC simulation via verilambda
+
+**Status:** skeleton landed as of 2026-04-20; first real test to
+follow in the next working session.
+
+Layer 1 checks the CPU *core* against a Haskell semantics. It says
+nothing about the rest of the SoC — the bus decoder, the
+peripherals, the vendor IP we black-box for synthesis. That gap is
+load-bearing: on 2026-04-20 we shipped a correctly-synthesised SoC
+to real silicon, saw `hello, world\n` come out as a stream of NUL
+bytes, and traced the bug to the Altera JTAG UART IP's 1-cycle
+registered write-data semantics. The master (our pipelined core)
+wasn't holding `av_writedata` while `av_waitrequest` was asserted.
+Our pure-Clash `jtagUartSim` model had no such requirement — it
+was a behaviourally simplified stand-in that didn't match what the
+real IP does. Layer 1 couldn't catch it because Layer 1 never sees
+the real IP's Verilog.
+
+Layer 1.75 closes that gap. We compile the Clash-emitted Verilog
+*together with the ip-generate-emitted Altera JTAG UART Verilog*
+(the IP's sim variant — no encrypted primitives — thanks to the
+`//synthesis translate_on/off` directives inside its file) under
+Verilator 5.040+, via
+[verilambda](https://github.com/purefunsolutions/verilambda) (our
+own Verilator wrapper), and drive the whole-SoC sim from a Haskell
+test-suite. TX bytes land through a small `UART_TX_VALID` /
+`UART_TX_BYTE` tap inside `riski5_sim_top.v`, so the test harness
+sees each byte the IP's FIFO actually latches.
+
+Pieces:
+
+  - [`pkgs/riski5-sim/verilog/riski5_sim_top.v`](../pkgs/riski5-sim/verilog/riski5_sim_top.v) —
+    hand-written Verilator top wrapping `riski5` + `riski5_jtag_uart`.
+  - [`pkgs/riski5-sim/package.nix`](../pkgs/riski5-sim/package.nix) —
+    Nix derivation producing `libVriski5_sim_top.a`.
+  - [`pkgs/riski5-sim/clash-manifest.json`](../pkgs/riski5-sim/clash-manifest.json) —
+    hand-authored manifest describing the sim-top's ports.
+  - [`test/SocHwSim.hs`](../test/SocHwSim.hs) — currently a skeleton
+    test; the actual verilambda wiring + HKD port record + FFI
+    declarations + regression test for the 2026-04-20 UART bug land
+    in the next session.
+
+**What this buys us.** Catches peripheral-protocol bugs before
+hardware. The moment the first test compiles, it becomes the
+regression fence against future similar errors (e.g. the SDRAM
+controller IP's Avalon-MM semantics in phase 1D). **What it doesn't
+buy us.** Any vendor IP whose *simulation variant* is encrypted or
+doesn't exist can't be verified this way — we'd fall back to Layer
+1 or a protocol-faithful Haskell model for that specific
+peripheral.
+
 ### Layer 2 — RVFI + YosysHQ/riscv-formal on the Clash-emitted Verilog
 
 **Status:** scaffolding from phase 1B; activated at the end of phase 1B
@@ -113,10 +164,11 @@ load.
 
 | Layer | Strength | Cost | Phase |
 |---|---|---|---|
-| Reference executor + Hedgehog | Differential testing | Low | 1A+ |
-| `riscv-semantics` cross-check | Independent oracle | Medium (new dep) | Deferred |
-| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | end of 1B |
+| Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ |
+| `riscv-semantics` cross-check | Independent oracle (CPU semantics) | Medium (new dep) | Deferred |
+| Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | Adding now (after 2026-04-20 UART bug) |
+| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | Immediately after 1.75 |
 | Liquid Haskell | Static refinement types | Medium-high | 2+ opt-in |
 
-The phase-1 deal: **Layer 1 now, Layer 2 before phase-1 declaration**.
-Layer 1.5 and Layer 3 are real options, not commitments.
+The phase-1 deal: **Layer 1 now, Layer 1.75 next, Layer 2 right after,
+Layer 1.5 and Layer 3 are real options not commitments.**

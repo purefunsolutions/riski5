@@ -21,6 +21,7 @@ import LcdSpec qualified
 import PipelineSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SocHwSim qualified
 import SocSpec qualified
 import SramSpec qualified
 import Test.Tasty (defaultMain, testGroup)
@@ -46,4 +47,5 @@ main =
       , SocSpec.tests
       , SramSpec.tests
       , HelloSpec.tests
+      , SocHwSim.tests
       ]

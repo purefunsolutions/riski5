@@ -13,6 +13,29 @@ rules around maintaining it.
 
 ## In flight
 
+- **T-VF-1. Verilator SoC sim via verilambda (skeleton landed
+  2026-04-20; implementation next session).** Wrapping the
+  Clash-emitted `riski5.v` and the ip-generate-emitted
+  `riski5_jtag_uart.v` under a hand-written `riski5_sim_top.v` so
+  Verilator can drive the whole SoC and the Haskell test-suite
+  can observe per-byte UART TX traffic the Altera IP *actually*
+  latches. Prompted by the 2026-04-20 silicon bug where our
+  pure-Clash `jtagUartSim` model missed the real IP's 1-cycle
+  registered-write semantics and `hello, world\n` came out as NUL
+  bytes. Skeleton in place:
+    - `pkgs/riski5-sim/verilog/riski5_sim_top.v`
+    - `pkgs/riski5-sim/package.nix`
+    - `pkgs/riski5-sim/clash-manifest.json`
+    - `test/SocHwSim.hs` (placeholder; tests green at 90/90)
+  Next session: `Setup.hs` wiring, HKD port record, FFI declarations,
+  first regression test. Blocks **T19-continued**.
+
+- **T19-continued. Altera JTAG UART IP on hardware (blocked by
+  T-VF-1).** The Avalon-MM stall plumbing (`UART_READY` into
+  `Riski5.Soc.stallS`) is committed (476be4e) but unverified on
+  silicon. Gating on T-VF-1 so we have a regression-fencing sim
+  harness before returning to whack-a-mole on the board.
+
 - **T19. ✦ Hello on hardware.** First-flash succeeded (`Riski5.sof`
   loaded over USB-Blaster, LEDR shows `0x8F` proving the entire
   Hello firmware ran to completion). LCD still shows black boxes
