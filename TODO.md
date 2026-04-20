@@ -26,23 +26,25 @@ rules around maintaining it.
     40 µs, HD44780 needs 1.52 ms to finish Clear/Home, so all
     subsequent character writes land in a busy chip and are
     dropped.
-- **T19a. LCD backlight investigation — investigated, deferred.**
+- **T19a. LCD backlight — closed: module has no backlight LED.**
   Pulled the canonical DE2 schematic into
-  `docs/de2/DE2_Schematic.pdf` (the LCD page is on the same sheet
-  as the SRAM and HEX displays). The backlight circuit is:
-  `LCD_BLON → R14 (680Ω) → base of Q5 (8050 NPN) → 47Ω → BL pin
-  of LCD module U2`, emitter to GND. So `LCD_BLON` is **active-
-  HIGH** per schematic — `Top.hs` was updated back to drive HIGH.
-  Both polarities tested on this brand-new DE2 give a dark
-  backlight, and the LCD characters themselves render fine, so
-  the issue is on the hardware side: most likely either the LCD
-  module shipped with this DE2 revision wires its backlight
-  differently from the original Optrex part the schematic
-  documents, or there's a defect in the Q5 / R14 / BL-pin path
-  on this specific board. Black-on-grey HD44780 text is
-  perfectly readable in room light without backlight, so phase-
-  1B isn't blocked. Re-open if a fix needs physical access to
-  the board (multimeter on Q5, replace LCD module, etc.).
+  `docs/de2/DE2_Schematic.pdf`. Backlight drive on the board side
+  is `LCD_BLON → R14 (680Ω) → base of Q5 (8050 NPN) → 47Ω → BL
+  pin of LCD module U2`, emitter to GND — i.e. active-HIGH and
+  fully populated on the PCB. `Top.hs` drives `LCD_BLON` HIGH.
+  Owner observed in a fully dark room that there is *zero* light
+  output from behind the LCD — not even leakage glow — while the
+  on-board LEDs are bright enough to make HD44780 characters
+  readable by reflection alone. That rules out a transistor /
+  resistor defect (those would still leak some current), wrong
+  polarity (already tested both), or pin-table errors.
+  **Conclusion**: this DE2 shipped with the no-backlight variant
+  of the HD44780 module — pins 15 / 16 on the LCD module have
+  no LED soldered between them. The board's drive path is fine;
+  the consumable just isn't there. Phase-1B isn't blocked
+  because the LCD itself works perfectly. Re-open only if the
+  user swaps in a backlit HD44780 module (standard 16-pin
+  pinout, drop-in replacement).
 
 ## Next up — phase 1B (core + SoC on BRAM, hello-world on hardware)
 
