@@ -17,6 +17,11 @@ dist-newstyle/
 cabal.project.local
 cabal.project.local~
 
+# Firmware emit artefacts. The canonical .mif is produced by the
+# Nix build under result/; anything at the repo root is a local
+# dev run of `cabal run riski5-emit-hello`.
+/hello.mif
+
 # Quartus / Verilator / simulation artefacts
 *.vcd
 *.fst
