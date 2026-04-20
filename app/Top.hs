@@ -34,7 +34,9 @@ module Top (
 ) where
 
 import Clash.Annotations.TH (makeTopEntityWithName)
+import Clash.Intel.ClockGen (altpllSync)
 import Clash.Prelude
+import Clash.Explicit.Signal (unsafeSynchronizer)
 import Hello (helloFirmwareWords)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
@@ -42,13 +44,27 @@ import Prelude qualified as P
 
 -- * Clock domain --------------------------------------------------
 
-{- | 50 MHz clock domain matching DE2's @CLOCK_50@; async active-LOW
-reset matching @KEY0@'s electrical convention.
+{- | 50 MHz clock domain matching DE2's @CLOCK_50@ oscillator; async
+active-LOW reset matching @KEY0@'s electrical convention. Used only
+to drive the PLL — no logic runs on this domain.
 -}
 createDomain
   vSystem
     { vName = "Dom50"
     , vPeriod = 20000
+    , vResetKind = Asynchronous
+    , vResetPolarity = ActiveLow
+    }
+
+{- | 40 MHz core domain — derived from @CLOCK_50@ via an Altera
+ALTPLL (50 × 4 / 5 = 40 MHz). 40 MHz sits comfortably under the
+fit-report Fmax of 41.53 MHz, so the design closes timing with
+margin instead of running 20 % over the slow corner.
+-}
+createDomain
+  vSystem
+    { vName = "Dom40"
+    , vPeriod = 25000
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
     }
@@ -81,32 +97,45 @@ topEntity ::
   "KEY" ::: Signal Dom50 (BitVector 4) ->
   "SW" ::: Signal Dom50 (BitVector 18) ->
   ""
-    ::: ( "LEDR" ::: Signal Dom50 (BitVector 18)
-        , "LEDG" ::: Signal Dom50 (BitVector 9)
-        , "LCD_DATA" ::: Signal Dom50 (BitVector 8)
-        , "LCD_RS" ::: Signal Dom50 Bit
-        , "LCD_RW" ::: Signal Dom50 Bit
-        , "LCD_EN" ::: Signal Dom50 Bit
-        , "LCD_ON" ::: Signal Dom50 Bit
-        , "LCD_BLON" ::: Signal Dom50 Bit
+    ::: ( "LEDR" ::: Signal Dom40 (BitVector 18)
+        , "LEDG" ::: Signal Dom40 (BitVector 9)
+        , "LCD_DATA" ::: Signal Dom40 (BitVector 8)
+        , "LCD_RS" ::: Signal Dom40 Bit
+        , "LCD_RW" ::: Signal Dom40 Bit
+        , "LCD_EN" ::: Signal Dom40 Bit
+        , "LCD_ON" ::: Signal Dom40 Bit
+        , "LCD_BLON" ::: Signal Dom40 Bit
         )
-topEntity clk rst keyS swS =
-  withClockResetEnable clk rst enableGen
-    $ let inS = SocIn <$> swS <*> keyS
-          outS = soc firmwareImage dataImage inS
-          ledrS = soLedR <$> outS
-          ledgS = soLedG <$> outS
-          lcdDataS = lcdData . soLcdPins <$> outS
-          lcdRsS = lcdRs . soLcdPins <$> outS
-          lcdRwS = lcdRw . soLcdPins <$> outS
-          lcdEnS = lcdE . soLcdPins <$> outS
-          lcdOnS = pure high
-          -- LCD_BLON polarity on DE2 rev unclear from the user
-          -- manual; first hardware run with HIGH gave a backlit-off
-          -- LCD, so we drive LOW here. If that's wrong the backlight
-          -- just stays off — LCD power (LCD_ON) is independent.
-          lcdBlonS = pure low
-       in (ledrS, ledgS, lcdDataS, lcdRsS, lcdRwS, lcdEnS, lcdOnS, lcdBlonS)
+topEntity clk50 rst50 keyS50 swS50 =
+  let -- Derive the 40 MHz core clock + reset from the 50 MHz input
+      -- via Altera ALTPLL. The reset is held until the PLL locks.
+      (clk40, rst40) :: (Clock Dom40, Reset Dom40) =
+        altpllSync clk50 rst50
+      -- Cross switches and keys from Dom50 → Dom40. They're sampled
+      -- from physical inputs that change at human speeds, so a
+      -- bare 'unsafeSynchronizer' is fine — the metastability risk
+      -- on a single mechanical-switch read is negligible. Promote
+      -- to a proper double-FF synchronizer if we ever sample these
+      -- at full clock rate for time-sensitive logic.
+      keyS = unsafeSynchronizer clk50 clk40 keyS50
+      swS = unsafeSynchronizer clk50 clk40 swS50
+   in withClockResetEnable clk40 rst40 enableGen
+        $ let inS = SocIn <$> swS <*> keyS
+              outS = soc firmwareImage dataImage inS
+              ledrS = soLedR <$> outS
+              ledgS = soLedG <$> outS
+              lcdDataS = lcdData . soLcdPins <$> outS
+              lcdRsS = lcdRs . soLcdPins <$> outS
+              lcdRwS = lcdRw . soLcdPins <$> outS
+              lcdEnS = lcdE . soLcdPins <$> outS
+              lcdOnS = pure high
+              -- LCD_BLON polarity on DE2 rev unclear from the user
+              -- manual; first hardware run with HIGH gave a backlit-
+              -- off LCD, so we drive LOW here. If that's wrong the
+              -- backlight just stays off — LCD power (LCD_ON) is
+              -- independent.
+              lcdBlonS = pure low
+           in (ledrS, ledgS, lcdDataS, lcdRsS, lcdRwS, lcdEnS, lcdOnS, lcdBlonS)
 
 {- | Exported Clash-usable top-entity annotation so
 @clash --verilog Top.hs@ emits a module named @riski5@ with the

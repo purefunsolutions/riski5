@@ -11,8 +11,8 @@
         "verilambda": "verilambda"
       },
       "locked": {
-        "lastModified": 1776603440,
-        "narHash": "sha256-EejV7wh3qMDWgakAiW4VKaQP1LJcES1gb3T4WKpM2RQ=",
+        "lastModified": 1776643324,
+        "narHash": "sha256-/zlRadnvcKx5D32R/kDC+wFArAOcr3LHptBWuVJWLMA=",
         "path": "/home/mika/alterade2-flake",
         "type": "path"
       },
