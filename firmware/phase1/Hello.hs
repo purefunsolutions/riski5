@@ -79,10 +79,11 @@ helloFirmware = do
   -- to base, settle, read back twice (controller registers
   -- SRAM_DQ_I one cycle on hardware-timing-closure grounds — see
   -- Riski5.Sram). Display the result on the LCD, light an LED.
+  -- The SRAM controller now drives a back-pressure 'ready' signal
+  -- that stalls the core until the read result is stable. Firmware
+  -- doesn't need explicit delays or double-reads any more.
   li scratchReg 0xA5A5
   sh sramReg scratchReg 0
-  delayCycles 100
-  lhu resultReg sramReg 0
   lhu resultReg sramReg 0
 
   li scratchReg 0xA5A5
