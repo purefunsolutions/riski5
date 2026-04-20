@@ -13,6 +13,8 @@ derive from it.
 | File | Upstream release | Downloaded |
 |---|---|---|
 | `DE2_UserManual_v1.6_2012-10-08.pdf` | DE2 User Manual v1.6 (2012-10-08), from the [Terasic DE2 board archive page](https://www.terasic.com.tw/cgi-bin/page/archive.pl?Language=English&CategoryNo=53&No=30&PartNo=4) | 2026-04-20 |
+| `DE2_Pin_Table_2006-02-15.pdf` | DE2 Pin Table (2006-02-15), same archive page | 2026-04-20 |
+| `DE2_Schematic.pdf` | DE2 board schematic — Terasic's CD-ROM hosts the original but the download is gated behind a member login. Mirrored from [Columbia CS course materials](https://www.cs.columbia.edu/~sedwards/classes/2008/4840/DE2_schematics.pdf) (also mirrored on Georgia Tech and Tufts course pages). Page count + content match the version distributed on Terasic's DE2 System CD-ROM. | 2026-04-20 |
 
 This is the canonical document for:
 
