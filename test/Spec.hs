@@ -23,6 +23,7 @@ import ReferenceSpec qualified
 import RegfileSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
+import SpikeDriverSpec qualified
 import SramSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
@@ -48,4 +49,5 @@ main =
       , SramSpec.tests
       , HelloSpec.tests
       , SocHwSim.tests
+      , SpikeDriverSpec.tests
       ]
