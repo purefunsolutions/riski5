@@ -44,20 +44,63 @@ not proof; a bug present in both Reference and core can pass. And the
 Reference is *our* implementation — cross-checking it against an
 upstream executable spec (see Layer 1.5) closes that gap.
 
-### Layer 1.5 — Cross-check against `mit-plv/riscv-semantics` (future)
+### Layer 1.5 — Cross-check against Spike (official RISC-V ISS)
 
-Future work, not adopted yet. The
-[`mit-plv/riscv-semantics`](https://github.com/mit-plv/riscv-semantics)
-package is an executable Haskell semantics of RV32I/RV64I from MIT
-PLV. When we're ready, a test module will run the same `InstrCatalog`
-through both `Riski5.Reference` and `riscv-semantics` and diff final
-states. Any divergence is a bug in *our* Reference (they're the
-upstream spec, we're not).
+**Status:** scaffolding landed 2026-04-20; SpikeDriver + first
+triple-diff test to follow in the next working session.
 
-Deferred because (a) phase 1A already has its own Hedgehog properties
-for the decoder/encoder roundtrip, (b) introducing a new Haskell
-dependency with GHC-version constraints is complexity we can postpone.
-Reach for it when a bug makes us want an independent oracle.
+Spike ([`riscv-software-src/riscv-isa-sim`](https://github.com/riscv-software-src/riscv-isa-sim))
+is the official functional ISS maintained by the RISC-V software
+community — the de-facto golden reference every production RV core
+diffs against. Our Layer-1.5 path turns each program we run into
+a three-way diff:
+
+1. Interpret it under `Riski5.Reference` (our Haskell semantics).
+2. Run it under Spike.
+3. Run it under the Clash core (pure Clash sim or the verilambda
+   Layer-1.75 harness).
+
+All three architectural traces must agree; any two-against-one
+disagreement points at the third as the bug location. This catches
+the class of faults where our own Reference and our own Core share
+a bug and silently agree with each other.
+
+The scaffolding committed this session:
+
+  - `pkgs.spike` + `pkgs.dtc` +
+    `pkgsCross.riscv32-embedded.buildPackages.binutils` on the
+    devshell. `dtc` is load-bearing because Spike's default boot
+    ROM at @0x1000@ reads its entry pointer from a device-tree
+    blob it dynamically generates, and refuses to start without
+    `dtc` on PATH.
+  - [`src/Riski5/Elf.hs`](../src/Riski5/Elf.hs) renders an
+    assembly stub (one `.word` per retired instruction) + a
+    linker script placing `.text.firmware` at `0x8000_0000`, then
+    shells out to `riscv32-none-elf-as` + `-ld` to produce a
+    standards-compliant ELF32 little-endian RV executable Spike
+    consumes without complaint. An earlier attempt hand-rolled
+    the ELF headers in Haskell; Spike's loader asserts on edge
+    cases (`e_shstrndx < e_shnum`, memory at `0x0`) so we pivoted
+    to real binutils.
+  - [`firmware/phase1/Emit.hs`](../firmware/phase1/Emit.hs) now
+    emits `hello.mif` (Quartus), `hello.bin` (raw LE bytes for
+    our own sim), and `hello.elf` (for Spike) alongside each
+    other.
+
+**Why not `mit-plv/riscv-semantics`** (the previous Layer-1.5
+candidate): `riscv-semantics` is a Haskell-only alternative golden
+model that'd slot in as a library dependency. Spike wins on two
+fronts: (a) it's what the RISC-V community actually uses as the
+reference, (b) interfacing to it as an external binary keeps our
+Haskell build dependencies stable. We retain the Reference.hs
+hedgehog path; Spike joins as a third oracle, not a replacement.
+
+**What this buys us.** An official cross-check against a widely-
+shared ISS maintained by the people who write the spec. Catches
+bugs shared between our Reference and our Core. **What it
+doesn't buy us.** Spike is functional, not cycle-accurate — it
+says nothing about timing closure, pipeline hazards, or
+peripheral protocol bugs. That's what Layers 1.75 and 2 are for.
 
 ### Layer 1.75 — Verilator-backed whole-SoC simulation via verilambda
 
@@ -189,7 +232,7 @@ load.
 | Layer | Strength | Cost | Phase |
 |---|---|---|---|
 | Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ |
-| `riscv-semantics` cross-check | Independent oracle (CPU semantics) | Medium (new dep) | Deferred |
+| Spike (official RV ISS) triple-diff | Independent oracle (CPU semantics) | Medium (binutils + dtc on devshell) | Scaffolding landed 2026-04-20 |
 | Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | Adding now (after 2026-04-20 UART bug) |
 | RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | Immediately after 1.75 |
 | Liquid Haskell | Static refinement types | Medium-high | 2+ opt-in |

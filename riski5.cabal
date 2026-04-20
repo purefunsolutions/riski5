@@ -73,6 +73,7 @@ library
     Riski5.Core
     Riski5.CSR
     Riski5.Decode
+    Riski5.Elf
     Riski5.Encode
     Riski5.Gpio
     Riski5.ISA
@@ -86,9 +87,14 @@ library
 
   build-depends:
     , base           >=4.20 && <5
+    , binary         >=0.8  && <0.9
+    , bytestring     >=0.12 && <0.13
     , clash-prelude  ^>=1.8
     , containers     >=0.7  && <0.9
+    , filepath       >=1.4  && <1.6
     , mtl            >=2.3  && <2.4
+    , process        >=1.6  && <1.7
+    , temporary      >=1.3  && <1.4
 
 library riski5-top
   import:          warnings, language
@@ -115,7 +121,9 @@ executable riski5-emit-hello
   hs-source-dirs: firmware/phase1
   build-depends:
     , base
+    , bytestring
     , clash-prelude
+    , filepath         >=1.4 && <1.6
     , riski5
     , riski5-firmware
 

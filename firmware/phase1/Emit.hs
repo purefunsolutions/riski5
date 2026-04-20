@@ -9,25 +9,40 @@
 
 {- |
 Module      : Main
-Description : Emit the Hello firmware as a Quartus @.mif@ file.
+Description : Emit the Hello firmware in every on-disk format we care about.
 
 @
-  cabal run riski5-emit-hello -- /path/to/hello.mif
-  cabal run riski5-emit-hello   # writes to ./hello.mif
+  cabal run riski5-emit-hello               # writes ./hello.{mif,bin,elf}
+  cabal run riski5-emit-hello -- path/to/base.mif
+    # writes path/to/base.{mif,bin,elf}
 @
 
-Produces a Memory Initialization File Quartus accepts for
-populating on-chip BRAMs at synthesis time. The depth matches the
-Top.hs imem size; any unused words are initialised with RV32I
-NOPs (@0x00000013@).
+Three outputs, all derived from the same @Hello.helloFirmwareWords@
+stream. The extension on argv[0] is ignored — we always emit
+@.mif@, @.bin@, and @.elf@ alongside each other.
+
+  * @.mif@ is the Memory Initialization File Quartus uses to
+    populate on-chip BRAMs at synthesis time. NOP-padded to
+    'totalWords' to match @Top.hs@'s imem @ProgSize@.
+  * @.bin@ is the flat little-endian byte stream — just the
+    instruction words, no padding. Used by the verilambda
+    Verilator harness (hwsim test) and any ad-hoc tool that
+    wants raw bytes.
+  * @.elf@ is produced via @riscv32-none-elf-as@ + @-ld@ from
+    the same bytes wrapped in a single-section assembly stub.
+    Consumed by Spike in the Layer-1.5 triple-diff test (see
+    @docs/verification.md@).
 -}
 module Main (main) where
 
 import Clash.Prelude qualified as CP
+import Data.ByteString.Lazy qualified as BL
 import Data.List (intercalate)
 import Data.Word qualified as W
 import Hello qualified
+import Riski5.Elf (buildElf, rawBinary, spikeElfBaseAddr)
 import System.Environment (getArgs)
+import System.FilePath (replaceExtension)
 import Text.Printf (printf)
 
 {- | Number of 32-bit words the .mif describes. Must match Top.hs's
@@ -39,11 +54,34 @@ totalWords = 256
 main :: IO ()
 main = do
   args <- getArgs
-  let outPath = case args of
+  let mifPath = case args of
         (p : _) -> p
         _ -> "hello.mif"
-  writeFile outPath (renderMif Hello.helloFirmwareWords)
-  putStrLn ("wrote " ++ outPath ++ " (" ++ show totalWords ++ " words)")
+      binPath = replaceExtension mifPath "bin"
+      elfPath = replaceExtension mifPath "elf"
+      words32 = fmap bitVectorToWord32 Hello.helloFirmwareWords
+
+  writeFile mifPath (renderMif Hello.helloFirmwareWords)
+  putStrLn ("wrote " ++ mifPath ++ " (" ++ show totalWords ++ " words, MIF for Quartus)")
+
+  BL.writeFile binPath (rawBinary words32)
+  putStrLn
+    ( "wrote "
+        ++ binPath
+        ++ " ("
+        ++ show (length words32)
+        ++ " words, raw LE binary)"
+    )
+
+  elfBytes <- buildElf spikeElfBaseAddr words32
+  BL.writeFile elfPath elfBytes
+  putStrLn
+    ( "wrote "
+        ++ elfPath
+        ++ " ("
+        ++ show (BL.length elfBytes)
+        ++ " bytes, ELF for Spike via riscv32-none-elf-{as,ld})"
+    )
 
 {- | Render the program as a Quartus-compatible MIF. Pads with NOPs
 up to 'totalWords'.

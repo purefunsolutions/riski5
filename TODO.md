@@ -13,6 +13,35 @@ rules around maintaining it.
 
 ## In flight
 
+- **T-VS. Spike Layer-1.5 differential (scaffolding landed
+  2026-04-20).** Spike becomes a third oracle alongside
+  `Riski5.Reference` and the Clash core — if all three agree,
+  it's much harder for a shared-Reference/Core bug to hide. This
+  session added:
+    - `pkgs.spike`, `pkgs.dtc`, and
+      `pkgsCross.riscv32-embedded.buildPackages.binutils` on
+      the devshell (binutils gives us
+      `riscv32-none-elf-{as,ld}`).
+    - `src/Riski5/Elf.hs` renders an assembly stub
+      (@.word@-per-instruction) plus a linker script, then
+      shells out to @as@ + @ld@ to produce a real ELF32 RV
+      executable loaded at @0x8000_0000@ (Spike's RAM base).
+    - `firmware/phase1/Emit.hs` now emits
+      `hello.{mif,bin,elf}` alongside each other; the @.bin@
+      stays as-before for verilambda and MIF consumers.
+    - `spike --isa=rv32i --priv=m --pc=0x80000000 --log-commits
+      hello.elf` runs the firmware, stops at the first MMIO
+      store (our Hello firmware is MMIO-heavy so it can't get
+      far on Spike — MMIO-free catalog programs will land next
+      session).
+  Remaining for next session:
+    - `src/Riski5/SpikeDriver.hs` wrapping `spike --log-commits`
+      + parser for the @core N: P 0xPC (0xINSN) xREG 0xVAL@
+      format.
+    - `test/SpikeDiffSpec.hs` taking every CoreSimSpec pure-arch
+      program, running it through Spike + Reference + Core,
+      asserting register-file agreement.
+
 - **T19-continued. Altera JTAG UART IP on hardware (unblocked —
   T-VF-1 landed green).** The Avalon-MM stall plumbing
   (`UART_READY` into `Riski5.Soc.stallS`) is verified in sim via
