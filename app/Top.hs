@@ -40,6 +40,7 @@ import Clash.Explicit.Signal (unsafeSynchronizer)
 import Hello (helloFirmwareWords)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
+import Riski5.Sram (SramPins (..))
 import Prelude qualified as P
 
 -- * Clock domain --------------------------------------------------
@@ -96,6 +97,11 @@ topEntity ::
   "KEY0" ::: Reset Dom50 ->
   "KEY" ::: Signal Dom50 (BitVector 4) ->
   "SW" ::: Signal Dom50 (BitVector 18) ->
+  -- | What the SRAM is currently driving on its DQ bus, sampled
+  -- combinationally. The pin-multiplex wrapper produced by the
+  -- Nix build resolves this against 'SRAM_DQ_O' / 'SRAM_DQ_OE'
+  -- on the actual bidirectional SRAM_DQ[15:0] FPGA pads.
+  "SRAM_DQ_I" ::: Signal Dom50 (BitVector 16) ->
   ""
     ::: ( "LEDR" ::: Signal Dom40 (BitVector 18)
         , "LEDG" ::: Signal Dom40 (BitVector 9)
@@ -105,8 +111,16 @@ topEntity ::
         , "LCD_EN" ::: Signal Dom40 Bit
         , "LCD_ON" ::: Signal Dom40 Bit
         , "LCD_BLON" ::: Signal Dom40 Bit
+        , "SRAM_ADDR" ::: Signal Dom40 (BitVector 18)
+        , "SRAM_DQ_O" ::: Signal Dom40 (BitVector 16)
+        , "SRAM_DQ_OE" ::: Signal Dom40 Bool
+        , "SRAM_CE_N" ::: Signal Dom40 Bit
+        , "SRAM_OE_N" ::: Signal Dom40 Bit
+        , "SRAM_WE_N" ::: Signal Dom40 Bit
+        , "SRAM_UB_N" ::: Signal Dom40 Bit
+        , "SRAM_LB_N" ::: Signal Dom40 Bit
         )
-topEntity clk50 rst50 keyS50 swS50 =
+topEntity clk50 rst50 keyS50 swS50 sramDqInS50 =
   let -- Derive the 40 MHz core clock + reset from the 50 MHz input
       -- via Altera ALTPLL. The reset is held until the PLL locks.
       (clk40, rst40) :: (Clock Dom40, Reset Dom40) =
@@ -119,8 +133,18 @@ topEntity clk50 rst50 keyS50 swS50 =
       -- at full clock rate for time-sensitive logic.
       keyS = unsafeSynchronizer clk50 clk40 keyS50
       swS = unsafeSynchronizer clk50 clk40 swS50
+      -- SRAM_DQ_I is also a "cross-domain" signal here, but our
+      -- read path drives it combinationally from the off-chip SRAM
+      -- and samples on the same Dom40 cycle the controller is
+      -- driving SRAM_OE_N low. The setup time at 40 MHz (25 ns)
+      -- is comfortably above the IS61LV25616's 10 ns access time.
+      sramDqInS = unsafeSynchronizer clk50 clk40 sramDqInS50
    in withClockResetEnable clk40 rst40 enableGen
-        $ let inS = SocIn <$> swS <*> keyS
+        $ let inS =
+                SocIn
+                  <$> swS
+                  <*> keyS
+                  <*> sramDqInS
               outS = soc firmwareImage dataImage inS
               ledrS = soLedR <$> outS
               ledgS = soLedG <$> outS
@@ -131,15 +155,35 @@ topEntity clk50 rst50 keyS50 swS50 =
               lcdOnS = pure high
               -- LCD_BLON is active-HIGH per the DE2 schematic
               -- (pin K2 → R14/680Ω → base of Q5 8050 NPN → BL pin of
-              -- the LCD module). Both polarities tested on a brand-
-              -- new DE2 give a dark backlight, so the issue is on
-              -- the hardware side (likely the LCD module shipped
-              -- with this revision wires its backlight differently,
-              -- or there's a defect in the Q5 / R14 path). Drive
-              -- HIGH to match the schematic's intent. Tracked as
-              -- T19a.
+              -- the LCD module). Hardware on this brand-new board
+              -- has no backlight LED installed (T19a). Drive HIGH
+              -- to match schematic intent.
               lcdBlonS = pure high
-           in (ledrS, ledgS, lcdDataS, lcdRsS, lcdRwS, lcdEnS, lcdOnS, lcdBlonS)
+              sramAddrS = sramAddr . soSramPins <$> outS
+              sramDqOutS = sramDqOut . soSramPins <$> outS
+              sramDqOeS = sramDqOe . soSramPins <$> outS
+              sramCeNS = sramCeN . soSramPins <$> outS
+              sramOeNS = sramOeN . soSramPins <$> outS
+              sramWeNS = sramWeN . soSramPins <$> outS
+              sramUbNS = sramUbN . soSramPins <$> outS
+              sramLbNS = sramLbN . soSramPins <$> outS
+           in ( ledrS
+              , ledgS
+              , lcdDataS
+              , lcdRsS
+              , lcdRwS
+              , lcdEnS
+              , lcdOnS
+              , lcdBlonS
+              , sramAddrS
+              , sramDqOutS
+              , sramDqOeS
+              , sramCeNS
+              , sramOeNS
+              , sramWeNS
+              , sramUbNS
+              , sramLbNS
+              )
 
 {- | Exported Clash-usable top-entity annotation so
 @clash --verilog Top.hs@ emits a module named @riski5@ with the

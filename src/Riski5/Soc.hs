@@ -59,6 +59,7 @@ import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
+import Riski5.Sram (SramPins (..), sram)
 
 {- |
 Inputs the SoC reads from the board.
@@ -66,6 +67,12 @@ Inputs the SoC reads from the board.
 data SocIn = SocIn
   { siSwitches :: BitVector 18
   , siKeys :: BitVector 4
+  , siSramDqIn :: BitVector 16
+  -- ^ What the off-chip SRAM is currently driving on @SRAM_DQ@.
+  -- Read combinationally on the cycle the controller is reading
+  -- (i.e. @SRAM_OE_N == 0@); ignored otherwise. In simulation,
+  -- the test harness wraps the SoC with 'Riski5.Sram.sramSim' to
+  -- provide a model of the off-chip chip.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -80,6 +87,7 @@ data SocOut = SocOut
   { soLedR :: BitVector 18
   , soLedG :: BitVector 9
   , soLcdPins :: LcdPins
+  , soSramPins :: SramPins
   , soUartTx :: Maybe (BitVector 8)
   }
   deriving stock (Eq, Show, Generic)
@@ -146,15 +154,24 @@ soc progInit dataInit inS = outS
   (gpioRdataS, gpOutS) =
     gpio gpioSelS dAddrS dWdataS dBeS dRenS gpInS
 
+  -- ----- SRAM (off-chip 512 KB IS61LV25616-class) --------------
+  -- Pure half-word controller — see 'Riski5.Sram' for the
+  -- pipelineless 16-bit-only contract (T31a tracks 32-bit access).
+  sramSelS = (\a -> slaveOf a == SlaveSram) <$> dAddrS
+  sramDqInS = siSramDqIn <$> inS
+  (sramRdataS, sramPinsS) =
+    sram sramSelS dAddrS dWdataS dBeS dRenS sramDqInS
+
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
   dmemRdataS =
-    ( \s bR uR lR gR ->
+    ( \s bR uR lR gR sR ->
         case s of
           SlaveBram -> bR
           SlaveJtagUart -> uR
           SlaveLcd -> lR
           SlaveGpio -> gR
+          SlaveSram -> sR
           _ -> 0
     )
       <$> (slaveOf <$> dAddrS)
@@ -162,17 +179,20 @@ soc progInit dataInit inS = outS
       <*> uartRdataS
       <*> lcdRdataS
       <*> gpioRdataS
+      <*> sramRdataS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins uartTx ->
+    ( \gpo lcdPins sramPins uartTx ->
         SocOut
           { soLedR = gpoLedR gpo
           , soLedG = gpoLedG gpo
           , soLcdPins = lcdPins
+          , soSramPins = sramPins
           , soUartTx = uartTx
           }
     )
       <$> gpOutS
       <*> lcdPinsS
+      <*> sramPinsS
       <*> uartTxS

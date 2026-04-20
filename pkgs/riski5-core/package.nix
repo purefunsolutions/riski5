@@ -82,6 +82,74 @@ in
       cp pkgs/riski5-core/Riski5.qsf .
       cp pkgs/riski5-core/Riski5.sdc .
 
+      # Bidirectional pin wrapper. The Clash top exposes the off-chip
+      # SRAM data bus as three separate ports — SRAM_DQ_O (output),
+      # SRAM_DQ_OE (output enable), and SRAM_DQ_I (input). Quartus's
+      # I/O cells need a single bidirectional `inout SRAM_DQ[15:0]`
+      # to map onto the SRAM chip's pins. This tiny wrapper does the
+      # tristate resolution and forwards the rest of the ports
+      # 1:1. The .qsf points TOP_LEVEL_ENTITY at riski5_top.
+      mkdir -p verilog/riski5_top
+      cat > verilog/riski5_top/riski5_top.v <<'EOF'
+// SPDX-License-Identifier: MIT OR BSD-3-Clause
+// Auto-generated wrapper around the Clash-emitted `riski5` module.
+// Resolves the SRAM_DQ_{I,O,OE} signals from Clash into a single
+// bidirectional inout pin SRAM_DQ[15:0].
+module riski5_top (
+    input  wire        CLOCK_50,
+    input  wire        KEY0,
+    input  wire [3:0]  KEY,
+    input  wire [17:0] SW,
+    output wire [17:0] LEDR,
+    output wire [8:0]  LEDG,
+    output wire [7:0]  LCD_DATA,
+    output wire        LCD_RS,
+    output wire        LCD_RW,
+    output wire        LCD_EN,
+    output wire        LCD_ON,
+    output wire        LCD_BLON,
+    output wire [17:0] SRAM_ADDR,
+    inout  wire [15:0] SRAM_DQ,
+    output wire        SRAM_CE_N,
+    output wire        SRAM_OE_N,
+    output wire        SRAM_WE_N,
+    output wire        SRAM_UB_N,
+    output wire        SRAM_LB_N
+);
+
+  wire [15:0] sram_dq_o;
+  wire        sram_dq_oe;
+
+  assign SRAM_DQ = sram_dq_oe ? sram_dq_o : 16'bz;
+
+  riski5 u_riski5 (
+      .CLOCK_50    (CLOCK_50),
+      .KEY0        (KEY0),
+      .KEY         (KEY),
+      .SW          (SW),
+      .SRAM_DQ_I   (SRAM_DQ),
+      .LEDR        (LEDR),
+      .LEDG        (LEDG),
+      .LCD_DATA    (LCD_DATA),
+      .LCD_RS      (LCD_RS),
+      .LCD_RW      (LCD_RW),
+      .LCD_EN      (LCD_EN),
+      .LCD_ON      (LCD_ON),
+      .LCD_BLON    (LCD_BLON),
+      .SRAM_ADDR   (SRAM_ADDR),
+      .SRAM_DQ_O   (sram_dq_o),
+      .SRAM_DQ_OE  (sram_dq_oe),
+      .SRAM_CE_N   (SRAM_CE_N),
+      .SRAM_OE_N   (SRAM_OE_N),
+      .SRAM_WE_N   (SRAM_WE_N),
+      .SRAM_UB_N   (SRAM_UB_N),
+      .SRAM_LB_N   (SRAM_LB_N)
+  );
+
+endmodule
+EOF
+      echo 'set_global_assignment -name VERILOG_FILE "verilog/riski5_top/riski5_top.v"' >> Riski5.qsf
+
       # Clash emits one .qsys file per altpllSync / alteraPllSync
       # instance, but Quartus 13.0sp1's QSys → ip-generate path drops
       # the device family on Cyclone II projects (DEVICE_FAMILY=Unknown
