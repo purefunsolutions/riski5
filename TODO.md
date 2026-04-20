@@ -142,6 +142,67 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   if Altera IP doesn't bring up cleanly.
 - **Phase 1E** (T40–T44): max-out-clock-speed exploration.
 
+## Phase 2 — pipelining
+
+Kick-off attempted, reverted. Lessons from the attempt to bank
+for the next session's take:
+
+- **P2-A. Core 2-stage pipeline (F+X).** Minimal viable split:
+  * `pcFetch` register drives imem address (M4K sync-read).
+  * `pcExec` register = previous cycle's `pcFetch` (the PC of the
+    instruction currently in X).
+  * `squashNext` register goes True when X takes a non-sequential
+    PC change (branch taken, JAL, JALR, MRET, trap). On the next
+    cycle it replaces `imemData` with NOP and suppresses
+    writeback / CSR / dmem side effects.
+  * Key pitfall hit last time: **`pcS` output of `core` changes
+    meaning**. It was "PC of the executing instruction"
+    (pipelineless), becomes "PC being fetched" (pipelined) — one
+    cycle ahead of execute. Tests that assert specific pcS
+    sequences need reworking.
+
+- **P2-B. Test-harness update.** All 4 core-facing tests
+  (CoreSpec, CoreSimSpec, BramCoreSpec, TrapSpec) need:
+  * Wrap async imem lookup with `CP.register 0x0000_0013` so it
+    matches the pipelined core's sync-read expectation.
+  * Bump `cycles = nSteps + 1` → `nSteps + 2` for the extra
+    pipeline-warmup cycle.
+  * Rework pcS assertions: either change expected values (now
+    one ahead) OR add a second `pcExec` output to the core so
+    tests can inspect the executing instruction's PC directly.
+
+- **P2-C. SoC update.** Switch `imemDataS` from `bram` to
+  `blockRam` driven by `pcFetch`. This is where the ~7000 LE win
+  shows up (imem goes from distributed LUT-RAM to true M4K) —
+  which also shortens the PC→imem→decode→regfile→ALU→writeback
+  critical path that dominated phase 1C.
+
+- **P2-D. Squash-on-stall interaction.** When SRAM stalls a
+  multi-cycle access, the `squashNext` register must ALSO freeze
+  (matching PC / CSR freeze). The stall should extend whatever
+  squash state we're in, not reset it.
+
+- **P2-E. Two-address SRAM test.** Once core stalls are clean,
+  the failed two-address SRAM test (0xBEEF + 0xCAFE across
+  addresses) should re-test green — phase-1C hit a back-to-back
+  bus-contention issue that the stall should now cover.
+
+- **P2-F. 32-bit SRAM access (T31a).** Extend the SRAM
+  controller FSM to issue two half-word accesses per 32-bit `lw`
+  / `sw`; holding `ready` low across both gives the core the
+  natural two-cycle stall. The bus/core plumbing is already done
+  from T31c.
+
+- **P2-G. Re-target PLL.** Once the critical path is shorter,
+  walk `Dom40` upward (60, 80, 100 MHz?) via the ALTPLL mult/div
+  ratios and re-close timing. The 14% speed-mode win is already
+  banked; phase 2 should compound on it.
+
+**Starting pointer: retry `core` refactor directly on master with
+the above test-side fixes prepared first, so the build never goes
+red. `pre-autosquash-backup` branch preserves this phase-1 end
+state.**
+
 ## Done
 
 - **T1. Repo scaffold** (2026-04-19)
