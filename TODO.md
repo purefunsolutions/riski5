@@ -76,6 +76,21 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
 - **Phase 1B** (T8–T25): ALU, regfile, core, CSRs, SoC, DE2 top,
   hello-world on hardware, InstrCatalog, on-board test agent, MemSpec.
 - **Phase 1C** (T26–T31): SRAM controller + tests + firmware demo.
+  Phase-1C exposes the SRAM as **half-word (16-bit) memory only**;
+  see also T31a below for the deferred 32-bit-word access work.
+
+- **T31a. SRAM 32-bit (word) accesses — deferred to phase 2+.**
+  The phase-1C controller (`src/Riski5/Sram.hs`) drives the
+  IS61LV25616-class chip 16 bits at a time. RV32I `lw` / `sw` to
+  SRAM addresses can't be supported single-cycle without core
+  surgery, because a 32-bit access needs two consecutive SRAM
+  half-word transfers and the pipelineless core has no stall
+  mechanism. Land this once the core gains pipeline stages
+  (phase 2): an EX/MEM boundary opens up a stall slot we can use
+  to back-pressure the second half-word. The controller's bus
+  interface stays the same; the core/bus just gain a `ready`
+  signal that the SRAM slave deasserts during the second
+  half-word cycle.
 - **Phase 1D** (T32–T39): SDRAM via Altera IP + tests + firmware demo.
 - **Phase 1D fallback** (T32a–T36a): own Clash SDRAM controller, only
   if Altera IP doesn't bring up cleanly.

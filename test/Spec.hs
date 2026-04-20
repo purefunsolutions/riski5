@@ -21,6 +21,7 @@ import LcdSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
 import SocSpec qualified
+import SramSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
 
@@ -41,5 +42,6 @@ main =
       , BramCoreSpec.tests
       , LcdSpec.tests
       , SocSpec.tests
+      , SramSpec.tests
       , HelloSpec.tests
       ]

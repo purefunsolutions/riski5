@@ -55,6 +55,7 @@ library
     Riski5.Reference
     Riski5.Regfile
     Riski5.Soc
+    Riski5.Sram
 
   build-depends:
     , base           >=4.20 && <5
@@ -109,6 +110,7 @@ test-suite riski5-test
     ReferenceSpec
     RegfileSpec
     SocSpec
+    SramSpec
     TrapSpec
 
   build-depends:
