@@ -101,53 +101,13 @@ in
       cd "$CORE_DIR"
       python3 ../../checks/genchecks.py
 
-      # 4. Run the checks. `make -C checks` invokes sby on each.
-      # We exercise the ALU + branch + load/store per-instruction
-      # proofs here. Each check is independent; `-k` keeps going
-      # after any failure so one commit gives a full pass/fail
-      # picture. Every green line is SymbiYosys saying "this
-      # instruction's semantics match the RVFI spec within 20
-      # cycles, over every possible input". Every red line points
-      # at a concrete divergence worth hunting down.
-      make -C checks -j $NIX_BUILD_CORES -k \
-        insn_add_ch0 \
-        insn_sub_ch0 \
-        insn_xor_ch0 \
-        insn_or_ch0 \
-        insn_and_ch0 \
-        insn_sll_ch0 \
-        insn_srl_ch0 \
-        insn_sra_ch0 \
-        insn_slt_ch0 \
-        insn_sltu_ch0 \
-        insn_addi_ch0 \
-        insn_xori_ch0 \
-        insn_ori_ch0 \
-        insn_andi_ch0 \
-        insn_slli_ch0 \
-        insn_srli_ch0 \
-        insn_srai_ch0 \
-        insn_slti_ch0 \
-        insn_sltiu_ch0 \
-        insn_lui_ch0 \
-        insn_auipc_ch0 \
-        insn_jal_ch0 \
-        insn_jalr_ch0 \
-        insn_beq_ch0 \
-        insn_bne_ch0 \
-        insn_blt_ch0 \
-        insn_bge_ch0 \
-        insn_bltu_ch0 \
-        insn_bgeu_ch0 \
-        insn_lb_ch0 \
-        insn_lh_ch0 \
-        insn_lw_ch0 \
-        insn_lbu_ch0 \
-        insn_lhu_ch0 \
-        insn_sb_ch0 \
-        insn_sh_ch0 \
-        insn_sw_ch0 \
-        || true
+      # 4. Run the whole check suite. `make -C checks` without a
+      # specific target runs every generated .sby job — per-insn
+      # proofs plus pc_fwd / pc_bwd / reg / causal / unique / ill.
+      # `-k` keeps going after any failure so a single red check
+      # doesn't mask the rest. The summary loop below pulls the
+      # pass/fail status of every check into $out/summary.txt.
+      make -C checks -j $NIX_BUILD_CORES -k || true
 
       # Collate pass/fail summary. `cexdata.sh` in riscv-formal
       # aggregates the per-check status.txt files — use the same

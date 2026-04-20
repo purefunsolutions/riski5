@@ -13,45 +13,68 @@ rules around maintaining it.
 
 ## In flight
 
-- **T-VS. Spike Layer-1.5 differential (scaffolding landed
-  2026-04-20).** Spike becomes a third oracle alongside
-  `Riski5.Reference` and the Clash core — if all three agree,
-  it's much harder for a shared-Reference/Core bug to hide. This
-  session added:
-    - `pkgs.spike`, `pkgs.dtc`, and
-      `pkgsCross.riscv32-embedded.buildPackages.binutils` on
-      the devshell (binutils gives us
-      `riscv32-none-elf-{as,ld}`).
-    - `src/Riski5/Elf.hs` renders an assembly stub
-      (@.word@-per-instruction) plus a linker script, then
-      shells out to @as@ + @ld@ to produce a real ELF32 RV
-      executable loaded at @0x8000_0000@ (Spike's RAM base).
-    - `firmware/phase1/Emit.hs` now emits
-      `hello.{mif,bin,elf}` alongside each other; the @.bin@
-      stays as-before for verilambda and MIF consumers.
-    - `spike --isa=rv32i --priv=m --pc=0x80000000 --log-commits
-      hello.elf` runs the firmware, stops at the first MMIO
-      store (our Hello firmware is MMIO-heavy so it can't get
-      far on Spike — MMIO-free catalog programs will land next
-      session).
-  Remaining for next session:
-    - `src/Riski5/SpikeDriver.hs` wrapping `spike --log-commits`
-      + parser for the @core N: P 0xPC (0xINSN) xREG 0xVAL@
-      format.
-    - `test/SpikeDiffSpec.hs` taking every CoreSimSpec pure-arch
-      program, running it through Spike + Reference + Core,
-      asserting register-file agreement.
+- **T19-continued. Altera JTAG UART IP on hardware.** Re-flash
+  the DE2 against the stall-fixed bitstream and verify
+  `hello, world\n` appears on `nios2-terminal`. The fix is
+  verified in Verilator (T-VF-1) and matches the ISA spec
+  formally (T-VF-2); what's left is the hardware trip.
 
-- **T19-continued. Altera JTAG UART IP on hardware (unblocked —
-  T-VF-1 landed green).** The Avalon-MM stall plumbing
-  (`UART_READY` into `Riski5.Soc.stallS`) is verified in sim via
-  T-VF-1, and the sim caught one additional bug along the way:
-  `Riski5.Core.dmemBeGated` was gating `dmemBe` to 0 on stall,
-  which combined with Avalon-MM's combinational `waitrequest` to
-  form a loop (`stall=1 → be=0 → waitrequest=0 → stall=0 →
-  be=be_native → waitrequest=1 → stall=1 → …`). Fixed by gating
-  only on squash. Re-flashing the updated bitstream to the DE2 is
-  the remaining step.
+- **Wider formal proofs.** `checks.cfg` now enables `pc_fwd`,
+  `pc_bwd`, `reg`, `causal`, `ill` alongside the per-instruction
+  proofs. Adding Zicsr coverage (`csrw_*` / `csrc_*` via the
+  RVFI CSR extension ports) is the next expansion.
+
+## Done — Spike + riscv-formal verification layers
+
+- **T-VS. Spike Layer-1.5 differential (green, 2026-04-20).**
+  Three modules cover it:
+    - `pkgs.spike` + `pkgs.dtc` +
+      `pkgsCross.riscv32-embedded.buildPackages.binutils` on
+      the devshell.
+    - `src/Riski5/Elf.hs` renders @.word@-per-instruction
+      assembly + linker script → `riscv32-none-elf-{as,ld}` →
+      ELF loaded at `0x8000_0000` (Spike's RAM base).
+    - `src/Riski5/SpikeDriver.hs` spawns Spike under `stdbuf
+      -eL` for line-buffered stderr, reads the
+      `--log-commits` trace into `SpikeCommit` records, and
+      terminates cleanly on commit/line/wallclock budgets.
+    - `test/SpikeDiffSpec.hs` runs 9 pure-ALU catalog programs
+      through both Reference and Spike, diffs non-zero GPRs.
+      All 9 green.
+    - `firmware/phase1/Emit.hs` now emits `hello.{mif,bin,elf}`.
+
+- **T-VF-2. RVFI + riscv-formal (green, 2026-04-21).**
+  SymbiYosys model-checking of the Clash-emitted Verilog
+  against the YosysHQ/riscv-formal RVFI spec for every RV32I
+  instruction:
+    - `src/Riski5/Rvfi.hs` — 20-ish RVFI signal record.
+    - `src/Riski5/Core.hs` — computes the record from internal
+      datapath signals, exposes as 8th core output.
+    - `src/Riski5/FormalTop.hs` — second Clash top emitting
+      flat `rvfi_*` ports named as the spec expects.
+    - `pkgs/riscv-formal/package.nix` pins
+      YosysHQ/riscv-formal by commit.
+    - `pkgs/riski5-formal/{wrapper.sv,checks.cfg,package.nix}`
+      run `genchecks.py` + `make -C checks` to exercise the
+      per-instruction + `pc_fwd` / `pc_bwd` / `reg` /
+      `causal` / `ill` check families under boolector.
+  Two real bugs in `Riski5.Core` fell out of the first real
+  proof run (commit 8e6b9d2):
+    1. `rvfi_mem_addr` was the byte address where the spec wants
+       `addr & ~3` — fix in the RVFI tap.
+    2. Branches / JAL / JALR didn't raise
+       `InstrAddrMisaligned` when the target's bottom two bits
+       weren't zero. Our hand-written tests never hit this
+       because the Asm eDSL can't emit a misaligned immediate,
+       but the formal harness drives symbolic inputs and walked
+       straight into it. Fix in each of those instruction
+       handlers + a matching fix in `doBranch` that tests the
+       actual `next_pc[1:0]` (not just the taken-target) — the
+       fall-through path can be misaligned if `pc` itself is
+       misaligned, which only the harness can set up.
+  After both fixes: 37/37 per-insn proofs PASS; running the
+  wider families (pc_fwd/pc_bwd/reg/causal/ill) is a rebuild
+  away.
 
 ## Done since last compaction
 

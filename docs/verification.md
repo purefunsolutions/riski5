@@ -179,30 +179,83 @@ peripheral.
 
 ### Layer 2 — RVFI + YosysHQ/riscv-formal on the Clash-emitted Verilog
 
-**Status:** scaffolding from phase 1B; activated at the end of phase 1B
-once `Core.hs` is running.
+**Status:** live as of 2026-04-21. All 37 per-instruction
+proofs plus the wider `pc_fwd`, `pc_bwd`, `reg`, `causal`, `ill`
+families PASS; `nix build .#riski5-formal` runs the whole suite
+and writes `summary.txt` + per-check counter-example
+directories into `$out`.
 
-[`YosysHQ/riscv-formal`](https://github.com/YosysHQ/riscv-formal) is
-the industry-standard formal-verification harness for RISC-V cores.
-It defines the **RVFI** (RISC-V Formal Interface): a small set of
-output ports that expose, per retired instruction, the instruction
-bits, the `(rs1, rs2, rd, wdata)` it read/wrote, the memory access
-(if any), the PC advance, the mode, and the trap taken. SymbiYosys
-then model-checks the Verilog for bounded cycles against per-insn
-contracts from the `checks/` directory in `riscv-formal`.
+[`YosysHQ/riscv-formal`](https://github.com/YosysHQ/riscv-formal)
+is the industry-standard formal-verification harness for
+RISC-V cores. It defines the **RVFI** (RISC-V Formal Interface):
+a small set of output ports that expose, per retired
+instruction, the instruction bits, the `(rs1, rs2, rd, wdata)`
+it read/wrote, the memory access (if any), the PC advance, the
+mode, and the trap taken. SymbiYosys then model-checks the
+Verilog against per-insn contracts from the `checks/` directory
+in `riscv-formal`.
 
-For us: the core carries an RVFI output bus from the day `Core.hs`
-is born. It's a tiny amount of combinational wiring — a few dozen
-LEs — and it lets us run `riscv-formal` proofs on the generated
-Verilog without touching the design afterwards.
+Pieces (all live):
 
-**What this buys us.** Real formal verification (bounded model
-checking, practically exhaustive for a single-cycle core) against an
-independent ISA specification. **What it doesn't buy us.** It
-verifies the *Verilog*. If Clash has a compiler bug between our
-Haskell and the emitted Verilog, `riscv-formal` won't catch it in our
-favour (it might catch it as a spec-divergence from the Verilog
-side). Layer 1 is still needed to pin the Haskell source.
+  - [`src/Riski5/Rvfi.hs`](../src/Riski5/Rvfi.hs) — 20-signal
+    `Rvfi` record matching `docs/source/rvfi.rst` for `NRET=1`,
+    `XLEN=32`, `ILEN=32`, `RISCV_FORMAL_ALIGNED_MEM`. CSR-side
+    ports will land next; the per-instruction + per-structure
+    checks the current record covers were enough to flush out
+    every bug the harness found.
+  - [`src/Riski5/Core.hs`](../src/Riski5/Core.hs) — computes
+    the record from existing datapath signals: retire detection
+    from `!stall && !squash`, monotonic `rvfi_order` counter,
+    `rvfi_mem_rmask` decoded from opcode+funct3+addr, `rvfi_intr`
+    latched from a prev-retire `pc_wdata` register. Exposed as
+    the 8th element of the core's output tuple.
+  - [`src/Riski5/FormalTop.hs`](../src/Riski5/FormalTop.hs) —
+    second Clash top entity emitting `riski5_formal.v` with
+    flat `rvfi_*` ports named exactly as the harness expects.
+  - [`pkgs/riscv-formal/package.nix`](../pkgs/riscv-formal/package.nix) —
+    pins the upstream harness by commit hash as a Nix package.
+  - [`pkgs/riski5-formal/{wrapper.sv,checks.cfg,package.nix}`](../pkgs/riski5-formal) —
+    SystemVerilog wrapper (`RVFI_OUTPUTS` + `RVFI_CONN32`),
+    genchecks.py config, and the Nix derivation that runs
+    `make -C checks` under boolector.
+
+**What the first real proof run caught.** Two concrete bugs in
+`Riski5.Core`:
+
+1. `rvfi_mem_addr` was the byte address the core computed;
+   under `RISCV_FORMAL_ALIGNED_MEM` the spec expects the
+   word-aligned address (`addr & ~3`). Every
+   `insn_{lb,lh,lbu,lhu,sb,sh}` proof flagged it. One-line fix
+   in the RVFI tap.
+2. Branches, JAL, and JALR didn't raise
+   `InstrAddrMisaligned` when the target's bottom two bits
+   weren't zero. Our own tests never tripped this because
+   `Riski5.Asm` can't emit a misaligned immediate, but the
+   formal harness drives symbolic inputs and walked straight
+   into the pathological cases. Fixes in each of the three
+   instruction handlers plus a subtler fix in `doBranch` that
+   checks the actual chosen `next_pc[1:0]` — the fall-through
+   path is itself misaligned if the current PC is misaligned
+   (a state the harness can set at cycle zero).
+
+After both fixes: 37/37 per-instruction proofs + all the
+wider proof families PASS. Every green line is SymbiYosys
+saying this instruction's RTL matches the ISA contract over
+**every possible** 20-cycle input trace, not just a handful
+of curated programs. The two bugs the formal layer caught
+would have passed both the Reference diff and the Spike
+triple-diff — Layer 2 is qualitatively stronger than Layers
+1 and 1.5 combined, and the bet on a three-layer stack paid
+off within a single week of work.
+
+**What this buys us.** Real formal verification (bounded
+model checking, practically exhaustive for our single-retire
+core) against an independent ISA specification maintained by
+YosysHQ. **What it doesn't buy us.** It verifies the
+*Verilog*. If Clash has a compiler bug between our Haskell
+and the emitted Verilog, `riscv-formal` can't catch it on
+our side (it might catch it as a spec-divergence from the
+Verilog side). Layer 1 still pins the Haskell source.
 
 ### Layer 3 — Liquid Haskell on pure modules (phase 2, opt-in)
 
@@ -229,13 +282,13 @@ load.
 
 ## Summary
 
-| Layer | Strength | Cost | Phase |
-|---|---|---|---|
-| Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ |
-| Spike (official RV ISS) triple-diff | Independent oracle (CPU semantics) | Medium (binutils + dtc on devshell) | Scaffolding landed 2026-04-20 |
-| Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | Adding now (after 2026-04-20 UART bug) |
-| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | Immediately after 1.75 |
-| Liquid Haskell | Static refinement types | Medium-high | 2+ opt-in |
+| Layer | Strength | Cost | Phase | Status |
+|---|---|---|---|---|
+| Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ | Live |
+| Spike (official RV ISS) triple-diff | Independent oracle (CPU semantics) | Medium (binutils + dtc on devshell) | 1A+ | Live (9/9 catalog programs green) |
+| Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | 1B | Live (caught the Avalon-MM UART stall bug) |
+| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | 1B | Live (37/37 insn + pc_fwd/pc_bwd/reg/causal/ill PASS; caught 2 real bugs) |
+| Liquid Haskell | Static refinement types | Medium-high | 2+ | Opt-in, not adopted |
 
 The phase-1 deal: **Layer 1 now, Layer 1.75 next, Layer 2 right after,
 Layer 1.5 and Layer 3 are real options not commitments.**
