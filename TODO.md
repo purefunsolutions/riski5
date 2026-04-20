@@ -108,6 +108,18 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   ALU → writeback mux → regs[rd]. Any meaningful shortening
   needs a pipeline boundary somewhere in that chain — phase 2.
 
+- **History: autosquash attempted, deferred.** Tried
+  `git rebase -i --autosquash` across the phase-1 fixups. The 19
+  fixups landed interleaved with ~30 feature commits (same files
+  edited by non-fixup work in between), so each squash produced a
+  content conflict that had to be resolved manually — too much
+  churn for the benefit. Keeping the messy-but-accurate history:
+  every fixup commit message names which feature commit it
+  amends, and the `pre-autosquash-backup` branch preserves this
+  state. Phase 2 can still start from a clean base (the working
+  tree is consistent). Revisit if the log ever needs to be
+  published externally.
+
 - **T31a. SRAM 32-bit (word) accesses — partially unblocked,
   still phase 2.** The bus + core now carry a back-pressure
   `ready` signal (T31c, below), so multi-cycle slaves can stall
