@@ -75,6 +75,7 @@ library
     Riski5.Decode
     Riski5.Elf
     Riski5.Encode
+    Riski5.FormalTop
     Riski5.Gpio
     Riski5.ISA
     Riski5.JtagUart

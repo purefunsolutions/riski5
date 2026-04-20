@@ -35,6 +35,10 @@
 
     inherit (inputs.alterade2-flake.packages.${system}) quartus-ii-13;
     inherit (inputs.verilambda.packages.${system}) verilambda-shim-gen;
+
+    # YosysHQ/riscv-formal pinned as a Nix package. Tree lives
+    # under $out/share/riscv-formal/ — see pkgs/riscv-formal/package.nix.
+    riscv-formal = pkgs.callPackage ./riscv-formal/package.nix {};
   in {
     _module.args.pkgs = pkgs;
 
@@ -49,6 +53,17 @@
       # with RISKI5_SIM_LIB_DIR=$(readlink -f result)/lib.
       riski5-sim = pkgs.callPackage ./riski5-sim/package.nix {
         inherit quartus-ii-13 verilambda-shim-gen;
+      };
+
+      # YosysHQ/riscv-formal harness — expose the pinned package
+      # so consumers can point at it with `.#riscv-formal` too.
+      inherit riscv-formal;
+
+      # Layer 2 of docs/verification.md: SymbiYosys proofs of the
+      # Clash-emitted riski5_formal.v against the RVFI spec's
+      # per-instruction contracts.
+      riski5-formal = pkgs.callPackage ./riski5-formal/package.nix {
+        inherit riscv-formal;
       };
 
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
