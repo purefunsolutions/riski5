@@ -83,6 +83,10 @@ tests =
     , testCase "squash: JAL squashes the in-flight pre-fetch" case_jalSquash
     , testCase "squash: store under squash never reaches dmem" case_storeSquashed
     , testCase "PC progression: first retiring instruction has pcExec=0" case_pcFromReset
+    , testCase "stall: no writeback commits while stall is high" case_stallFreezesWb
+    , testCase "stall + squash: squash persists through a stall window" case_stallThroughSquash
+    , testCase "squash: CSR write in squash slot does not mutate CSR" case_csrWriteSquashed
+    , testCase "squash: ECALL in squash slot does not trap" case_ecallSquashed
     ]
 
 -- * Sim harness ----------------------------------------------------
@@ -121,6 +125,43 @@ run prog nCycles =
             dmem = CP.pure 0
             (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS) =
               core imem dmem (CP.pure P.False)
+         in bundle (pcExecS, wbS, dAddrS, dBeS)
+   in sampleN @CP.System nCycles $
+        withClockResetEnable @CP.System clockGen resetGen enableGen go
+
+-- | Like 'run', but the third argument is the per-cycle stall pattern.
+-- Cycles past the end of the pattern see @stall = False@.
+runWithStall ::
+  Asm () ->
+  Int ->
+  [P.Bool] ->
+  [ ( BitVector 32 -- pcExec
+    , Maybe (BitVector 5, BitVector 32) -- writeback
+    , BitVector 32 -- dmemAddr
+    , BitVector 4 -- dmemBe
+    )
+  ]
+runWithStall prog nCycles stallPattern =
+  let padded = case assemble prog of
+        Left err -> error ("assemble: " P.++ P.show err)
+        Right ws -> ws P.++ P.repeat 0x0000_0013
+      progVec :: Vec ProgSize (BitVector 32)
+      progVec = V.unsafeFromList (P.take 64 padded)
+      pcToIdx :: BitVector 32 -> Index ProgSize
+      pcToIdx pc =
+        let w :: CP.Unsigned 32
+            w = unpack (pc `shiftR` 2)
+         in P.fromIntegral w
+      stallList = stallPattern P.++ P.repeat P.False
+      go ::
+        (HiddenClockResetEnable CP.System) =>
+        Signal CP.System (BitVector 32, Maybe (BitVector 5, BitVector 32), BitVector 32, BitVector 4)
+      go =
+        let imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
+            dmem = CP.pure 0
+            stallS = CP.fromList stallList
+            (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS) =
+              core imem dmem stallS
          in bundle (pcExecS, wbS, dAddrS, dBeS)
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go
@@ -268,3 +309,128 @@ case_pcFromReset = do
     "first 4 retirements pair pcExec with rd in order"
     [(0, 1), (4, 2), (8, 3), (12, 4)]
     (P.take 4 retiring)
+
+{- |
+Driving @stall@ high for a few cycles in the middle of a straight-
+line program must freeze the core: no writeback may commit during
+the stalled cycles, and after the stall releases, execution resumes
+from where it left off with no lost or duplicated retirements.
+-}
+case_stallFreezesWb :: Assertion
+case_stallFreezesWb = do
+  let prog = do
+        addi x1 x0 11
+        addi x2 x0 22
+        addi x3 x0 33
+        addi x4 x0 44
+        addi x5 x0 55
+      -- Stall pattern: low for the reset + warmup, then raise high
+      -- for three cycles somewhere in the middle of the ADDIs, then
+      -- drop low again. Cycles [0..1]=low (reset+warmup), [2]=low
+      -- (first ADDI retires), [3..5]=stall, [6..]=low.
+      stallPattern = [P.False, P.False, P.False] P.++ P.replicate 3 P.True
+      trace = runWithStall prog 15 stallPattern
+      -- Per-cycle (stall, writeback) pairs — the writeback column
+      -- should be Nothing on every stalled cycle.
+      paired = P.zip stallPattern [wb | (_, wb, _, _) <- trace]
+      stallCycleWbs = [wb | (P.True, wb) <- paired]
+  assertBool
+    ("writeback committed during stall cycles: " P.++ P.show stallCycleWbs)
+    (P.all (P.== Nothing) stallCycleWbs)
+  -- And after the full run we should still have retired all five
+  -- ADDIs — none dropped by the stall.
+  let regs = regsFrom trace
+  assertEqual
+    "all 5 ADDIs retired despite mid-run stall"
+    (Map.fromList [(1, 11), (2, 22), (3, 33), (4, 44), (5, 55)])
+    (Map.filterWithKey (\k _ -> k P./= 0) regs)
+
+{- |
+When the cycle after a taken branch (which must be squashed) is
+also stalled, the squash flag stays asserted through the stall
+window — the stale in-flight instruction still may not retire
+when the stall eventually releases.
+-}
+case_stallThroughSquash :: Assertion
+case_stallThroughSquash = do
+  let prog = do
+        skipL <- labelUnplaced
+        beq x0 x0 skipL -- taken: squash the slot right after it
+        addi x1 x0 99 -- MUST NOT retire, even through a stall
+        placeAt skipL
+        addi x1 x0 7
+  -- Stall pattern: let the branch execute at cycle 2 (after reset
+  -- + warmup), then raise stall from cycle 3 for three cycles (the
+  -- squash cycle plus two bonus stalled cycles). Stall drops at
+  -- cycle 6.
+      stallPattern = [P.False, P.False, P.False] P.++ P.replicate 3 P.True
+      trace = runWithStall prog 15 stallPattern
+      wbs = P.drop 2 [wb | (_, wb, _, _) <- trace]
+      realWbs = [(rdOf rd, w32 v) | Just (rd, v) <- wbs]
+  assertBool
+    ("squashed ADDI x1=99 leaked despite stall: " P.++ P.show realWbs)
+    (P.notElem (1, 99) realWbs)
+  assertBool
+    ("expected to see the non-squashed x1=7 writeback: " P.++ P.show realWbs)
+    (P.elem (1, 7) realWbs)
+ where
+  rdOf :: BitVector 5 -> Word32
+  rdOf b = P.fromIntegral (unpack b :: CP.Unsigned 5)
+  w32 :: BitVector 32 -> Word32
+  w32 b = P.fromIntegral (unpack b :: CP.Unsigned 32)
+
+{- |
+A CSR write in the squash slot must not mutate the CSR file.
+Scenario: a taken branch followed by a @csrrwi@ that would
+otherwise overwrite @mtvec@, then (at the branch target) a
+@csrrs@ that reads the CSR back into a register. If squash
+correctly suppresses the @csrsNext@ update, the read returns
+0 (the reset value), not the would-be-written constant.
+-}
+case_csrWriteSquashed :: Assertion
+case_csrWriteSquashed = do
+  let prog = do
+        skipL <- labelUnplaced
+        beq x0 x0 skipL
+        -- Squashed: would set mtvec = 31 if it ran.
+        emit (Csrrwi x0 31 csrMtvec)
+        placeAt skipL
+        -- Reads mtvec into x1. Should see 0 (reset value), not 31.
+        csrrs x1 x0 csrMtvec
+      regs = regsFrom (run prog 14)
+  assertEqual
+    "mtvec survived the squash unchanged"
+    Nothing
+    (Map.lookup 1 (Map.filter (P./= 0) regs))
+
+{- |
+@ECALL@ in the squash slot must NOT raise a trap: the squash
+replaces the instruction word with NOP in the decode path, so
+@Ecall@ is never seen by @handleInstr@, @mcause@ stays at its
+reset value, @mepc@ is not latched, and the PC continues past
+the branch target normally.
+-}
+case_ecallSquashed :: Assertion
+case_ecallSquashed = do
+  let prog = do
+        skipL <- labelUnplaced
+        beq x0 x0 skipL
+        -- Squashed: would trap (mcause = 11) if it ran.
+        ecall
+        placeAt skipL
+        -- Read mcause into x1. Should still be 0.
+        csrrs x1 x0 csrMcause
+        -- And read the PC the core would have jumped to if it
+        -- trapped. We can't see mtvec, but we can see that the
+        -- next instruction retires normally with pcExec = skipL + 4,
+        -- which is what regsFrom's next entry will confirm.
+        addi x2 x0 55
+      regs = regsFrom (run prog 14)
+  assertEqual
+    "mcause stayed at reset value (no trap)"
+    Nothing
+    (Map.lookup 1 (Map.filter (P./= 0) regs))
+  assertEqual
+    "post-branch ADDI retired normally (x2 = 55)"
+    (Just 55)
+    (Map.lookup 2 regs)

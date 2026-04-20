@@ -58,7 +58,7 @@ module Riski5.Core (
   core,
 ) where
 
-import Clash.Prelude hiding (And, Xor, not, (!!), (||))
+import Clash.Prelude hiding (And, Xor, not, (!!), (&&), (||))
 import Riski5.ALU (AluOp (..), BranchOp (..), alu, branchTaken)
 import Riski5.CSR (
   Csrs (..),
@@ -156,11 +156,48 @@ core imemData dmemRData stallS =
           <*> csrs
       )
 
+  -- Stall from the previous cycle. Using this (not the current
+  -- @stallS@) to gate the held-imem logic avoids a combinational
+  -- cycle: if @effectiveImemS@ depended on the current cycle's
+  -- @stallS@, decode output → @dAddrS@ → SoC bus mux → @stallS@ →
+  -- @effectiveImemS@ would be a loop.
+  stallPrev :: Signal dom Bool
+  stallPrev = register False stallS
+
+  -- F/X pipeline latch. The external imem (blockRam or the
+  -- register-wrapped Vec lookup in tests) has a 1-cycle read delay,
+  -- so @imemData_K@ reflects @pcFetch_{K-1}@. Under normal flow
+  -- this is exactly right: @pcExec_K = pcFetch_{K-1}@. But when
+  -- stall asserts, @pcFetch@ has already moved on (it only stops
+  -- advancing once stall goes high, which is AFTER the clock edge
+  -- that updated it), so @imemData@ on subsequent stalled cycles
+  -- shows the wrong instruction for the frozen @pcExec@.
+  --
+  -- Capture @imemData@ into @heldImemS@ on cycles where the last
+  -- cycle was NOT stalled (so the capture is the instruction that
+  -- was in flight when stall started). On any cycle where the
+  -- previous cycle was stalled, switch decode to the held value.
+  -- This covers the whole stall window plus the first cycle after
+  -- stall releases (when the core finally retires the held
+  -- instruction).
+  heldImemS :: Signal dom (BitVector 32)
+  heldImemS = regEn 0x0000_0013 (not <$> stallPrev) imemData
+
   -- Effective instruction word for the X stage: NOP on squash so
-  -- the stale pre-fetched instruction doesn't reach decode.
+  -- the stale pre-fetched-after-branch doesn't reach decode; held
+  -- value on any cycle where last cycle was stalled; current
+  -- imemData otherwise.
   effectiveImemS :: Signal dom (BitVector 32)
   effectiveImemS =
-    (\sq d -> if sq then 0x0000_0013 else d) <$> squashNext <*> imemData
+    ( \sq useHeld d held ->
+        if sq
+          then 0x0000_0013
+          else if useHeld then held else d
+    )
+      <$> squashNext
+      <*> stallPrev
+      <*> imemData
+      <*> heldImemS
 
   -- Suppress regfile writeback on stall or squash.
   writeBackGated =
