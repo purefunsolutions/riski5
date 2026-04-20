@@ -106,6 +106,48 @@ helloFirmware = do
   redrawLine topBufReg 0x80
   redrawLine botBufReg 0xC0
 
+  -- SRAM round-trip self-test (T30). Write 0xBEEF to SRAM at base
+  -- 0x2000_0000 and 0xCAFE to base+4, read both back, set LEDR[17]
+  -- (rightmost red LED in our pattern: bit 17) on success or
+  -- LEDG[8] (top green) on failure. The result is *latched* into
+  -- LEDR[17] so the bit stays lit independent of the running
+  -- counter on the lower bits — the counter only ever writes
+  -- count[23:8] to LEDR which keeps LEDR[17] free.
+  --
+  -- Phase 1C exposes SRAM as 16-bit half-word memory (T31a tracks
+  -- the deferred 32-bit access), so we use sh / lhu instead of
+  -- sw / lw.
+  loadAddr sramReg 0x2000_0000
+  -- Write the two test patterns.
+  li scratchReg 0xBEEF
+  sh sramReg scratchReg 0
+  li scratchReg 0xCAFE
+  sh sramReg scratchReg 4
+  -- Read back, OR the results, compare against the expected
+  -- bitwise OR (0xBEEF | 0xCAFE = 0xFEFF). If the bus + controller
+  -- + chip all work, both reads return their stored value and the
+  -- OR matches.
+  lhu ledTmpReg sramReg 0
+  lhu scratchReg sramReg 4
+  or_ ledTmpReg ledTmpReg scratchReg
+  -- LEDR[17] (bit 17) is at byte 2, bit 1 within the LEDR word.
+  -- Build the appropriate marker word: 0x20000 sets only bit 17.
+  li scratchReg 0xFEFF
+  -- Branch on equality: ledTmpReg == scratchReg → SRAM ok.
+  sramOk <- labelUnplaced
+  beq ledTmpReg scratchReg sramOk
+  -- Failure path: light LEDG[8] (bit 8 of LEDG word at offset 4).
+  li scratchReg 0x100
+  sw gpioReg scratchReg 4
+  -- Drop into spin without lighting the success LED.
+  sramAfter <- labelUnplaced
+  j sramAfter
+  placeAt sramOk
+  -- Success path: light LEDR[17] permanently.
+  li scratchReg 0x20000
+  sw gpioReg scratchReg 0
+  placeAt sramAfter
+
   -- Counter + dividers: count ticks at ~100 Hz (LEDG[0] visibly
   -- flickers at 50 Hz, LEDR upper bits cycle on minute/hour
   -- timescales). LCD scroll happens every 50 count ticks = 2 Hz.
@@ -177,13 +219,14 @@ scrollDivReg = x19
 -- Scroll-buffer registers. Each buffer is 16 bytes in the data BRAM
 -- (one byte per character — packed via @lb@ / @sb@ to keep the
 -- footprint small).
-topBufReg, botBufReg, scratchReg, srcOffReg, dstOffReg, endOffReg :: Reg
+topBufReg, botBufReg, scratchReg, srcOffReg, dstOffReg, endOffReg, sramReg :: Reg
 topBufReg = x29
 botBufReg = x30
 scratchReg = x31
 srcOffReg = x16
 dstOffReg = x17
 endOffReg = x18
+sramReg = x15
 
 -- * Addressing helper ----------------------------------------------
 
