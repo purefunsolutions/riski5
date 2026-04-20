@@ -20,6 +20,17 @@ set_global_assignment -name LAST_QUARTUS_VERSION "13.0 SP1"
 set_global_assignment -name STRATIX_DEVICE_IO_STANDARD "3.3-V LVTTL"
 set_global_assignment -name RESERVE_ALL_UNUSED_PINS "AS INPUT TRI-STATED"
 
+# -- Synthesis optimization ----------------------------------------
+# Push for fmax over area. The pipelineless single-cycle core has
+# the entire datapath in one clock period; aggressive synthesis
+# lets Quartus trade LE area for path delay.
+set_global_assignment -name OPTIMIZATION_TECHNIQUE SPEED
+set_global_assignment -name FITTER_EFFORT "STANDARD FIT"
+set_global_assignment -name PHYSICAL_SYNTHESIS_COMBO_LOGIC ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_DUPLICATION ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_REGISTER_RETIMING ON
+set_global_assignment -name PHYSICAL_SYNTHESIS_EFFORT EXTRA
+
 # -- Source files --------------------------------------------------
 # Clash emits ./verilog/Top.topEntity/riski5.v on each build.
 set_global_assignment -name VERILOG_FILE verilog/Top.topEntity/riski5.v
