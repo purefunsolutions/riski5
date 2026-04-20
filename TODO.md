@@ -19,10 +19,19 @@ rules around maintaining it.
   verified in Verilator (T-VF-1) and matches the ISA spec
   formally (T-VF-2); what's left is the hardware trip.
 
-- **Wider formal proofs.** `checks.cfg` now enables `pc_fwd`,
-  `pc_bwd`, `reg`, `causal`, `ill` alongside the per-instruction
-  proofs. Adding Zicsr coverage (`csrw_*` / `csrc_*` via the
-  RVFI CSR extension ports) is the next expansion.
+- **Wider formal proofs — done (2026-04-21).** `checks.cfg` now
+  enables `pc_fwd`, `pc_bwd`, `reg`, `causal`, `ill` alongside
+  the per-instruction proofs, plus `csrw_<csr>` for each of the
+  six M-mode CSRs and `csrc_any_<csr>` for the three purely
+  CSR-mutated ones (`mstatus`/`mtvec`/`mscratch`) via the new
+  `RvfiCsr` observability blocks. The trap-written CSRs
+  (`mepc`/`mcause`/`mtval`) stay in `csrw_*` only — csrc_any's
+  shadow-register model can't see the trap path updating them.
+  `reg` runs under boolector at depth 10 (nerv's config);
+  `csrc_any_*` get swapped to z3 via sed post-processing
+  because boolector's bit-blaster stalls on their quantifier-
+  heavy invariants. Total: **51 / 51 green**. `unique` and
+  `liveness` remain deferred pending phase-2 pipelining.
 
 ## Done — Spike + riscv-formal verification layers
 

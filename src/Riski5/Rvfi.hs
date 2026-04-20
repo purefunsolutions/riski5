@@ -20,11 +20,13 @@ The port set matches @docs/source/rvfi.rst@ of @riscv-formal@ for
 our core traps misaligned loads/stores (@mcause = 4 / 6@) so the
 harness never has to reason about sub-word split transactions.
 
-CSR-side RVFI ports
-(@rvfi_csr_\<name\>_\{rmask,wmask,rdata,wdata\}@) are not in this
-first cut. They land in the same commit as the @csrw@ /
-@csrc_any@ checks if the initial @insn_*@ / @pc_*@ / @reg@ / @ill@
-sweep finds enough bugs to justify the extra wiring.
+Each implemented CSR contributes a four-signal block
+(@rvfi_csr_\<name\>_\{rmask,wmask,rdata,wdata\}@) consumed by the
+matching @csrw_\<name\>@ (per-CSR-instruction contract) and
+@csrc_any_\<name\>@ (consistency across retires) proofs. The set
+mirrors @RISCV_FORMAL_CSR_\<NAME\>@ defines in
+@pkgs/riski5-formal/checks.cfg@: @mstatus@, @mtvec@, @mepc@,
+@mcause@, @mtval@, @mscratch@.
 
 The record field names use @rfXxx@ rather than the raw Verilog
 @rvfi_xxx@ to stay clear of Haskell's reserved-word rules.
@@ -34,10 +36,44 @@ the formal-verification Verilog.
 -}
 module Riski5.Rvfi (
   Rvfi (..),
+  RvfiCsr (..),
   zeroRvfi,
+  zeroRvfiCsr,
 ) where
 
 import Clash.Prelude
+
+{- | Per-CSR RVFI observability block. The riscv-formal @csrw@ and
+@csrc_\*@ checks assert that for each named CSR:
+
+  * every bit the instruction *read* (1 in 'rcRmask') has 'rcRdata'
+    equal to the architectural CSR value at retire time;
+  * every bit the instruction *wrote* (1 in 'rcWmask') has
+    'rcWdata' equal to the architectural CSR value immediately
+    after the write.
+
+'rcRdata' is the pre-write CSR value; 'rcWdata' is the post-write.
+For bits where both masks are zero, the two should be equal (the
+CSR is unchanged by this retire).
+-}
+data RvfiCsr = RvfiCsr
+  { rcRmask :: !(BitVector 32)
+  , rcWmask :: !(BitVector 32)
+  , rcRdata :: !(BitVector 32)
+  , rcWdata :: !(BitVector 32)
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+-- | All-zero 'RvfiCsr' — "this instruction did not touch this CSR".
+zeroRvfiCsr :: RvfiCsr
+zeroRvfiCsr =
+  RvfiCsr
+    { rcRmask = 0
+    , rcWmask = 0
+    , rcRdata = 0
+    , rcWdata = 0
+    }
 
 -- | Bundled RVFI observability signals for one cycle.
 --
@@ -102,6 +138,20 @@ data Rvfi = Rvfi
   , rfMemWdata :: !(BitVector 32)
   -- ^ @rvfi_mem_wdata@ — new value written. Byte lanes outside
   -- 'rfMemWmask' are don't-care.
+  , -- CSR observability — one 'RvfiCsr' block per CSR the core
+    -- implements. Maps onto @rvfi_csr_\<name\>_{rmask,wmask,
+    -- rdata,wdata}@ in the flat Verilog port list (see
+    -- 'Riski5.FormalTop'). Only the CSRs our 'Riski5.CSR' actually
+    -- stores are here; unimplemented CSRs read as zero in
+    -- @readCsr@ and would trivially satisfy a matching RVFI
+    -- contract, but riscv-formal's checks are per-CSR and we'd
+    -- need to add a check entry for each one — phase 2.
+    rfCsrMstatus :: !RvfiCsr
+  , rfCsrMtvec :: !RvfiCsr
+  , rfCsrMepc :: !RvfiCsr
+  , rfCsrMcause :: !RvfiCsr
+  , rfCsrMtval :: !RvfiCsr
+  , rfCsrMscratch :: !RvfiCsr
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -135,4 +185,10 @@ zeroRvfi =
     , rfMemWmask = 0
     , rfMemRdata = 0
     , rfMemWdata = 0
+    , rfCsrMstatus = zeroRvfiCsr
+    , rfCsrMtvec = zeroRvfiCsr
+    , rfCsrMepc = zeroRvfiCsr
+    , rfCsrMcause = zeroRvfiCsr
+    , rfCsrMtval = zeroRvfiCsr
+    , rfCsrMscratch = zeroRvfiCsr
     }

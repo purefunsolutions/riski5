@@ -101,6 +101,23 @@ in
       cd "$CORE_DIR"
       python3 ../../checks/genchecks.py
 
+      # 3b. Swap the SMT solver from boolector (genchecks.py
+      # default) to z3 for the k-induction CSR-consistency
+      # proofs (csrc_any_*). Boolector's bit-blaster stalls
+      # on those quantifier-heavy inductive invariants; z3
+      # closes them in seconds. The pure-bitvector per-
+      # instruction formulas stay on boolector (2-3× faster
+      # there). reg_ch0 stays on boolector too — same engine
+      # + depth 10 that nerv uses — to avoid re-running z3's
+      # slow path on a proof boolector closes naturally.
+      # Per-check engine config isn't supported by riscv-
+      # formal's checks.cfg, so we sed the generated .sby
+      # files.
+      for f in checks/csrc_any_*.sby; do
+        test -f "$f" || continue
+        sed -i 's/^smtbmc boolector$/smtbmc z3/' "$f"
+      done
+
       # 4. Run the whole check suite. `make -C checks` without a
       # specific target runs every generated .sby job — per-insn
       # proofs plus pc_fwd / pc_bwd / reg / causal / unique / ill.

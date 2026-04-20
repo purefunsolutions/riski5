@@ -47,7 +47,7 @@ module Riski5.FormalTop (
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
 import Riski5.Core (core)
-import Riski5.Rvfi (Rvfi (..))
+import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
 
 -- * Clock domain ---------------------------------------------------
 
@@ -114,6 +114,37 @@ formalTopEntity ::
         , "rvfi_mem_wmask" ::: Signal DomFormal (BitVector 4)
         , "rvfi_mem_rdata" ::: Signal DomFormal (BitVector 32)
         , "rvfi_mem_wdata" ::: Signal DomFormal (BitVector 32)
+        , -- Zicsr extension: per-CSR RVFI observability. One
+          -- @_rmask@ / @_wmask@ / @_rdata@ / @_wdata@ quartet
+          -- per implemented CSR. The riscv-formal @csrw_*@ /
+          -- @csrc_*_any@ checks consume these via the
+          -- @`RVFI_CONN32`@ macro when the matching
+          -- @RISCV_FORMAL_CSR_<NAME>@ define is set in
+          -- @checks.cfg@.
+          "rvfi_csr_mstatus_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mstatus_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mstatus_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mstatus_wdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtvec_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtvec_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtvec_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtvec_wdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mepc_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mepc_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mepc_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mepc_wdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mcause_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mcause_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mcause_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mcause_wdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtval_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtval_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtval_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mtval_wdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mscratch_rmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mscratch_wmask" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mscratch_rdata" ::: Signal DomFormal (BitVector 32)
+        , "rvfi_csr_mscratch_wdata" ::: Signal DomFormal (BitVector 32)
         )
 formalTopEntity clk rst imemRdataS dmemRdataS =
   withClockResetEnable clk rst enableGen $
@@ -146,6 +177,34 @@ formalTopEntity clk rst imemRdataS dmemRdataS =
         , rfMemWmask <$> rvfiS
         , rfMemRdata <$> rvfiS
         , rfMemWdata <$> rvfiS
+        , -- CSR quartets flattened out. One `<$>` chain per
+          -- signal; Clash optimises out the shared @rvfiS@
+          -- reads that remain after the record-projection
+          -- simplifier runs.
+          (rcRmask . rfCsrMstatus) <$> rvfiS
+        , (rcWmask . rfCsrMstatus) <$> rvfiS
+        , (rcRdata . rfCsrMstatus) <$> rvfiS
+        , (rcWdata . rfCsrMstatus) <$> rvfiS
+        , (rcRmask . rfCsrMtvec) <$> rvfiS
+        , (rcWmask . rfCsrMtvec) <$> rvfiS
+        , (rcRdata . rfCsrMtvec) <$> rvfiS
+        , (rcWdata . rfCsrMtvec) <$> rvfiS
+        , (rcRmask . rfCsrMepc) <$> rvfiS
+        , (rcWmask . rfCsrMepc) <$> rvfiS
+        , (rcRdata . rfCsrMepc) <$> rvfiS
+        , (rcWdata . rfCsrMepc) <$> rvfiS
+        , (rcRmask . rfCsrMcause) <$> rvfiS
+        , (rcWmask . rfCsrMcause) <$> rvfiS
+        , (rcRdata . rfCsrMcause) <$> rvfiS
+        , (rcWdata . rfCsrMcause) <$> rvfiS
+        , (rcRmask . rfCsrMtval) <$> rvfiS
+        , (rcWmask . rfCsrMtval) <$> rvfiS
+        , (rcRdata . rfCsrMtval) <$> rvfiS
+        , (rcWdata . rfCsrMtval) <$> rvfiS
+        , (rcRmask . rfCsrMscratch) <$> rvfiS
+        , (rcWmask . rfCsrMscratch) <$> rvfiS
+        , (rcRdata . rfCsrMscratch) <$> rvfiS
+        , (rcWdata . rfCsrMscratch) <$> rvfiS
         )
 
 {- | Clash annotation: emit a Verilog module named @riski5_formal@

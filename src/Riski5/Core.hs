@@ -76,7 +76,7 @@ import Riski5.CSR (
 import Riski5.Decode (decode)
 import Riski5.ISA
 import Riski5.Regfile (regfile)
-import Riski5.Rvfi (Rvfi (..))
+import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
 
 {- |
 Top-level core entity. Inputs are the instruction word at the
@@ -367,32 +367,130 @@ core imemData dmemRData stallS =
   rvfiMemAddrS :: Signal dom (BitVector 32)
   rvfiMemAddrS = (\addr -> addr .&. complement 3) <$> dmemAddr
 
+  -- ----- CSR RVFI (Zicsr extension of the spec) -------------------
+  -- For each CSR our core implements ('Riski5.CSR'), compute the
+  -- per-retire @{r,w}mask@ + @{r,w}data@ block the riscv-formal
+  -- @csrw_\*@ / @csrc_\*_any@ checks consume.
+  --
+  -- Read-mask = all-1s iff this retire is a CSR instruction
+  -- (opcode SYSTEM 0b1110011 with @funct3 /= 0@, i.e. any of
+  -- CSRRW/S/C/WI/SI/CI) targeting this particular CSR. We always
+  -- return the CSR's architectural value in @rdata@, so
+  -- over-reporting @rmask@ on retires that don't actually read
+  -- the CSR is harmless — the check only asserts that the bits
+  -- in @rmask@ match the architectural value, and they always
+  -- do.
+  --
+  -- Write-mask = all-1s iff a CSR instruction targeting this CSR
+  -- retires, /or/ a trap retires that writes this CSR
+  -- (@mcause@ / @mepc@ / @mtval@ under 'applyTrap'). Same
+  -- conservative-over-reporting rationale: the check asserts
+  -- @wdata@ matches the post-state, which we always populate
+  -- from @csrsNext@.
+  --
+  -- @rdata@ / @wdata@ come straight from the pre- and post-state
+  -- 'Csrs' records, so the per-CSR masks are the only
+  -- instruction-dependent logic.
+  csrRetireAddrS :: Signal dom (Bool, BitVector 12)
+  csrRetireAddrS =
+    (\v insn -> (v && isCsrOp insn, slice d31 d20 insn))
+      <$> rvfiValidS
+      <*> effectiveImemS
+
+  -- Per-CSR write-mask helper. Set on any CSR instruction
+  -- targeting this CSR, or (for the trap-written CSRs) on any
+  -- cycle where the core latched a trap.
+  csrWmask ::
+    -- | this CSR's 12-bit address
+    BitVector 12 ->
+    -- | is this CSR written on trap (mcause/mepc/mtval only)?
+    Bool ->
+    Signal dom (BitVector 32)
+  csrWmask csrAddr writtenOnTrap =
+    ( \(isCsrHere, tAddr) valid trapped ->
+        if (isCsrHere && tAddr == csrAddr)
+          || (writtenOnTrap && valid && trapped)
+          then maxBound
+          else 0
+    )
+      <$> csrRetireAddrS
+      <*> rvfiValidS
+      <*> trapFiredS
+
+  csrRmask :: BitVector 12 -> Signal dom (BitVector 32)
+  csrRmask csrAddr =
+    ( \(isCsrHere, tAddr) ->
+        if isCsrHere && tAddr == csrAddr then maxBound else 0
+    )
+      <$> csrRetireAddrS
+
+  mkCsrBlock ::
+    -- | CSR address
+    BitVector 12 ->
+    -- | is this CSR written on trap?
+    Bool ->
+    -- | pre-state getter
+    (Csrs -> BitVector 32) ->
+    -- | post-state getter (same signature)
+    (Csrs -> BitVector 32) ->
+    Signal dom RvfiCsr
+  mkCsrBlock csrAddr writtenOnTrap getR getW =
+    ( \r w rd wd ->
+        RvfiCsr
+          { rcRmask = r
+          , rcWmask = w
+          , rcRdata = rd
+          , rcWdata = wd
+          }
+    )
+      <$> csrRmask csrAddr
+      <*> csrWmask csrAddr writtenOnTrap
+      <*> (getR <$> csrs)
+      <*> (getW <$> csrsNext)
+
+  rvfiCsrMstatusS, rvfiCsrMtvecS, rvfiCsrMepcS :: Signal dom RvfiCsr
+  rvfiCsrMcauseS, rvfiCsrMtvalS, rvfiCsrMscratchS :: Signal dom RvfiCsr
+  rvfiCsrMstatusS = mkCsrBlock (unCsr csrMstatus) False cMstatus cMstatus
+  rvfiCsrMtvecS = mkCsrBlock (unCsr csrMtvec) False cMtvec cMtvec
+  rvfiCsrMepcS = mkCsrBlock (unCsr csrMepc) True cMepc cMepc
+  rvfiCsrMcauseS = mkCsrBlock (unCsr csrMcause) True cMcause cMcause
+  rvfiCsrMtvalS = mkCsrBlock (unCsr csrMtval) True cMtval cMtval
+  rvfiCsrMscratchS = mkCsrBlock (unCsr csrMscratch) False cMscratch cMscratch
+
   rvfiS :: Signal dom Rvfi
   rvfiS =
-    ( \valid order insn trapped intr pcR pcW rs1V' rs2V' rdA rdW mAddr mRm mWm mRd mWd ->
-        Rvfi
-          { rfValid = if valid then 1 else 0
-          , rfOrder = order
-          , rfInsn = insn
-          , rfTrap = if trapped && valid then 1 else 0
-          , rfHalt = 0
-          , rfIntr = if intr then 1 else 0
-          , rfMode = 3
-          , rfIxl = 1
-          , rfRs1Addr = slice d19 d15 insn
-          , rfRs2Addr = slice d24 d20 insn
-          , rfRs1Rdata = rs1V'
-          , rfRs2Rdata = rs2V'
-          , rfRdAddr = resize rdA
-          , rfRdWdata = rdW
-          , rfMemAddr = mAddr
-          , rfMemRmask = mRm
-          , rfMemWmask = mWm
-          , rfMemRdata = mRd
-          , rfMemWdata = mWd
-          , rfPcRdata = pcR
-          , rfPcWdata = pcW
-          }
+    ( \valid order insn trapped intr pcR pcW rs1V' rs2V' rdA rdW
+       mAddr mRm mWm mRd mWd
+       csrSt csrTv csrEpc csrCs csrTval csrScr ->
+          Rvfi
+            { rfValid = if valid then 1 else 0
+            , rfOrder = order
+            , rfInsn = insn
+            , rfTrap = if trapped && valid then 1 else 0
+            , rfHalt = 0
+            , rfIntr = if intr then 1 else 0
+            , rfMode = 3
+            , rfIxl = 1
+            , rfRs1Addr = slice d19 d15 insn
+            , rfRs2Addr = slice d24 d20 insn
+            , rfRs1Rdata = rs1V'
+            , rfRs2Rdata = rs2V'
+            , rfRdAddr = resize rdA
+            , rfRdWdata = rdW
+            , rfMemAddr = mAddr
+            , rfMemRmask = mRm
+            , rfMemWmask = mWm
+            , rfMemRdata = mRd
+            , rfMemWdata = mWd
+            , rfPcRdata = pcR
+            , rfPcWdata = pcW
+            , rfCsrMstatus = csrSt
+            , rfCsrMtvec = csrTv
+            , rfCsrMepc = csrEpc
+            , rfCsrMcause = csrCs
+            , rfCsrMtval = csrTval
+            , rfCsrMscratch = csrScr
+            }
     )
       <$> rvfiValidS
       <*> rvfiOrderS
@@ -410,6 +508,12 @@ core imemData dmemRData stallS =
       <*> dmemBeGated
       <*> dmemRData
       <*> dmemWdata
+      <*> rvfiCsrMstatusS
+      <*> rvfiCsrMtvecS
+      <*> rvfiCsrMepcS
+      <*> rvfiCsrMcauseS
+      <*> rvfiCsrMtvalS
+      <*> rvfiCsrMscratchS
 
 -- * Combinational dispatch -----------------------------------------
 
@@ -698,6 +802,21 @@ extendLoad width signed addr rdata = case (width, signed) of
 -- | Sign-extend an n-bit value to 32 bits.
 signExtendTo32 :: forall n. (KnownNat n) => BitVector n -> Signed 32
 signExtendTo32 v = resize (unpack v :: Signed n)
+
+{- | Is this instruction a CSR instruction (CSRRW/S/C/WI/SI/CI)?
+
+Opcode 0b1110011 (SYSTEM) is shared with ECALL / EBREAK / MRET,
+but those have @funct3 == 0@ whereas all Zicsr instructions
+have @funct3 ∈ {1,2,3,5,6,7}@. The RVFI CSR tap uses this to
+decide whether the current retire is targeting a CSR.
+
+Called from the RVFI tap in 'core'; exported at module scope
+so it synthesises to a single shared comparator net rather
+than being inlined into every per-CSR mask computation.
+-}
+isCsrOp :: BitVector 32 -> Bool
+isCsrOp insn =
+  slice d6 d0 insn == 0b1110011 && slice d14 d12 insn /= 0
 
 {- |
 Compute the RVFI @rvfi_mem_rmask@ for a load instruction: which
