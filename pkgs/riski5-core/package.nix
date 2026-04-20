@@ -82,6 +82,77 @@ in
       cp pkgs/riski5-core/Riski5.qsf .
       cp pkgs/riski5-core/Riski5.sdc .
 
+      # Clash emits one .qsys file per altpllSync / alteraPllSync
+      # instance, but Quartus 13.0sp1's QSys → ip-generate path drops
+      # the device family on Cyclone II projects (DEVICE_FAMILY=Unknown
+      # → Component altpll not found). Sidestep that by writing a
+      # plain-Verilog wrapper per .qsys with the matching module name
+      # plus an altpll instantiation hard-coded with the parameters
+      # Clash already chose (CLK0_MULTIPLY_BY=4, CLK0_DIVIDE_BY=5
+      # → 50 MHz × 4 / 5 = 40 MHz). Register the wrapper as a regular
+      # VERILOG_FILE.
+      for q in verilog/Top.topEntity/*.qsys; do
+        name=$(basename "$q" .qsys)
+        wrapper="verilog/Top.topEntity/$name.v"
+        cat > "$wrapper" <<EOF
+// SPDX-License-Identifier: MIT OR BSD-3-Clause
+// Auto-generated wrapper around the Cyclone II altpll megafunction.
+// The module name matches the one Clash emits for altpllSync; the
+// parameters mirror those Clash baked into $q from the Dom50 (20 ns)
+// and Dom40 (25 ns) domain definitions.
+
+module $name (
+    input  wire clk,
+    input  wire areset,
+    output wire c0,
+    output wire locked
+);
+
+  wire [4:0] sub_wire0;
+  wire       sub_wire2;
+  wire       sub_wire3 = 1'b0;
+  wire [1:0] sub_wire1 = {sub_wire3, clk};
+
+  assign c0     = sub_wire0[0];
+  assign locked = sub_wire2;
+
+  altpll altpll_component (
+      .areset (areset),
+      .inclk  (sub_wire1),
+      .clk    (sub_wire0),
+      .locked (sub_wire2),
+      .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
+      .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
+      .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
+      .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
+      .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
+      .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
+      .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
+      .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
+      .vcounderrange ()
+  );
+
+  defparam altpll_component.bandwidth_type        = "AUTO";
+  defparam altpll_component.clk0_divide_by        = 5;
+  defparam altpll_component.clk0_duty_cycle       = 50;
+  defparam altpll_component.clk0_multiply_by      = 4;
+  defparam altpll_component.clk0_phase_shift      = "0";
+  defparam altpll_component.compensate_clock      = "CLK0";
+  defparam altpll_component.inclk0_input_frequency = 20000;
+  defparam altpll_component.intended_device_family = "Cyclone II";
+  defparam altpll_component.lpm_type              = "altpll";
+  defparam altpll_component.operation_mode        = "NORMAL";
+  defparam altpll_component.port_clk0             = "PORT_USED";
+  defparam altpll_component.port_inclk0           = "PORT_USED";
+  defparam altpll_component.port_locked           = "PORT_USED";
+  defparam altpll_component.port_areset           = "PORT_USED";
+  defparam altpll_component.width_clock           = 5;
+
+endmodule
+EOF
+        echo "set_global_assignment -name VERILOG_FILE \"$wrapper\"" >> Riski5.qsf
+      done
+
       quartus_sh --flow compile Riski5 || {
         echo ""
         echo "NOTE: Quartus flow did not close cleanly."
