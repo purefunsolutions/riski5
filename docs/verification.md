@@ -180,20 +180,34 @@ peripheral.
 ### Layer 2 — RVFI + YosysHQ/riscv-formal on the Clash-emitted Verilog
 
 **Status:** live as of 2026-04-21. All 37 per-instruction proofs,
-six wider proof families (`pc_fwd`, `pc_bwd`, `reg`, `causal`,
-`ill`, `unique`), plus the **Zicsr** suite — `csrw_<csr>` for
-each of the six M-mode CSRs we implement (`mstatus`, `mtvec`,
-`mepc`, `mcause`, `mtval`, `mscratch`), and `csrc_any_<csr>` for
-the three purely-CSR-mutated ones (`mstatus`, `mtvec`,
-`mscratch`) — PASS. Total: **52 / 52**. The three trap-written
-CSRs (`mepc`, `mcause`, `mtval`) are out of scope for
-`csrc_any`: its shadow-register model assumes the CSR is only
-mutated by CSR instructions, so any trap-retire (which our core
-uses to push `mcause`/`mepc`/`mtval`) falsely invalidates the
-consistency claim. `csrw_*` alone still pins the per-CSR-
-instruction contract on all six.
+seven wider proof families (`pc_fwd`, `pc_bwd`, `reg`, `causal`,
+`ill`, `unique`, `liveness`), plus the **Zicsr** suite —
+`csrw_<csr>` for each of the six M-mode CSRs we implement
+(`mstatus`, `mtvec`, `mepc`, `mcause`, `mtval`, `mscratch`),
+and `csrc_any_<csr>` for the three purely-CSR-mutated ones
+(`mstatus`, `mtvec`, `mscratch`) — PASS. Total: **53 / 53**.
+This is every `riscv-formal` proof family in scope for our ISA
+(RV32I + Zicsr + M-mode, no compressed, no supervisor).
+
+The three trap-written CSRs (`mepc`, `mcause`, `mtval`) are
+out of scope for `csrc_any`: its shadow-register model assumes
+the CSR is only mutated by CSR instructions, so any trap-retire
+(which our core uses to push `mcause`/`mepc`/`mtval`) falsely
+invalidates the consistency claim. `csrw_*` alone still pins
+the per-CSR-instruction contract on all six.
+
+`liveness` passes without a fairness assumption because
+`Riski5.Core.effectiveImemS` injects a hardcoded NOP into the
+decoder whenever `squashNext` is True. That breaks the obvious
+adversarial attack where the symbolic harness drives a stream
+of branch-taking imem values to keep `squashNext=True` forever
+— the squashed cycle decodes a NOP regardless of what the
+harness presents on `imem_rdata`, so any single branch / jump
+/ trap costs exactly one squashed cycle and the next retire
+follows. Boolector closes `liveness_ch0` in five seconds.
+
 `nix build .#riski5-formal` runs the whole suite (boots in
-~2 min 37 sec on 32 cores) and writes `summary.txt` + per-check
+~1 min 25 sec on 32 cores) and writes `summary.txt` + per-check
 counter-example directories into `$out`.
 
 [`YosysHQ/riscv-formal`](https://github.com/YosysHQ/riscv-formal)
@@ -303,7 +317,7 @@ load.
 | Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ | Live |
 | Spike (official RV ISS) triple-diff | Independent oracle (CPU semantics) | Medium (binutils + dtc on devshell) | 1A+ | Live (9/9 catalog programs green) |
 | Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | 1B | Live (caught the Avalon-MM UART stall bug) |
-| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | 1B | Live (37/37 insn + pc_fwd/pc_bwd/reg/causal/ill/unique + 6 csrw + 3 csrc_any PASS; caught 2 real bugs) |
+| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | 1B | Live (53/53 — every in-scope family PASS; caught 2 real bugs) |
 | Liquid Haskell | Static refinement types | Medium-high | 2+ | Opt-in, not adopted |
 
 The phase-1 deal: **Layer 1 now, Layer 1.75 next, Layer 2 right after,

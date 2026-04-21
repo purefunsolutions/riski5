@@ -118,6 +118,18 @@ in
         sed -i 's/^smtbmc boolector$/smtbmc z3/' "$f"
       done
 
+      # 3c. Bound liveness to a wallclock budget as a safety
+      # net. The proof itself closes in ~5 seconds — the NOP
+      # injected on `squashNext=True` in `Riski5.Core` means
+      # squash lasts at most one cycle, so liveness holds
+      # without any fairness assumption. The 120-second cap
+      # is here in case a future Core.hs change accidentally
+      # removes that NOP-injection and the proof has to chase
+      # an unbounded counter-example.
+      if [ -f checks/liveness_ch0.sby ]; then
+        sed -i '/^\[options\]$/a timeout 120' checks/liveness_ch0.sby
+      fi
+
       # 4. Run the whole check suite. `make -C checks` without a
       # specific target runs every generated .sby job — per-insn
       # proofs plus pc_fwd / pc_bwd / reg / causal / unique / ill.
