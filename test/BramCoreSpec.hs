@@ -146,13 +146,20 @@ uses word offsets 64..127 (byte addresses 0x100..0x1FC).
 -}
 runCore :: [BitVector 32] -> Int -> Map.Map Word32 Word32
 runCore program nSteps =
-  let cycles = nSteps P.+ 2 -- reset cycles (Clash System resetGen lasts longer than 1)
+  -- 5-stage pipeline: 6 cycles reset + pipe fill, then one retire
+  -- per cycle. Generous factor on nSteps handles any occasional
+  -- branch bubble.
+  let cycles = 2 P.* nSteps P.+ 10
       trace =
         sampleN @System cycles $
           withClockResetEnable @System clockGen resetGen enableGen $
             simHarness program
-      wbs = P.drop 2 (P.map P.snd trace) -- skip reset cycles
-      updates = [(rdOf r, w32 v) | Just (r, v) <- wbs]
+      wbs = P.drop 6 (P.map P.snd trace) -- skip reset + 5-stage pipe fill
+      -- Match the Reference's nSteps budget: take the first
+      -- @nSteps@ retire cycles (including stores / branches that
+      -- don't produce writebacks), then filter to @Just@.
+      limited = P.take nSteps wbs
+      updates = [(rdOf r, w32 v) | Just (r, v) <- limited]
    in foldl' (P.flip (P.uncurry Map.insert)) Map.empty updates
  where
   rdOf :: BitVector 5 -> Word32

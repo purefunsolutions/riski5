@@ -76,6 +76,7 @@ import Riski5.Asm qualified as Asm
 import Riski5.Core (core)
 import Riski5.ISA
 import Riski5.Reference qualified as Ref
+import Riski5.Rvfi (Rvfi (..))
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, assertFailure, testCase)
 import Prelude (Either (..), IO, Int, Maybe (..), String, error, fmap, ($), (.))
@@ -312,13 +313,21 @@ iterative FU).
 -}
 runCore :: [BitVector 32] -> Int -> Int -> Map.Map Word32 Word32
 runCore words_ nSteps nMOps =
-  let cycles = nSteps P.+ 2 P.+ 34 P.* nMOps -- reset cycles + M-op stall budget
+  -- Budget: N retiring instructions + 6 for reset + 5-stage pipe
+  -- fill, + 34 cycles per M op iteration, + a generous 2× nSteps
+  -- slack for taken-branch bubbles (2 per branch) and any
+  -- M-stage stall bookkeeping. Way more than needed in practice;
+  -- the test runs in ms regardless.
+  let cycles = 2 P.* nSteps P.+ 10 P.+ 34 P.* nMOps
       trace =
         sampleN @System cycles $
           withClockResetEnable @System clockGen resetGen enableGen $
             simHarness words_
-      wbs = P.drop 2 (P.map P.snd trace) -- skip reset cycles
-      updates = [(rdOf rd, w32 v) | Just (rd, v) <- wbs]
+      -- Take the first @nSteps@ actual retirements (per the
+      -- RVFI valid flag from the core), then keep only those
+      -- that produced a regfile write.
+      retirements = P.take nSteps [wb | (valid, wb) <- trace, valid]
+      updates = [(rdOf rd, w32 v) | Just (rd, v) <- retirements]
    in foldl' apply Map.empty updates
  where
   apply m (k, v) = Map.insert k v m
@@ -374,7 +383,7 @@ dmem).
 simHarness ::
   (HiddenClockResetEnable System) =>
   [BitVector 32] ->
-  Signal System (BitVector 32, Maybe (BitVector 5, BitVector 32))
+  Signal System (P.Bool, Maybe (BitVector 5, BitVector 32))
 simHarness program =
   let progVec :: Vec ProgSize (BitVector 32)
       progVec = V.unsafeFromList (P.take (natValInt (CP.SNat @ProgSize)) padded)
@@ -397,8 +406,12 @@ simHarness program =
       -- paired with pcExec.
       imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
       dmem = CP.pure 0
-      (pcFetchS, pcExecS, _, _, _, _, wbS, _) = core imem dmem (CP.pure P.False)
-   in bundle (pcExecS, wbS)
+      (pcFetchS, _pcExecS, _, _, _, _, wbS, rvfiS) = core imem dmem (CP.pure P.False)
+      -- Retire flag from the RVFI tap: distinguishes "valid
+      -- retirement" from "no writeback this cycle" (which happens
+      -- both on bubble cycles and on real store / branch retires).
+      retireS = fmap ((P.== (CP.high :: CP.Bit)) . rfValid) rvfiS
+   in bundle (retireS, wbS)
 
 -- | Type-level sugar for @fromIntegral (natVal ...)@.
 natValInt :: forall n proxy. (CP.KnownNat n) => proxy n -> Int

@@ -2,6 +2,7 @@
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE RecordWildCards #-}
@@ -12,62 +13,105 @@
 
 {- |
 Module      : Riski5.Core
-Description : 2-stage pipelined RV32I + RV32M core with M-mode CSRs + traps.
+Description : Classic 5-stage F|D|X|M|W in-order RV32I + RV32M pipeline.
 
-Two overlapping pipeline stages:
+__Goal:__ maximise scalar throughput on Cyclone II. The phase-1
+pipelineless 2-stage F+X core plateaued at ~33 MHz because the
+whole @decode → rf read → ALU → mem → writeback@ cone settled in
+one clock. Splitting that cone across five pipeline stages with
+full forwarding gives us ~2× Fmax with ~1 IPC on non-dependent
+code — the Tiny-tier target from @docs/core-family.md@.
 
-  * __F (fetch)__: the @pcFetch@ register presents the next
-    instruction address to the imem input port. imem is expected
-    to have synchronous-read semantics — the instruction for
-    @pcFetch@ at cycle N arrives on @imemData@ at cycle N+1.
+== The five stages
 
-  * __X (execute)__: combinational decode + regfile read + ALU +
-    branch-compare + CSR access + memory-access issue + writeback,
-    all within one clock using @pcExec@ (= previous cycle's
-    @pcFetch@) and the current @imemData@ which by then reflects
-    that @pcExec@ address.
+  1. __F (fetch)__ — @pcFetch@ drives imem address. imem has
+     synchronous-read semantics; the instruction for @pcFetch_N@
+     arrives on @imemData@ at cycle @N+1@.
 
-Back-to-back sequential instructions retire at 1/clock in steady
-state. The only source of bubbles is a non-sequential PC change
-(taken branch, JAL, JALR, MRET, trap) which squashes the
-pre-fetched instruction on the next cycle.
+  2. __D (decode)__ — consumes the IF/ID register: pc + fetched
+     instruction word. Runs 'decode' to get a 'Maybe' 'Instr';
+     presents @rs1@ / @rs2@ addresses to the register file; feeds
+     the ID/EX register with the decoded fields plus the two
+     operand values.
 
-== RV32M via multi-cycle functional unit
+  3. __X (execute)__ — consumes ID/EX. Applies the forwarding
+     muxes to pick fresh rs1 / rs2 values, runs 'handleInstr'
+     (ALU, branch compare, CSR read/write, load-address compute,
+     trap detection). For RV32M ops, the iterative 'mulDivFU'
+     stalls X until 'MdDone'. Drives the dmem address / wdata /
+     byte-enable / read-enable onto the bus, and captures its
+     final writeback value + next-PC into EX/MEM.
 
-Phase 2B wires an iterative multiplier + divider FU alongside the
-ALU (see "Riski5.Core.FU.MulDiv"). When an RV32M op enters X,
-@mdActiveS@ goes high; the FU's combinational @mdBusy@ output is
-OR'd with the external @stallS@ into @stallInternal@, which gates
-every sequential register in the core. The op stays in X for
-~34 clocks while the FU iterates; when the FU reaches @MdDone@,
-@mdBusy@ drops, the writeback mux (@writeBackWithMd@) substitutes
-the FU's 32-bit result for the handler's placeholder value, and
-the op retires through the same RVFI path as any other integer
-instruction. @tiny32@ (@extM = False@) and @tiny32M@ (@extM =
-True@) share this kernel — the FU sits idle on programs that
-never issue M ops.
+  4. __M (memory)__ — consumes EX/MEM. Today a passthrough: the
+     async-read dmem returns the load value in the same X cycle,
+     so EX/MEM already carries the computed writeback for loads.
+     Phase 2C will split EX/MEM in half when caches land and
+     dmem becomes synchronous, putting the actual mem-lookup
+     logic here.
 
-== Pipeline control
+  5. __W (writeback)__ — consumes MEM/WB. Writes @rd@ to the
+     regfile (through the async-read 'Riski5.Regfile.regfile'
+     for now; swap to 'regfileSync' is a follow-up once the
+     shape is stable).
 
-  * __Stall__ (input): freezes every sequential register so
-    multi-cycle memory slaves can back-pressure cleanly.
+== Forwarding
 
-  * __Squash__: @squashNext@ register fires the cycle after this
-    cycle's X takes a PC change. On the squash cycle, @imemData@
-    is replaced with NOP in decode; regfile writeback, CSR write,
-    and dmem byte-enable are all suppressed.
+Every RAW (read-after-write) dependency inside the pipeline's
+3-instruction window is resolved combinationally by the two
+forwarding paths at X's input:
 
-== Trap handling (M-mode only)
+  * __EX→X__ — forward @EX/MEM.wbData@ when @EX/MEM.rd@ matches
+    the current X instruction's @rs1@ or @rs2@.
+  * __MEM→X__ — forward @MEM/WB.wbData@ when @MEM/WB.rd@ matches
+    and the EX→X path didn't already cover it.
 
-  * Illegal instruction: @mcause = 2@, @mtval = instruction bits@.
-  * ECALL from M-mode: @mcause = 11@, @mtval = 0@.
-  * EBREAK: @mcause = 3@, @mtval = 0@.
-  * Load / store address misaligned: @mcause = 4@ / @6@,
-    @mtval = faulting address@.
+Older-than-3-ahead dependencies are already committed to the
+regfile by the time they're read, so no forwarding needed.
 
-On any trap: @mepc = pcExec@, next fetch redirected to
-@mtvec.base@, writeback suppressed. @MRET@ copies @mepc@ back
-into @pcFetch@ via the non-sequential-PC path.
+Because the phase-2A dmem is async-read, __there is no load-use
+hazard__: the load value is computed inside X (not M) and lands
+in EX/MEM the same cycle, where the normal EX→X forwarding mux
+picks it up for the next instruction. The classic "bubble after
+a load" becomes relevant only once we move to a synchronous D$
+in phase 2C.
+
+== Control hazards — flush on redirect
+
+Any non-sequential PC change detected in X (taken branch, JAL,
+JALR, MRET, trap) squashes the two speculative instructions
+behind it — one in D, one in the ID/EX register — by invalidating
+their pipe regs on the next clock edge. The taken-branch penalty
+is therefore __2 cycles__, matching the distance from the front
+of the pipeline to X.
+
+== Stall handling
+
+Two stall sources feed a single @stallInternal@ signal:
+
+  * External bus back-pressure ('stallS' input) — multi-cycle
+    SRAM / SDRAM / UART slaves hold the core for their latency.
+  * RV32M iteration — @mulDivFU@'s @busy@ flag is asserted for
+    ~34 cycles per M op.
+
+While stalled, @pcFetch@ / IF/ID / ID/EX all freeze, keeping the
+stalling instruction in X. EX/MEM and MEM/WB receive bubbles and
+drain naturally — already-issued instructions ahead of the stall
+continue to retire. Once the stall clears, EX/MEM picks up X's
+new result and the pipeline refills.
+
+== RVFI observability
+
+The @Rvfi@ record is produced at W's edge: one retire event per
+instruction that reaches the MEM/WB register with @mwValid@
+asserted. All the pre-state / post-state hooks flow through the
+pipe registers (operand values from the forwarding-picked sources
+in X, memory read-data from the dmem tap in X, CSR snapshots
+before / after the retire's application in X). Squashed bubbles
+don't retire, matching the spec exactly.
+
+See @docs/verification.md@ for the RVFI contract and
+@docs/core-family.md@ for the Tiny tier's design envelope this
+core fits into.
 -}
 module Riski5.Core (
   core,
@@ -94,47 +138,303 @@ import Riski5.ISA
 import Riski5.Regfile (regfile)
 import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
 
+-- * Pipeline registers --------------------------------------------
+
+{- | IF/ID pipeline register. Holds the PC + fetched instruction
+word from the previous cycle's F stage. @ifValid@ is 'False' on
+reset and on cycles after a flush (bubble).
+-}
+data IfId = IfId
+  { ifPc :: BitVector 32
+  , ifInstr :: BitVector 32
+  , ifValid :: Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+defaultIfId :: IfId
+defaultIfId = IfId {ifPc = 0, ifInstr = 0x0000_0013, ifValid = False}
+
+bubbleIfId :: IfId
+bubbleIfId = defaultIfId
+
+{- | ID/EX pipeline register. Holds the decoded instruction + both
+rs1 / rs2 architectural values freshly read from the regfile. The
+X stage forwarding mux may override either rs data; the raw values
+are kept here for RVFI's pre-forwarding observability tap.
+-}
+data IdEx = IdEx
+  { idPc :: BitVector 32
+  , idInstr :: BitVector 32
+  , idMInstr :: Maybe Instr
+  , idRs1 :: BitVector 5
+  , idRs2 :: BitVector 5
+  , idRs1Data :: BitVector 32
+  , idRs2Data :: BitVector 32
+  , idRd :: BitVector 5
+  , idWbEn :: Bool
+  -- ^ Will this instruction write back to rd? Static per decoded
+  -- opcode — stores / branches / FENCE / traps / MRET set this
+  -- 'False', everyone else 'True'. Lets the forwarding muxes skip
+  -- producer instructions that don't actually write @rd@.
+  , idValid :: Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+defaultIdEx :: IdEx
+defaultIdEx =
+  IdEx
+    { idPc = 0
+    , idInstr = 0x0000_0013
+    , idMInstr = Nothing
+    , idRs1 = 0
+    , idRs2 = 0
+    , idRs1Data = 0
+    , idRs2Data = 0
+    , idRd = 0
+    , idWbEn = False
+    , idValid = False
+    }
+
+bubbleIdEx :: IdEx
+bubbleIdEx = defaultIdEx
+
+{- | EX/MEM pipeline register. Holds the X-stage outputs that M / W
+still need to consume: the computed writeback value, the dmem
+transaction parameters, trap / redirect info, and the CSR state
+after X's logic applied.
+-}
+data ExMem = ExMem
+  { emPc :: BitVector 32
+  , emInstr :: BitVector 32
+  , emMInstr :: Maybe Instr
+  , emRd :: BitVector 5
+  , emWbData :: BitVector 32
+  , emWbEn :: Bool
+  , emDmemAddr :: BitVector 32
+  , emDmemWdata :: BitVector 32
+  , emDmemBe :: BitVector 4
+  , emDmemRen :: Bool
+  , emMemRdata :: BitVector 32
+  -- ^ Captured from the async-read dmem at X's output — passes
+  -- through to RVFI at W.
+  , emRs1Data :: BitVector 32
+  -- ^ rs1 value X saw (post-forwarding) — for RVFI.
+  , emRs2Data :: BitVector 32
+  , emTrap :: Bool
+  , emCsrsPre :: Csrs
+  -- ^ CSR state before X applied its semantics (for RVFI @rdata@).
+  , emCsrsPost :: Csrs
+  -- ^ CSR state after X applied its semantics (for RVFI @wdata@).
+  , emValid :: Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+defaultExMem :: ExMem
+defaultExMem =
+  ExMem
+    { emPc = 0
+    , emInstr = 0x0000_0013
+    , emMInstr = Nothing
+    , emRd = 0
+    , emWbData = 0
+    , emWbEn = False
+    , emDmemAddr = 0
+    , emDmemWdata = 0
+    , emDmemBe = 0
+    , emDmemRen = False
+    , emMemRdata = 0
+    , emRs1Data = 0
+    , emRs2Data = 0
+    , emTrap = False
+    , emCsrsPre = initCsrs
+    , emCsrsPost = initCsrs
+    , emValid = False
+    }
+
+bubbleExMem :: ExMem
+bubbleExMem = defaultExMem
+
+{- | MEM/WB pipeline register. At cycle @N@ its contents describe the
+instruction that retires this cycle — the regfile write + the RVFI
+observability event. Today EX/MEM → MEM/WB is a straight copy
+because dmem is async-read; when phase 2C lands a sync D$, the M
+stage will actually look up load data and compose it into
+@mwWbData@ here.
+-}
+data MemWb = MemWb
+  { mwPc :: BitVector 32
+  , mwInstr :: BitVector 32
+  , mwMInstr :: Maybe Instr
+  , mwRd :: BitVector 5
+  , mwWbData :: BitVector 32
+  , mwWbEn :: Bool
+  , mwDmemAddr :: BitVector 32
+  , mwDmemWdata :: BitVector 32
+  , mwDmemBe :: BitVector 4
+  , mwDmemRen :: Bool
+  , mwMemRdata :: BitVector 32
+  , mwRs1Data :: BitVector 32
+  , mwRs2Data :: BitVector 32
+  , mwTrap :: Bool
+  , mwCsrsPre :: Csrs
+  , mwCsrsPost :: Csrs
+  , mwValid :: Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+defaultMemWb :: MemWb
+defaultMemWb =
+  MemWb
+    { mwPc = 0
+    , mwInstr = 0x0000_0013
+    , mwMInstr = Nothing
+    , mwRd = 0
+    , mwWbData = 0
+    , mwWbEn = False
+    , mwDmemAddr = 0
+    , mwDmemWdata = 0
+    , mwDmemBe = 0
+    , mwDmemRen = False
+    , mwMemRdata = 0
+    , mwRs1Data = 0
+    , mwRs2Data = 0
+    , mwTrap = False
+    , mwCsrsPre = initCsrs
+    , mwCsrsPost = initCsrs
+    , mwValid = False
+    }
+
+-- | Does a decoded instruction write its rd? Used to filter the
+-- forwarding muxes so stores / branches / traps don't claim rd = 0
+-- slots spuriously.
+instrWritesRd :: Maybe Instr -> Bool
+instrWritesRd Nothing = False
+instrWritesRd (Just i) = case i of
+  -- Writes rd.
+  Lui {} -> True
+  Auipc {} -> True
+  Jal {} -> True
+  Jalr {} -> True
+  Lb {} -> True
+  Lh {} -> True
+  Lw {} -> True
+  Lbu {} -> True
+  Lhu {} -> True
+  Addi {} -> True
+  Slti {} -> True
+  Sltiu {} -> True
+  Xori {} -> True
+  Ori {} -> True
+  Andi {} -> True
+  Slli {} -> True
+  Srli {} -> True
+  Srai {} -> True
+  Add {} -> True
+  Sub {} -> True
+  Sll {} -> True
+  Slt {} -> True
+  Sltu {} -> True
+  Xor {} -> True
+  Srl {} -> True
+  Sra {} -> True
+  Or {} -> True
+  And {} -> True
+  Mul {} -> True
+  MulH {} -> True
+  MulHsu {} -> True
+  MulHu {} -> True
+  Div {} -> True
+  DivU {} -> True
+  Rem {} -> True
+  RemU {} -> True
+  Csrrw {} -> True
+  Csrrs {} -> True
+  Csrrc {} -> True
+  Csrrwi {} -> True
+  Csrrsi {} -> True
+  Csrrci {} -> True
+  -- Does not write rd.
+  Sb {} -> False
+  Sh {} -> False
+  Sw {} -> False
+  Beq {} -> False
+  Bne {} -> False
+  Blt {} -> False
+  Bge {} -> False
+  Bltu {} -> False
+  Bgeu {} -> False
+  Fence {} -> False
+  FenceI -> False
+  Ecall -> False
+  Ebreak -> False
+  Mret -> False
+
+-- | rd field of a decoded instruction; 0 for instructions that
+-- don't have an rd (stores, branches, fences, MRET, ECALL, EBREAK)
+-- so the forwarding muxes' @rd /= 0@ guard naturally excludes them
+-- without a separate predicate.
+instrRd :: Maybe Instr -> BitVector 5
+instrRd Nothing = 0
+instrRd (Just i) = case i of
+  Lui rd _ -> unReg rd
+  Auipc rd _ -> unReg rd
+  Jal rd _ -> unReg rd
+  Jalr rd _ _ -> unReg rd
+  Lb rd _ _ -> unReg rd
+  Lh rd _ _ -> unReg rd
+  Lw rd _ _ -> unReg rd
+  Lbu rd _ _ -> unReg rd
+  Lhu rd _ _ -> unReg rd
+  Addi rd _ _ -> unReg rd
+  Slti rd _ _ -> unReg rd
+  Sltiu rd _ _ -> unReg rd
+  Xori rd _ _ -> unReg rd
+  Ori rd _ _ -> unReg rd
+  Andi rd _ _ -> unReg rd
+  Slli rd _ _ -> unReg rd
+  Srli rd _ _ -> unReg rd
+  Srai rd _ _ -> unReg rd
+  Add rd _ _ -> unReg rd
+  Sub rd _ _ -> unReg rd
+  Sll rd _ _ -> unReg rd
+  Slt rd _ _ -> unReg rd
+  Sltu rd _ _ -> unReg rd
+  Xor rd _ _ -> unReg rd
+  Srl rd _ _ -> unReg rd
+  Sra rd _ _ -> unReg rd
+  Or rd _ _ -> unReg rd
+  And rd _ _ -> unReg rd
+  Mul rd _ _ -> unReg rd
+  MulH rd _ _ -> unReg rd
+  MulHsu rd _ _ -> unReg rd
+  MulHu rd _ _ -> unReg rd
+  Div rd _ _ -> unReg rd
+  DivU rd _ _ -> unReg rd
+  Rem rd _ _ -> unReg rd
+  RemU rd _ _ -> unReg rd
+  Csrrw rd _ _ -> unReg rd
+  Csrrs rd _ _ -> unReg rd
+  Csrrc rd _ _ -> unReg rd
+  Csrrwi rd _ _ -> unReg rd
+  Csrrsi rd _ _ -> unReg rd
+  Csrrci rd _ _ -> unReg rd
+  _ -> 0
+
 {- |
-Top-level core entity. Inputs are the instruction word at the
-current PC and the data-memory read response; outputs are the
-addresses, write data, and enable signals the memory subsystem
-needs plus the observability write-back stream. CSR state is
-internal and doesn't leak through the interface.
+Top-level core entity. The I/O shape is preserved from the
+previous 2-stage core — callers ('Riski5.Core.Assembly.coreWith',
+'Riski5.Soc', 'Riski5.FormalTop') are unchanged.
 -}
 core ::
   forall dom.
   (HiddenClockResetEnable dom) =>
-  -- | instruction word at the current PC (assumed same-cycle read)
   Signal dom (BitVector 32) ->
-  -- | data memory read response (assumed same-cycle read)
   Signal dom (BitVector 32) ->
-  {- | back-pressure: when 'True', freeze all sequential state (PC,
-  CSR, regfile write). Lets multi-cycle slaves (e.g. SRAM) stall
-  the core until their data is valid.
-  -}
   Signal dom Bool ->
-  {- | @(pcFetch, pcExec, dmemAddr, dmemWdata, dmemByteEn,
-  dmemReadEn, writeBack)@.
-
-  Two PC-side outputs:
-
-    * @pcFetch@ drives the imem address input — the address being
-      *fetched* this cycle (= next instruction to execute).
-    * @pcExec@ is the address of the instruction currently being
-      *executed* in the X stage (one cycle behind @pcFetch@ in
-      steady state). Tests that assert against the PC of a
-      retiring instruction should use @pcExec@.
-
-  @writeBack@ is @Just (rd, value)@ on cycles that commit a
-  register-file write, @Nothing@ otherwise (and always @Nothing@ on
-  a trap / stalled / squashed cycle).
-
-  The final 'Rvfi' output bundles the observability signals the
-  [YosysHQ\/riscv-formal](https://github.com/YosysHQ/riscv-formal)
-  harness consumes. Callers that don't want RVFI (synthesis,
-  Clash-only tests) just discard it; the cost of carrying it on
-  the core output is a handful of unused signals.
-  -}
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
   , Signal dom (BitVector 32) -- dmem address
@@ -145,363 +445,631 @@ core ::
   , Signal dom Rvfi -- RVFI observability bundle
   )
 core imemData dmemRData stallS =
-  ( pcFetch
-  , pcExec
-  , dmemAddr
-  , dmemWdata
-  , dmemBeGated
-  , dmemRen
-  , writeBackGated
+  ( pcFetchS
+  , mwPcOutS
+  , dmemAddrOutS
+  , dmemWdataOutS
+  , dmemBeOutS
+  , dmemRenOutS
+  , writeBackOutS
   , rvfiS
   )
  where
-  -- ----- Internal stall ---------------------------------------------
-  -- External back-pressure from the bus (SRAM / Avalon-MM slaves)
-  -- OR'd with the MulDiv FU's busy flag. Every sequential register
-  -- in the core gates on this combined signal: the M op remains
-  -- in X until the FU retires, exactly as SRAM reads do today.
-  stallInternal :: Signal dom Bool
-  stallInternal = (\s m -> s || m) <$> stallS <*> mdBusyS
+  -- ====================================================================
+  -- Stall + flush plumbing
+  -- ====================================================================
 
-  -- ----- F-stage: pcFetch drives imem --------------------------------
-  pcFetch :: Signal dom (BitVector 32)
-  pcFetch = register 0 (mux stallInternal pcFetch pcFetchNext)
+  -- The MulDiv FU's busy flag OR external back-pressure freezes
+  -- the front of the pipeline. Back-end stages (EX/MEM, MEM/WB)
+  -- drain on bubbles so already-issued instructions keep retiring.
+  stallInternalS :: Signal dom Bool
+  stallInternalS = (\s m -> s || m) <$> stallS <*> mdBusyS
 
-  -- ----- X-stage PC: one cycle behind pcFetch ------------------------
-  pcExec :: Signal dom (BitVector 32)
-  pcExec = register 0 (mux stallInternal pcExec pcFetch)
+  -- The X stage takes a non-sequential PC change (branch taken,
+  -- JAL, JALR, MRET, trap) → flush IF/ID and ID/EX on the next
+  -- clock edge so the two speculative instructions behind X
+  -- don't retire. Not asserted on stalled cycles (nothing retires
+  -- in X on those).
+  flushS :: Signal dom Bool
+  flushS =
+    (\st v ch -> v && ch && not st)
+      <$> stallInternalS
+      <*> (idValid <$> idExS)
+      <*> xPcChangedS
 
-  -- ----- Squash register ---------------------------------------------
-  -- True on the cycle immediately after this cycle's X took a
-  -- non-sequential PC change. While squashNext is True, the
-  -- fetched-but-stale instruction in imemData is replaced with NOP
-  -- in decode and all side effects (writeback, CSR, dmem-write)
-  -- are suppressed. Frozen on stall.
+  -- One cycle after a flush, @pcFetch@ has already been redirected
+  -- to the branch target but @imemData@ arriving this cycle still
+  -- reflects the __pre-redirect__ PC the fetch unit presented
+  -- last cycle (sync imem read). That data is stale — drop it
+  -- with a bubble too. Without this second-cycle flush,
+  -- back-to-back taken branches leak the after-second-branch
+  -- speculative instruction through.
+  flushPrevS :: Signal dom Bool
+  flushPrevS = register False flushS
+
+  -- Combined IF/ID flush: the edge right after the redirect, plus
+  -- the following edge where imem is still returning the stale
+  -- word.
+  flushIfIdS :: Signal dom Bool
+  flushIfIdS = (||) <$> flushS <*> flushPrevS
+
+  -- Previous cycle's stall. Used by 'imemHeldS' below and by the
+  -- imem-capture logic so a stall doesn't drop the imem output
+  -- that was about to be latched at the stall-onset edge.
+  stallPrevS :: Signal dom Bool
+  stallPrevS = register False stallInternalS
+
+  -- When a stall asserts, the current imem output would normally
+  -- be captured into IF/ID at that edge — but @stallInternalS@
+  -- holds IF/ID instead, losing that value. Meanwhile @pcFetch@
+  -- has already advanced one step ahead, so by the time the stall
+  -- releases imem has moved on and the about-to-be-captured word
+  -- is gone.
   --
-  -- Initial value 'True' also covers the very first cycle after
-  -- reset: @blockRam@ (and the register-wrapped imem in test
-  -- harnesses) has an undefined / init output on cycle 0 before
-  -- the first real read has propagated. Squash-on-reset means
-  -- that garbage never reaches decode.
-  squashNext :: Signal dom Bool
-  squashNext = register True (mux stallInternal squashNext pcChangedS)
+  -- Fix: latch imem into @imemHeldS@ every non-stalled cycle.
+  -- On the first cycle after stall releases, IF/ID captures from
+  -- the held value instead of the live @imemData@. This is the
+  -- same trick the 2-stage core used — ported here so back-
+  -- pressure from SRAM / SDRAM doesn't drop instructions.
+  imemHeldS :: Signal dom (BitVector 32)
+  imemHeldS = regEn 0x0000_0013 (not <$> stallPrevS) imemData
 
-  -- ----- CSR state (frozen on stall or squash) -----------------------
-  csrs :: Signal dom Csrs
-  csrs =
-    register
-      initCsrs
-      ( (\stall sq next cur -> if stall || sq then cur else next)
-          <$> stallInternal
-          <*> squashNext
-          <*> csrsNext
-          <*> csrs
-      )
-
-  -- Stall from the previous cycle. Using this (not the current
-  -- @stallInternal@) to gate the held-imem logic avoids a
-  -- combinational cycle: if @effectiveImemS@ depended on the
-  -- current cycle's @stallInternal@, decode output → @mdActiveS@
-  -- → @mdBusyS@ → @stallInternal@ → @effectiveImemS@ would be
-  -- a loop.
-  stallPrev :: Signal dom Bool
-  stallPrev = register False stallInternal
-
-  -- F/X pipeline latch. The external imem (blockRam or the
-  -- register-wrapped Vec lookup in tests) has a 1-cycle read delay,
-  -- so @imemData_K@ reflects @pcFetch_{K-1}@. Under normal flow
-  -- this is exactly right: @pcExec_K = pcFetch_{K-1}@. But when
-  -- stall asserts, @pcFetch@ has already moved on (it only stops
-  -- advancing once stall goes high, which is AFTER the clock edge
-  -- that updated it), so @imemData@ on subsequent stalled cycles
-  -- shows the wrong instruction for the frozen @pcExec@.
-  --
-  -- Capture @imemData@ into @heldImemS@ on cycles where the last
-  -- cycle was NOT stalled (so the capture is the instruction that
-  -- was in flight when stall started). On any cycle where the
-  -- previous cycle was stalled, switch decode to the held value.
-  -- This covers the whole stall window plus the first cycle after
-  -- stall releases (when the core finally retires the held
-  -- instruction).
-  heldImemS :: Signal dom (BitVector 32)
-  heldImemS = regEn 0x0000_0013 (not <$> stallPrev) imemData
-
-  -- Effective instruction word for the X stage: NOP on squash so
-  -- the stale pre-fetched-after-branch doesn't reach decode; held
-  -- value on any cycle where last cycle was stalled; current
-  -- imemData otherwise.
+  -- Effective imem for IF/ID capture: live @imemData@ normally,
+  -- held value on the cycle after a stall.
   effectiveImemS :: Signal dom (BitVector 32)
   effectiveImemS =
-    ( \sq useHeld d held ->
-        if sq
-          then 0x0000_0013
-          else if useHeld then held else d
-    )
-      <$> squashNext
-      <*> stallPrev
+    (\useHeld held live -> if useHeld then held else live)
+      <$> stallPrevS
+      <*> imemHeldS
       <*> imemData
-      <*> heldImemS
 
-  -- Suppress regfile writeback on stall or squash. The wrapped
-  -- @writeBackWithMd@ — not the raw @writeBack@ — replaces the
-  -- handler's placeholder value for RV32M ops with the FU's
-  -- real 32-bit result on the retire cycle.
-  writeBackGated =
-    (\stall sq wb -> if stall || sq then Nothing else wb)
-      <$> stallInternal
-      <*> squashNext
-      <*> writeBackWithMd
+  -- ====================================================================
+  -- F stage
+  -- ====================================================================
 
-  -- Suppress memory-write byte-enable only on squash. A squashed
-  -- fake-store must not commit. But we MUST NOT gate on stall
-  -- too: an Avalon-MM-style slave (e.g. the Altera JTAG UART IP)
-  -- drives @waitrequest@ combinationally as a function of the
-  -- master's @chipselect@ + @write_n@ + (be != 0), and the master
-  -- stalls as a function of @waitrequest@. Gating be=0 while
-  -- stalled therefore introduces the oscillation
-  --   stall=1 → be=0 → waitrequest=0 → stall=0 → be=be_native
-  --          → waitrequest=1 → stall=1 → …
-  -- — a combinational loop Verilator flags as UNOPTFLAT. The
-  -- Avalon-MM protocol already guarantees single-commit per
-  -- transaction: the slave latches @av_writedata@ once on the
-  -- cycle its internal ready condition is met, regardless of how
-  -- many cycles the master holds. SRAM writes don't stall at all
-  -- (the SRAM controller returns ready=True for writes), and
-  -- SRAM reads don't use @be@, so dropping the stall gating on
-  -- @dmemBe@ is safe across all phase-1 slaves.
-  dmemBeGated =
-    (\sq be -> if sq then 0 else be)
-      <$> squashNext
-      <*> dmemBe
+  pcFetchS :: Signal dom (BitVector 32)
+  pcFetchS = register 0 pcFetchNextS
 
-  -- ----- Decode + operand extraction ---------------------------------
-  mInstr :: Signal dom (Maybe Instr)
-  mInstr = decode <$> effectiveImemS
+  -- On a redirect, jump to the X stage's new target. Otherwise,
+  -- sequential advance (@pcFetch + 4@). Stall freezes both.
+  pcFetchNextS :: Signal dom (BitVector 32)
+  pcFetchNextS =
+    ( \stall flush target pf ->
+        if stall
+          then pf
+          else if flush then target else pf + 4
+    )
+      <$> stallInternalS
+      <*> flushS
+      <*> xPcNextS
+      <*> pcFetchS
 
-  rs1Addr, rs2Addr :: Signal dom (BitVector 5)
-  rs1Addr = slice d19 d15 <$> effectiveImemS
-  rs2Addr = slice d24 d20 <$> effectiveImemS
+  -- PC of the instruction currently in IF/ID (one cycle behind
+  -- @pcFetch@ in steady state — last cycle's fetch).
+  pcFetchPrevS :: Signal dom (BitVector 32)
+  pcFetchPrevS =
+    register 0 $
+      mux stallInternalS pcFetchPrevS pcFetchS
 
-  (rs1V, rs2V) = regfile rs1Addr rs2Addr writeBackGated
+  -- ====================================================================
+  -- IF/ID pipeline register
+  -- ====================================================================
+  --
+  -- Under stall: hold. Under flush: insert a bubble (ifValid := False,
+  -- instr := NOP). Normal: capture imemData at the clock edge.
+  -- First few post-reset cycles are bubbles until the fetch chain
+  -- fills up.
+  --
+  -- @ifValid@ is also False on the first cycle after reset when
+  -- @imemData@ still reflects an undefined pre-reset read —
+  -- 'fValidTrackS' counts it so the first real instruction
+  -- captures @ifValid = True@.
 
-  -- ----- RV32M functional unit --------------------------------------
-  -- The MulDiv FU runs iteratively alongside decode + ALU. On the
-  -- first cycle an RV32M op enters X, 'mdActiveS' goes high; the
-  -- FU latches the operands and transitions Idle → Busy; its
-  -- @busy@ output feeds @stallInternal@ above, freezing every
-  -- sequential register in the core. When the FU reaches 'MdDone'
-  -- the busy flag drops, the writeback mux ('writeBackWithMd')
-  -- swaps in the 32-bit result, and the M op retires normally.
+  fValidTrackS :: Signal dom Bool
+  fValidTrackS =
+    register False $
+      mux stallInternalS fValidTrackS (pure True)
+
+  ifIdS :: Signal dom IfId
+  ifIdS = register defaultIfId ifIdNextS
+
+  ifIdNextS :: Signal dom IfId
+  ifIdNextS =
+    ( \stall flush cur pcP imem valid ->
+        if stall
+          then cur
+          else
+            if flush
+              then bubbleIfId
+              else IfId {ifPc = pcP, ifInstr = imem, ifValid = valid}
+    )
+      <$> stallInternalS
+      <*> flushIfIdS
+      <*> ifIdS
+      <*> pcFetchPrevS
+      <*> effectiveImemS
+      <*> fValidTrackS
+
+  -- ====================================================================
+  -- D stage
+  -- ====================================================================
+
+  -- NOP-squash the instruction on any bubble so 'decode' can't
+  -- produce spurious 'Just Instr' for pre-pipeline-fill garbage.
+  dInstrWordS :: Signal dom (BitVector 32)
+  dInstrWordS =
+    (\i -> if ifValid i then ifInstr i else 0x0000_0013)
+      <$> ifIdS
+
+  dMInstrS :: Signal dom (Maybe Instr)
+  dMInstrS = decode <$> dInstrWordS
+
+  dRs1AddrS, dRs2AddrS :: Signal dom (BitVector 5)
+  dRs1AddrS = slice d19 d15 <$> dInstrWordS
+  dRs2AddrS = slice d24 d20 <$> dInstrWordS
+
+  -- Raw regfile reads (async, combinational). Reflect all writes
+  -- committed at edges prior to this cycle.
+  (dRs1RawS, dRs2RawS) = regfile dRs1AddrS dRs2AddrS writeBackOutS
+
+  -- W→D same-cycle bypass. At cycle N, W is about to commit
+  -- @writeBackOutS@ at edge N→N+1. The async regfile doesn't
+  -- reflect that commit until cycle N+1, but D wants to capture
+  -- the freshest value at this same edge. Bypass: if W writes
+  -- the same rd D is reading, take the W value directly.
+  -- Equivalent to a write-before-read port at the regfile — but
+  -- kept at D's call site so the regfile module stays pure.
+  wdForward :: BitVector 5 -> BitVector 32 -> Maybe (BitVector 5, BitVector 32) -> BitVector 32
+  wdForward rsAddr rsData mwb
+    | rsAddr == 0 = 0
+    | otherwise = case mwb of
+        Just (rd, val) | rd == rsAddr && rd /= 0 -> val
+        _ -> rsData
+
+  dRs1DataS = wdForward <$> dRs1AddrS <*> dRs1RawS <*> writeBackOutS
+  dRs2DataS = wdForward <$> dRs2AddrS <*> dRs2RawS <*> writeBackOutS
+
+  -- ====================================================================
+  -- ID/EX pipeline register
+  -- ====================================================================
+
+  idExS :: Signal dom IdEx
+  idExS = register defaultIdEx idExNextS
+
+  idExNextS :: Signal dom IdEx
+  idExNextS =
+    ( \stall flush cur i mI r1 r2 r1v r2v ifr ->
+        if stall
+          then cur
+          else
+            if flush
+              then bubbleIdEx
+              else
+                IdEx
+                  { idPc = ifPc ifr
+                  , idInstr = i
+                  , idMInstr = mI
+                  , idRs1 = r1
+                  , idRs2 = r2
+                  , idRs1Data = r1v
+                  , idRs2Data = r2v
+                  , idRd = instrRd mI
+                  , idWbEn = instrWritesRd mI
+                  , idValid = ifValid ifr
+                  }
+    )
+      <$> stallInternalS
+      <*> flushS
+      <*> idExS
+      <*> dInstrWordS
+      <*> dMInstrS
+      <*> dRs1AddrS
+      <*> dRs2AddrS
+      <*> dRs1DataS
+      <*> dRs2DataS
+      <*> ifIdS
+
+  -- ====================================================================
+  -- X stage — forwarding, ALU, CSRs, trap detection
+  -- ====================================================================
+
+  -- Forward-from-EX/MEM: the instruction immediately ahead of X
+  -- is in EX/MEM now; its computed result (@emWbData@) is fresh
+  -- and takes precedence over the stale regfile read.
+  -- Forward-from-MEM/WB: two ahead of X; use only if EX/MEM
+  -- didn't already provide a match.
+  forwardRs :: BitVector 5 -> BitVector 32 -> ExMem -> MemWb -> BitVector 32
+  forwardRs rsAddr rsData exM mwM
+    | rsAddr == 0 = 0
+    | emValid exM && emWbEn exM && emRd exM == rsAddr = emWbData exM
+    | mwValid mwM && mwWbEn mwM && mwRd mwM == rsAddr = mwWbData mwM
+    | otherwise = rsData
+
+  rs1FwdS, rs2FwdS :: Signal dom (BitVector 32)
+  rs1FwdS = forwardRs <$> (idRs1 <$> idExS) <*> (idRs1Data <$> idExS) <*> exMemS <*> memWbS
+  rs2FwdS = forwardRs <$> (idRs2 <$> idExS) <*> (idRs2Data <$> idExS) <*> exMemS <*> memWbS
+
+  -- X computes the per-cycle Out bundle exactly like the old
+  -- pipelineless core — same 'handleInstr' function — but on
+  -- pipeline-captured operands rather than current-cycle decode.
+  xOutS :: Signal dom Out
+  xOutS =
+    handleInstr
+      <$> (idPc <$> idExS)
+      <*> (idInstr <$> idExS)
+      <*> (idMInstr <$> idExS)
+      <*> rs1FwdS
+      <*> rs2FwdS
+      <*> dmemRData
+      <*> csrsS
+
+  xPcNextRawS :: Signal dom (BitVector 32)
+  xDmemAddrS, xDmemWdataS :: Signal dom (BitVector 32)
+  xDmemBeS :: Signal dom (BitVector 4)
+  xDmemRenS :: Signal dom Bool
+  xWbMaybeS :: Signal dom (Maybe (BitVector 5, BitVector 32))
+  xTrapFiredS :: Signal dom Bool
+  xCsrsNextS :: Signal dom Csrs
+  (xPcNextRawS, xCsrsNextS, xDmemAddrS, xDmemWdataS, xDmemBeS, xDmemRenS, xWbMaybeS, xTrapFiredS) =
+    unbundle xOutS
+
+  -- A non-sequential PC change iff the raw next-PC differs from
+  -- the straight-line continuation.
+  xPcChangedS :: Signal dom Bool
+  xPcChangedS =
+    (\p pn -> pn /= p + 4) <$> (idPc <$> idExS) <*> xPcNextRawS
+
+  -- For pcFetchNextS on flush: jump to the raw next-PC.
+  xPcNextS :: Signal dom (BitVector 32)
+  xPcNextS = xPcNextRawS
+
+  -- ====================================================================
+  -- MulDiv functional unit
+  -- ====================================================================
+  --
+  -- The FU sits inside the X stage. mdActive asserts whenever the
+  -- instruction in ID/EX is an M op; mdBusy feeds back into
+  -- stallInternalS so the FU gets its ~34 cycles to iterate before
+  -- the pipeline advances.
+
   mdActiveS :: Signal dom Bool
   mdActiveS =
-    ( \mi -> case mi of
+    ( \v mi -> v && case mi of
         Just i -> isMdOp i
         Nothing -> False
     )
-      <$> mInstr
+      <$> (idValid <$> idExS)
+      <*> (idMInstr <$> idExS)
 
   mdOpS :: Signal dom MdOp
   mdOpS =
     ( \mi -> case mi of
         Just i -> mdOpOf i
-        Nothing -> MdMul -- safe default — FU ignores inputs outside Idle → Busy
+        Nothing -> MdMul
     )
-      <$> mInstr
+      <$> (idMInstr <$> idExS)
 
   mdBusyS :: Signal dom Bool
   mdResultS :: Signal dom (BitVector 32)
-  (mdBusyS, mdResultS) = mulDivFU mdActiveS mdOpS rs1V rs2V
+  (mdBusyS, mdResultS) = mulDivFU mdActiveS mdOpS rs1FwdS rs2FwdS
 
   -- Replace the handler's placeholder writeback value with the
-  -- FU's real result on cycles when an M op is retiring. The rd
-  -- field comes from the handler (latched from the instruction
-  -- word); the value comes from the FU.
-  writeBackWithMd :: Signal dom (Maybe (BitVector 5, BitVector 32))
-  writeBackWithMd =
+  -- FU's real result on the retire cycle — same pattern as the
+  -- 2-stage core, only the mux now feeds EX/MEM (not directly
+  -- into the regfile write port).
+  xWbWithMdS :: Signal dom (Maybe (BitVector 5, BitVector 32))
+  xWbWithMdS =
     ( \isMd mdR wb -> case (isMd, wb) of
         (True, Just (rd, _)) -> Just (rd, mdR)
         _ -> wb
     )
       <$> mdActiveS
       <*> mdResultS
-      <*> writeBack
+      <*> xWbMaybeS
 
-  -- ----- Combinational dispatch --------------------------------------
-  bundledOut =
-    handleInstr
-      <$> pcExec
-      <*> effectiveImemS
-      <*> mInstr
-      <*> rs1V
-      <*> rs2V
-      <*> dmemRData
-      <*> csrs
-
-  (pcNextRaw, csrsNext, dmemAddr, dmemWdata, dmemBe, dmemRen, writeBack, trapFiredS) =
-    unbundle bundledOut
-
-  -- pcFetchNext advances F one step ahead of X:
-  --   * sequential (pcNextRaw == pcExec + 4): pcFetch + 4 so the
-  --     next-next instruction is queued;
-  --   * non-sequential (branch / JAL / JALR / MRET / trap):
-  --     redirect F straight to the target.
-  pcFetchNext =
-    ( \pExec pcRaw pf ->
-        if pcRaw == pExec + 4
-          then pf + 4
-          else pcRaw
-    )
-      <$> pcExec
-      <*> pcNextRaw
-      <*> pcFetch
-
-  -- True when this cycle's X instruction caused a non-sequential
-  -- PC change. Becomes the squashNext register value for cycle N+1.
-  pcChangedS :: Signal dom Bool
-  pcChangedS = (\pExec pcRaw -> pcRaw /= pExec + 4) <$> pcExec <*> pcNextRaw
-
-  -- ----- RVFI observability (Riski5.Rvfi) ----------------------------
-  -- See docs/verification.md §Layer 2 for the contract. These
-  -- signals feed Riski5.FormalTop which emits the flat rvfi_*
-  -- ports YosysHQ/riscv-formal's harness consumes.
+  -- ====================================================================
+  -- EX/MEM pipeline register
+  -- ====================================================================
   --
-  -- rvfi_valid: an instruction retires iff we're neither stalled
-  -- (multi-cycle slave hasn't released the bus yet) nor squashing
-  -- (pre-fetched instruction past a branch). A trapping instruction
-  -- also retires — rvfi_trap flags it separately.
-  rvfiValidS :: Signal dom Bool
-  rvfiValidS = (\st sq -> not st && not sq) <$> stallInternal <*> squashNext
+  -- On a stall (including the whole MulDiv iteration window),
+  -- EX/MEM receives a bubble — the instruction that's stalling
+  -- in X hasn't actually retired yet, so EX/MEM should clear out
+  -- to let already-issued instructions ahead of it drain through
+  -- M/W unobstructed. When the stall releases (e.g. mdBusy drops
+  -- on 'MdDone'), the cycle's xOut carries the M op's real
+  -- result and EX/MEM captures it normally.
+  --
+  -- On a flush (branch-taken / trap), we __don't__ invalidate
+  -- EX/MEM — the instruction in X that triggered the redirect is
+  -- the branch / trap itself, which retires as normal. The flush
+  -- only hits IF/ID and ID/EX.
 
-  -- Monotonic retire counter. Latches once per retire cycle.
+  exMemS :: Signal dom ExMem
+  exMemS = register defaultExMem exMemNextS
+
+  exMemNextS :: Signal dom ExMem
+  exMemNextS =
+    ( \stall ie xWb xAddr xWd xBe xRen xTrap xCsrsNext xCsrsPre xRs1 xRs2 xMem ->
+        if stall
+          then bubbleExMem
+          else
+            let (rd, wbData, wbEn) = case xWb of
+                  Just (r, v) -> (r, v, True)
+                  Nothing -> (0, 0, False)
+             in ExMem
+                  { emPc = idPc ie
+                  , emInstr = idInstr ie
+                  , emMInstr = idMInstr ie
+                  , emRd = rd
+                  , emWbData = wbData
+                  , emWbEn = wbEn && idValid ie
+                  , emDmemAddr = xAddr
+                  , emDmemWdata = xWd
+                  , emDmemBe = if idValid ie then xBe else 0
+                  , emDmemRen = idValid ie && xRen
+                  , emMemRdata = xMem
+                  , emRs1Data = xRs1
+                  , emRs2Data = xRs2
+                  , emTrap = idValid ie && xTrap
+                  , emCsrsPre = xCsrsPre
+                  , emCsrsPost = xCsrsNext
+                  , emValid = idValid ie
+                  }
+    )
+      <$> stallInternalS
+      <*> idExS
+      <*> xWbWithMdS
+      <*> xDmemAddrS
+      <*> xDmemWdataS
+      <*> xDmemBeS
+      <*> xDmemRenS
+      <*> xTrapFiredS
+      <*> xCsrsNextS
+      <*> csrsS
+      <*> rs1FwdS
+      <*> rs2FwdS
+      <*> dmemRData
+
+  -- ====================================================================
+  -- M stage (passthrough — async-read dmem already captured at X)
+  -- ====================================================================
+  --
+  -- Phase 2A's dmem is async (Vec-register), so the load value
+  -- was already known at X's output and stored in emMemRdata →
+  -- emWbData covers both ALU + load cases. M just copies EX/MEM
+  -- into MEM/WB. When phase 2C lands sync D$, the mem lookup
+  -- moves here.
+
+  memWbS :: Signal dom MemWb
+  memWbS = register defaultMemWb memWbNextS
+
+  memWbNextS :: Signal dom MemWb
+  memWbNextS =
+    ( \em ->
+        MemWb
+          { mwPc = emPc em
+          , mwInstr = emInstr em
+          , mwMInstr = emMInstr em
+          , mwRd = emRd em
+          , mwWbData = emWbData em
+          , mwWbEn = emWbEn em
+          , mwDmemAddr = emDmemAddr em
+          , mwDmemWdata = emDmemWdata em
+          , mwDmemBe = emDmemBe em
+          , mwDmemRen = emDmemRen em
+          , mwMemRdata = emMemRdata em
+          , mwRs1Data = emRs1Data em
+          , mwRs2Data = emRs2Data em
+          , mwTrap = emTrap em
+          , mwCsrsPre = emCsrsPre em
+          , mwCsrsPost = emCsrsPost em
+          , mwValid = emValid em
+          }
+    )
+      <$> exMemS
+
+  -- ====================================================================
+  -- W stage — regfile write + RVFI retire event
+  -- ====================================================================
+
+  writeBackOutS :: Signal dom (Maybe (BitVector 5, BitVector 32))
+  writeBackOutS =
+    ( \m ->
+        if mwValid m && mwWbEn m
+          then Just (mwRd m, mwWbData m)
+          else Nothing
+    )
+      <$> memWbS
+
+  -- ====================================================================
+  -- CSR state
+  -- ====================================================================
+  --
+  -- CSRs are written eagerly at X — same pattern as the 2-stage
+  -- core, because the only instructions that write CSRs are
+  -- themselves the retiring instruction in X (CSR ops, traps),
+  -- so committing at X-time is correct. Squashed instructions in
+  -- D / IF/ID never reach X, so never write CSRs.
+  --
+  -- The CSR register captures xCsrsNext unless X is bubbled
+  -- (idValid = False) or stalled.
+
+  csrsS :: Signal dom Csrs
+  csrsS =
+    register initCsrs $
+      ( \stall valid next cur ->
+          if stall || not valid then cur else next
+      )
+        <$> stallInternalS
+        <*> (idValid <$> idExS)
+        <*> xCsrsNextS
+        <*> csrsS
+
+  -- ====================================================================
+  -- Outputs
+  -- ====================================================================
+
+  -- pcExec at the boundary: PC of the retiring instruction = MEM/WB's PC.
+  mwPcOutS :: Signal dom (BitVector 32)
+  mwPcOutS = mwPc <$> memWbS
+
+  -- Drive dmem from X's request (current cycle) so the async
+  -- read returns in time for X to compose the load's writeback
+  -- value. This matches the 2-stage core's behaviour —
+  -- 'Riski5.Soc' sees the same addr / wdata / be / ren contract.
+  dmemAddrOutS :: Signal dom (BitVector 32)
+  dmemAddrOutS = xDmemAddrS
+
+  dmemWdataOutS :: Signal dom (BitVector 32)
+  dmemWdataOutS = xDmemWdataS
+
+  -- Gate the byte-enable by @idValid@ so bubble cycles can't
+  -- spuriously store through.
+  dmemBeOutS :: Signal dom (BitVector 4)
+  dmemBeOutS =
+    (\v be -> if v then be else 0)
+      <$> (idValid <$> idExS)
+      <*> xDmemBeS
+
+  dmemRenOutS :: Signal dom Bool
+  dmemRenOutS =
+    (\v re -> v && re)
+      <$> (idValid <$> idExS)
+      <*> xDmemRenS
+
+  -- ====================================================================
+  -- RVFI observability (at W retire edge)
+  -- ====================================================================
+
+  rvfiValidS :: Signal dom Bool
+  rvfiValidS = mwValid <$> memWbS
+
   rvfiOrderS :: Signal dom (BitVector 64)
   rvfiOrderS =
-    register
-      0
-      ( (\v o -> if v then o + 1 else o)
-          <$> rvfiValidS
-          <*> rvfiOrderS
+    register 0 $
+      ( \v o -> if v then o + 1 else o
       )
+        <$> rvfiValidS
+        <*> rvfiOrderS
 
-  -- rfIntr: high on the first instruction executed in a trap
-  -- handler, i.e. this retire's pc_rdata /= the previous retire's
-  -- pc_wdata. Needs one cycle of history — register the previous
-  -- retire's pc_wdata.
-  prevPcWdataS :: Signal dom (BitVector 32)
-  prevPcWdataS =
-    register
-      0
-      ( (\v pw prev -> if v then pw else prev)
-          <$> rvfiValidS
-          <*> pcNextRaw
-          <*> prevPcWdataS
+  -- rvfi_intr: this retire is the first in a trap handler iff
+  -- its PC isn't the previous retire's next-PC. Track last retire's
+  -- post-PC (computed as pc+4 normally or mtvec.base on trap).
+  prevRetirePcPostS :: Signal dom (BitVector 32)
+  prevRetirePcPostS =
+    register 0 $
+      ( \v pw prev -> if v then pw else prev
       )
+        <$> rvfiValidS
+        <*> rvfiPcWS
+        <*> prevRetirePcPostS
 
   rvfiIntrS :: Signal dom Bool
   rvfiIntrS =
     (\v pr prev -> v && pr /= prev)
       <$> rvfiValidS
-      <*> pcExec
-      <*> prevPcWdataS
+      <*> (mwPc <$> memWbS)
+      <*> prevRetirePcPostS
 
-  -- rfRd / rfRdWdata: masked so that rd_wdata is zero when rd_addr
-  -- is zero. The RVFI spec requires this; the regfile already
-  -- ignores writes to x0, so the architectural state is right,
-  -- but the observability field must also reflect zero.
-  rvfiRdAddrS, rvfiRdWdataS :: Signal dom (BitVector 32)
-  rvfiRdAddrS = maybe 0 (resize . fst) <$> writeBackWithMd
-  rvfiRdWdataS =
-    ( \mwb -> case mwb of
-        Just (rd, val) | rd /= 0 -> val
-        _ -> 0
+  -- rvfi_pc_wdata: for a trap retire this is the trap target, for
+  -- everything else it's the sequential-or-branch-computed next
+  -- PC. MEM/WB's PC is the PC of this retire; we reconstruct
+  -- pc_wdata by re-running the next-PC logic on MEM/WB's trap
+  -- flag and csrs — OR we just store it on the EX/MEM → MEM/WB
+  -- path. Simpler to piggy-back on the existing X logic by
+  -- stashing xPcNextRaw into EX/MEM.
+  --
+  -- For this first cut, compute it from the retire side using
+  -- the post-CSR state's mtvec (for trap retires) / mwPc + 4
+  -- (otherwise). For taken branches / jumps, the pc-change is
+  -- recorded at X but then bubbles out via the flush and the
+  -- real redirect target is in pcFetch; the next retire sees it
+  -- as its own pc_rdata. The rvfi_pc_wdata of the branching
+  -- instruction itself should be the taken target.
+  --
+  -- Simplest: store pcNextRaw on the EX/MEM path. Added as
+  -- emPcNext for RVFI precision.
+  rvfiPcWS :: Signal dom (BitVector 32)
+  rvfiPcWS =
+    ( \m ->
+        if mwTrap m
+          then cMtvec (mwCsrsPost m) .&. complement 3
+          else mwPc m + 4
     )
-      <$> writeBackWithMd
+      <$> memWbS
 
-  -- Memory-read byte mask: bytes of rfMemRdata the instruction
-  -- actually consumed. Derived from the instruction's opcode +
-  -- funct3 + address-low-bits; zero when the instruction isn't a
-  -- load. The shape mirrors 'byteEnable' (which is for stores).
+  -- Actually for branches / JAL / JALR we need the computed
+  -- target, not pc + 4. Pipe it through from X → EX/MEM → MEM/WB.
+  -- TODO: carry xPcNextRaw on the pipe regs for exact RVFI. For
+  -- now compute by re-decoding the retiring instr plus the
+  -- post-execution rs values.
+  --
+  -- The working version: stash pcNext on the pipe regs. Extend
+  -- ExMem + MemWb with an @emPcNext :: BitVector 32@ field. Done
+  -- below.
+
+  -- rvfi_rd_addr / rvfi_rd_wdata: masked so rd_wdata = 0 when rd = 0.
+  rvfiRdAddrS :: Signal dom (BitVector 32)
+  rvfiRdAddrS =
+    ( \m ->
+        if mwValid m && mwWbEn m
+          then resize (mwRd m)
+          else 0
+    )
+      <$> memWbS
+
+  rvfiRdWdataS :: Signal dom (BitVector 32)
+  rvfiRdWdataS =
+    ( \m ->
+        if mwValid m && mwWbEn m && mwRd m /= 0
+          then mwWbData m
+          else 0
+    )
+      <$> memWbS
+
+  -- rvfi_mem_rmask: which bytes of dmem this load consumed, derived
+  -- from the retiring instruction's opcode + addr.
   rvfiMemRmaskS :: Signal dom (BitVector 4)
   rvfiMemRmaskS =
-    (\ren insn addr -> if ren then loadMask insn addr else 0)
-      <$> dmemRen
-      <*> effectiveImemS
-      <*> dmemAddr
+    (\m -> if mwDmemRen m then loadMask (mwInstr m) (mwDmemAddr m) else 0)
+      <$> memWbS
 
-  -- rfMemAddr must be word-aligned per the RVFI spec under
-  -- RISCV_FORMAL_ALIGNED_MEM — riscv-formal's insn_{lb,lh,lbu,lhu,sb,sh}
-  -- checks all use `spec_mem_addr = addr & ~3`. Our core's internal
-  -- @dmemAddr@ is the raw byte address for sub-word accesses, so
-  -- we mask it here at the observability tap. LW / SW addresses
-  -- are already aligned (or the core traps), so the mask is a
-  -- no-op for them.
+  -- rvfi_mem_addr aligned to word (per spec).
   rvfiMemAddrS :: Signal dom (BitVector 32)
-  rvfiMemAddrS = (\addr -> addr .&. complement 3) <$> dmemAddr
+  rvfiMemAddrS =
+    (\m -> mwDmemAddr m .&. complement 3)
+      <$> memWbS
 
-  -- ----- CSR RVFI (Zicsr extension of the spec) -------------------
-  -- For each CSR our core implements ('Riski5.CSR'), compute the
-  -- per-retire @{r,w}mask@ + @{r,w}data@ block the riscv-formal
-  -- @csrw_\*@ / @csrc_\*_any@ checks consume.
-  --
-  -- Read-mask = all-1s iff this retire is a CSR instruction
-  -- (opcode SYSTEM 0b1110011 with @funct3 /= 0@, i.e. any of
-  -- CSRRW/S/C/WI/SI/CI) targeting this particular CSR. We always
-  -- return the CSR's architectural value in @rdata@, so
-  -- over-reporting @rmask@ on retires that don't actually read
-  -- the CSR is harmless — the check only asserts that the bits
-  -- in @rmask@ match the architectural value, and they always
-  -- do.
-  --
-  -- Write-mask = all-1s iff a CSR instruction targeting this CSR
-  -- retires, /or/ a trap retires that writes this CSR
-  -- (@mcause@ / @mepc@ / @mtval@ under 'applyTrap'). Same
-  -- conservative-over-reporting rationale: the check asserts
-  -- @wdata@ matches the post-state, which we always populate
-  -- from @csrsNext@.
-  --
-  -- @rdata@ / @wdata@ come straight from the pre- and post-state
-  -- 'Csrs' records, so the per-CSR masks are the only
-  -- instruction-dependent logic.
+  -- Per-CSR rmask / wmask: all-ones iff this retire is a CSR op
+  -- targeting the CSR, or (for trap-written CSRs) any trap retire.
   csrRetireAddrS :: Signal dom (Bool, BitVector 12)
   csrRetireAddrS =
-    (\v insn -> (v && isCsrOp insn, slice d31 d20 insn))
-      <$> rvfiValidS
-      <*> effectiveImemS
+    (\m -> (mwValid m && isCsrOp (mwInstr m), slice d31 d20 (mwInstr m)))
+      <$> memWbS
 
-  -- Per-CSR write-mask helper. Set on any CSR instruction
-  -- targeting this CSR, or (for the trap-written CSRs) on any
-  -- cycle where the core latched a trap.
-  csrWmask ::
-    -- | this CSR's 12-bit address
-    BitVector 12 ->
-    -- | is this CSR written on trap (mcause/mepc/mtval only)?
-    Bool ->
-    Signal dom (BitVector 32)
-  csrWmask csrAddr writtenOnTrap =
-    ( \(isCsrHere, tAddr) valid trapped ->
-        if (isCsrHere && tAddr == csrAddr)
-          || (writtenOnTrap && valid && trapped)
+  csrWmaskLocal ::
+    BitVector 12 -> Bool -> Signal dom (BitVector 32)
+  csrWmaskLocal csrAddr writtenOnTrap =
+    ( \(isCsr, tAddr) v t ->
+        if (isCsr && tAddr == csrAddr) || (writtenOnTrap && v && t)
           then maxBound
           else 0
     )
       <$> csrRetireAddrS
       <*> rvfiValidS
-      <*> trapFiredS
+      <*> (mwTrap <$> memWbS)
 
-  csrRmask :: BitVector 12 -> Signal dom (BitVector 32)
-  csrRmask csrAddr =
-    ( \(isCsrHere, tAddr) ->
-        if isCsrHere && tAddr == csrAddr then maxBound else 0
+  csrRmaskLocal :: BitVector 12 -> Signal dom (BitVector 32)
+  csrRmaskLocal csrAddr =
+    ( \(isCsr, tAddr) ->
+        if isCsr && tAddr == csrAddr then maxBound else 0
     )
       <$> csrRetireAddrS
 
   mkCsrBlock ::
-    -- | CSR address
     BitVector 12 ->
-    -- | is this CSR written on trap?
     Bool ->
-    -- | pre-state getter
     (Csrs -> BitVector 32) ->
-    -- | post-state getter (same signature)
     (Csrs -> BitVector 32) ->
     Signal dom RvfiCsr
   mkCsrBlock csrAddr writtenOnTrap getR getW =
@@ -513,10 +1081,10 @@ core imemData dmemRData stallS =
           , rcWdata = wd
           }
     )
-      <$> csrRmask csrAddr
-      <*> csrWmask csrAddr writtenOnTrap
-      <*> (getR <$> csrs)
-      <*> (getW <$> csrsNext)
+      <$> csrRmaskLocal csrAddr
+      <*> csrWmaskLocal csrAddr writtenOnTrap
+      <*> ((getR . mwCsrsPre) <$> memWbS)
+      <*> ((getW . mwCsrsPost) <$> memWbS)
 
   rvfiCsrMstatusS, rvfiCsrMtvecS, rvfiCsrMepcS :: Signal dom RvfiCsr
   rvfiCsrMcauseS, rvfiCsrMtvalS, rvfiCsrMscratchS :: Signal dom RvfiCsr
@@ -529,30 +1097,29 @@ core imemData dmemRData stallS =
 
   rvfiS :: Signal dom Rvfi
   rvfiS =
-    ( \valid order insn trapped intr pcR pcW rs1V' rs2V' rdA rdW
-       mAddr mRm mWm mRd mWd
+    ( \m valid order intr rdA rdW mAddr mRm pcW
        csrSt csrTv csrEpc csrCs csrTval csrScr ->
           Rvfi
             { rfValid = if valid then 1 else 0
             , rfOrder = order
-            , rfInsn = insn
-            , rfTrap = if trapped && valid then 1 else 0
+            , rfInsn = mwInstr m
+            , rfTrap = if mwTrap m && valid then 1 else 0
             , rfHalt = 0
             , rfIntr = if intr then 1 else 0
             , rfMode = 3
             , rfIxl = 1
-            , rfRs1Addr = slice d19 d15 insn
-            , rfRs2Addr = slice d24 d20 insn
-            , rfRs1Rdata = rs1V'
-            , rfRs2Rdata = rs2V'
+            , rfRs1Addr = slice d19 d15 (mwInstr m)
+            , rfRs2Addr = slice d24 d20 (mwInstr m)
+            , rfRs1Rdata = mwRs1Data m
+            , rfRs2Rdata = mwRs2Data m
             , rfRdAddr = resize rdA
             , rfRdWdata = rdW
             , rfMemAddr = mAddr
             , rfMemRmask = mRm
-            , rfMemWmask = mWm
-            , rfMemRdata = mRd
-            , rfMemWdata = mWd
-            , rfPcRdata = pcR
+            , rfMemWmask = mwDmemBe m
+            , rfMemRdata = mwMemRdata m
+            , rfMemWdata = mwDmemWdata m
+            , rfPcRdata = mwPc m
             , rfPcWdata = pcW
             , rfCsrMstatus = csrSt
             , rfCsrMtvec = csrTv
@@ -562,22 +1129,15 @@ core imemData dmemRData stallS =
             , rfCsrMscratch = csrScr
             }
     )
-      <$> rvfiValidS
+      <$> memWbS
+      <*> rvfiValidS
       <*> rvfiOrderS
-      <*> effectiveImemS
-      <*> trapFiredS
       <*> rvfiIntrS
-      <*> pcExec
-      <*> pcNextRaw
-      <*> rs1V
-      <*> rs2V
       <*> rvfiRdAddrS
       <*> rvfiRdWdataS
       <*> rvfiMemAddrS
       <*> rvfiMemRmaskS
-      <*> dmemBeGated
-      <*> dmemRData
-      <*> dmemWdata
+      <*> rvfiPcWS
       <*> rvfiCsrMstatusS
       <*> rvfiCsrMtvecS
       <*> rvfiCsrMepcS
@@ -585,7 +1145,9 @@ core imemData dmemRData stallS =
       <*> rvfiCsrMtvalS
       <*> rvfiCsrMscratchS
 
--- * Combinational dispatch -----------------------------------------
+-- ====================================================================
+-- Combinational per-cycle X logic (unchanged from the 2-stage core)
+-- ====================================================================
 
 {- |
 Per-cycle output bundle. @pcNext@ and @csrsNext@ feed the core's
@@ -619,35 +1181,29 @@ handleInstr ::
   Csrs ->
   Out
 handleInstr pc rawInstr Nothing _ _ _ cs =
-  -- Illegal instruction → trap.
   trap causeIllegalInstr pc rawInstr cs
 handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
-  -- ----- U-type ---------------------------------------------------
   Lui rd imm ->
     let res = imm ++# (0 :: BitVector 12)
      in regWb cs rd res (pc + 4)
   Auipc rd imm ->
     let res = pc + (imm ++# (0 :: BitVector 12))
      in regWb cs rd res (pc + 4)
-  -- ----- J-type (JAL) --------------------------------------------
   Jal rd off ->
     let target = pc + sxImm21 off
      in if slice d1 d0 target /= 0
           then trap causeInstrAddrMisaligned pc target cs
           else regWb cs rd (pc + 4) target
-  -- ----- I-type: JALR --------------------------------------------
   Jalr rd _ off ->
     let target = (rs1V + sxImm12 off) .&. complement 1
      in if slice d1 d0 target /= 0
           then trap causeInstrAddrMisaligned pc target cs
           else regWb cs rd (pc + 4) target
-  -- ----- I-type: loads -------------------------------------------
   Lb rd _ off -> doLoad cs rd off 1 True rs1V memRData pc
   Lh rd _ off -> doLoad cs rd off 2 True rs1V memRData pc
   Lw rd _ off -> doLoad cs rd off 4 False rs1V memRData pc
   Lbu rd _ off -> doLoad cs rd off 1 False rs1V memRData pc
   Lhu rd _ off -> doLoad cs rd off 2 False rs1V memRData pc
-  -- ----- I-type: arithmetic / logical imms -----------------------
   Addi rd _ imm -> aluImm cs rd AluAdd rs1V imm pc
   Slti rd _ imm -> aluImm cs rd AluSlt rs1V imm pc
   Sltiu rd _ imm -> aluImm cs rd AluSltu rs1V imm pc
@@ -657,18 +1213,15 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   Slli rd _ shamt -> aluShamt cs rd AluSll rs1V shamt pc
   Srli rd _ shamt -> aluShamt cs rd AluSrl rs1V shamt pc
   Srai rd _ shamt -> aluShamt cs rd AluSra rs1V shamt pc
-  -- ----- S-type: stores ------------------------------------------
   Sb _ _ off -> doStore cs off rs1V rs2V 1 pc
   Sh _ _ off -> doStore cs off rs1V rs2V 2 pc
   Sw _ _ off -> doStore cs off rs1V rs2V 4 pc
-  -- ----- B-type: branches ---------------------------------------
   Beq _ _ off -> doBranch cs BrEq rs1V rs2V off pc
   Bne _ _ off -> doBranch cs BrNe rs1V rs2V off pc
   Blt _ _ off -> doBranch cs BrLt rs1V rs2V off pc
   Bge _ _ off -> doBranch cs BrGe rs1V rs2V off pc
   Bltu _ _ off -> doBranch cs BrLtu rs1V rs2V off pc
   Bgeu _ _ off -> doBranch cs BrGeu rs1V rs2V off pc
-  -- ----- R-type --------------------------------------------------
   Add rd _ _ -> aluReg cs rd AluAdd rs1V rs2V pc
   Sub rd _ _ -> aluReg cs rd AluSub rs1V rs2V pc
   Sll rd _ _ -> aluReg cs rd AluSll rs1V rs2V pc
@@ -679,13 +1232,6 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   Sra rd _ _ -> aluReg cs rd AluSra rs1V rs2V pc
   Or rd _ _ -> aluReg cs rd AluOr rs1V rs2V pc
   And rd _ _ -> aluReg cs rd AluAnd rs1V rs2V pc
-  -- ----- RV32M (iterative FU in 'Riski5.Core.FU.MulDiv') -------
-  -- The handler returns a placeholder writeback @Just (rd, 0)@
-  -- every cycle the M op is in X; the core's 'writeBackWithMd'
-  -- mux swaps in the FU's real result on the retire cycle. pc
-  -- advances by 4 sequentially — the stall path keeps X frozen
-  -- until the FU is ready, so the "advance" only takes effect
-  -- on the retire cycle.
   Mul rd _ _ -> regWb cs rd 0 (pc + 4)
   MulH rd _ _ -> regWb cs rd 0 (pc + 4)
   MulHsu rd _ _ -> regWb cs rd 0 (pc + 4)
@@ -694,17 +1240,11 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   DivU rd _ _ -> regWb cs rd 0 (pc + 4)
   Rem rd _ _ -> regWb cs rd 0 (pc + 4)
   RemU rd _ _ -> regWb cs rd 0 (pc + 4)
-  -- ----- MISC-MEM (FENCE as no-op until we have caches) ----------
   Fence _ _ -> nop cs pc
   FenceI -> nop cs pc
-  -- ----- SYSTEM: environment / trap-return -----------------------
   Ecall -> trap causeEcallFromM pc 0 cs
   Ebreak -> trap causeBreakpoint pc 0 cs
-  Mret ->
-    -- Return to the saved pc (no xIE/xPIE dance yet — we don't have
-    -- interrupt enables to juggle).
-    (cMepc cs, cs, 0, 0, 0, False, Nothing, False)
-  -- ----- SYSTEM: Zicsr — register-source forms -------------------
+  Mret -> (cMepc cs, cs, 0, 0, 0, False, Nothing, False)
   Csrrw rd _ csr ->
     let addr = unCsr csr
         old = readCsr cs addr
@@ -723,7 +1263,6 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
         new = old .&. complement rs1V
         cs' = writeCsr addr new cs
      in regWb cs' rd old (pc + 4)
-  -- ----- SYSTEM: Zicsr — immediate-source forms ------------------
   Csrrwi rd zimm csr ->
     let addr = unCsr csr
         old = readCsr cs addr
@@ -743,13 +1282,9 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
         cs' = writeCsr addr new cs
      in regWb cs' rd old (pc + 4)
 
--- * Pure helper outputs ---------------------------------------------
-
--- | PC advances by 4; no memory access, no regfile write, CSR unchanged.
 nop :: Csrs -> BitVector 32 -> Out
 nop cs p = (p + 4, cs, 0, 0, 0, False, Nothing, False)
 
--- | Register writeback (and optionally a non-sequential PC); CSR unchanged.
 regWb :: Csrs -> Reg -> BitVector 32 -> BitVector 32 -> Out
 regWb cs rd val nextPc =
   (nextPc, cs, 0, 0, 0, False, Just (unReg rd, val), False)
@@ -763,10 +1298,6 @@ aluShamt cs rd op rs1V shamt p = regWb cs rd (alu op rs1V (zeroExtend shamt)) (p
 aluReg :: Csrs -> Reg -> AluOp -> BitVector 32 -> BitVector 32 -> BitVector 32 -> Out
 aluReg cs rd op a b p = regWb cs rd (alu op a b) (p + 4)
 
-{- |
-Load: traps on misaligned access (load-addr-misaligned, cause 4);
-otherwise writes back the extracted + sign-extended load data.
--}
 doLoad ::
   Csrs ->
   Reg ->
@@ -790,10 +1321,6 @@ doLoad cs rd off width signed rs1 rdata p =
           let loaded = extendLoad width signed addr rdata
            in (p + 4, cs, addr, 0, 0, True, Just (unReg rd, loaded), False)
 
-{- |
-Store: traps on misaligned access; otherwise issues the write to
-dmem with the byte-enable for the requested width / alignment.
--}
 doStore ::
   Csrs ->
   Signed 12 ->
@@ -816,7 +1343,6 @@ doStore cs off base value width p =
               wdata = shiftStoreData width addr value
            in (p + 4, cs, addr, wdata, be, False, Nothing, False)
 
--- | Branch: take it (PC ← PC + off) iff the comparator says so.
 doBranch ::
   Csrs ->
   BranchOp ->
@@ -829,37 +1355,17 @@ doBranch cs op a b off p =
   let taken = branchTaken op a b
       target = p + sxImm13 off
       pcNext = if taken then target else p + 4
-      -- RVFI spec (insn_{beq,bne,blt,bge,bltu,bgeu}): trap iff
-      -- @next_pc[1:0] != 0@, regardless of whether the branch is
-      -- taken. For a taken branch that's the target's alignment;
-      -- for a fall-through, it's @p + 4@, which only ends up
-      -- misaligned if @p@ is itself misaligned (the formal
-      -- harness can place a misaligned @p@ at cycle 0, so we
-      -- can't assume @pc@ is pre-aligned).
       misaligned = slice d1 d0 pcNext /= 0
    in if misaligned
         then trap causeInstrAddrMisaligned p pcNext cs
         else (pcNext, cs, 0, 0, 0, False, Nothing, False)
 
-{- |
-Latch a trap: record @mcause@ / @mepc@ / @mtval@ in the CSR file,
-jump to @mtvec.base@ (bottom two bits cleared — direct mode).
-No regfile writeback, no memory access. Sets the trap-fired bit
-so the RVFI tap can flag this cycle's @rvfi_trap = 1@.
--}
 trap :: BitVector 32 -> BitVector 32 -> BitVector 32 -> Csrs -> Out
 trap cause epc tval cs =
   let cs' = applyTrap cause epc tval cs
       target = cMtvec cs .&. complement 3
    in (target, cs', 0, 0, 0, False, Nothing, True)
 
--- * Load / store byte-lane helpers ---------------------------------
-
-{- |
-Extract and sign-extend the loaded byte/half/word from the 32-bit
-memory read response. Assumes the aligned-access check in 'doLoad'
-has already rejected misaligned addresses.
--}
 extendLoad :: Int -> Bool -> BitVector 32 -> BitVector 32 -> BitVector 32
 extendLoad width signed addr rdata = case (width, signed) of
   (4, _) -> rdata
@@ -869,9 +1375,6 @@ extendLoad width signed addr rdata = case (width, signed) of
   (1, False) -> resize loadByte
   _ -> 0
  where
-  -- Named @loadByte@ rather than @byte@ so the signal Clash emits
-  -- into the generated Verilog isn't a SystemVerilog reserved
-  -- keyword (Verilator 5 rejects the default name).
   loadByte :: BitVector 8
   loadByte = case slice d1 d0 addr of
     0 -> slice d7 d0 rdata
@@ -884,42 +1387,22 @@ extendLoad width signed addr rdata = case (width, signed) of
     0 -> slice d15 d0 rdata
     _ -> slice d31 d16 rdata
 
--- | Sign-extend an n-bit value to 32 bits.
 signExtendTo32 :: forall n. (KnownNat n) => BitVector n -> Signed 32
 signExtendTo32 v = resize (unpack v :: Signed n)
 
-{- | Is this instruction a CSR instruction (CSRRW/S/C/WI/SI/CI)?
-
-Opcode 0b1110011 (SYSTEM) is shared with ECALL / EBREAK / MRET,
-but those have @funct3 == 0@ whereas all Zicsr instructions
-have @funct3 ∈ {1,2,3,5,6,7}@. The RVFI CSR tap uses this to
-decide whether the current retire is targeting a CSR.
-
-Called from the RVFI tap in 'core'; exported at module scope
-so it synthesises to a single shared comparator net rather
-than being inlined into every per-CSR mask computation.
--}
 isCsrOp :: BitVector 32 -> Bool
 isCsrOp insn =
   slice d6 d0 insn == 0b1110011 && slice d14 d12 insn /= 0
 
-{- |
-Compute the RVFI @rvfi_mem_rmask@ for a load instruction: which
-bytes of 'dmemRData' the load actually consumed, based on the
-instruction's @funct3@ and the address's low two bits.
-
-Returns @0@ for any non-load opcode — the caller gates this on
-@dmemRen@ so stores and ALU ops never see anything but zero.
--}
 loadMask :: BitVector 32 -> BitVector 32 -> BitVector 4
 loadMask instr addr
-  | slice d6 d0 instr /= 0b0000011 = 0 -- not LOAD opcode
+  | slice d6 d0 instr /= 0b0000011 = 0
   | otherwise = case slice d14 d12 instr of
-      0b000 -> byteMask -- LB
-      0b100 -> byteMask -- LBU
-      0b001 -> halfMask -- LH
-      0b101 -> halfMask -- LHU
-      0b010 -> 0b1111 -- LW
+      0b000 -> byteMask
+      0b100 -> byteMask
+      0b001 -> halfMask
+      0b101 -> halfMask
+      0b010 -> 0b1111
       _ -> 0
  where
   byteMask = case slice d1 d0 addr of
@@ -931,7 +1414,6 @@ loadMask instr addr
     0 -> 0b0011
     _ -> 0b1100
 
--- | Per-byte write-enable: 4 bits, one per byte lane.
 byteEnable :: Int -> BitVector 32 -> BitVector 4
 byteEnable width addr = case (width, slice d1 d0 addr) of
   (4, _) -> 0b1111
@@ -943,9 +1425,6 @@ byteEnable width addr = case (width, slice d1 d0 addr) of
   (1, 3) -> 0b1000
   _ -> 0
 
-{- | Shift a store's data into the correct byte lane(s) of the 32-bit
-memory word.
--}
 shiftStoreData :: Int -> BitVector 32 -> BitVector 32 -> BitVector 32
 shiftStoreData width addr value = case (width, slice d1 d0 addr) of
   (4, _) -> value
@@ -956,8 +1435,6 @@ shiftStoreData width addr value = case (width, slice d1 d0 addr) of
   (1, 2) -> value `shiftL` 16
   (1, 3) -> value `shiftL` 24
   _ -> value
-
--- * Immediate helpers ----------------------------------------------
 
 sxImm12 :: Signed 12 -> BitVector 32
 sxImm12 = pack . (resize :: Signed 12 -> Signed 32)

@@ -175,7 +175,9 @@ regsFrom ::
   [(BitVector 32, Maybe (BitVector 5, BitVector 32), BitVector 32, BitVector 4)] ->
   Map.Map Word32 Word32
 regsFrom trace =
-  let wbs = P.drop 2 [wb | (_, wb, _, _) <- trace]
+  -- Drop reset + 5-stage pipe fill (6 cycles) before inspecting
+  -- retirements.
+  let wbs = P.drop 6 [wb | (_, wb, _, _) <- trace]
       updates = [(rdOf r, w32 v) | Just (r, v) <- wbs]
    in foldl' (P.flip (P.uncurry Map.insert)) Map.empty updates
  where
@@ -203,7 +205,7 @@ case_branchSquash = do
         -- \*must* be squashed
         placeAt skipL
         addi x1 x0 42 -- executes after the bubble
-      trace = run prog 12
+      trace = run prog 20
       -- Collect every writeback (including ones to the same rd) so
       -- a squashed store isn't masked by a later overwrite.
       wbs = P.drop 2 [wb | (_, wb, _, _) <- trace]
@@ -241,7 +243,7 @@ case_backToBackBranches = do
         -- end: final instruction.
         placeAt end
         addi x3 x0 7
-      regs = regsFrom (run prog 14)
+      regs = regsFrom (run prog 20)
   assertEqual "x1 stayed 0 (first squash held)" Nothing (Map.lookup 1 regs)
   assertEqual "x2 stayed 0 (second squash held)" Nothing (Map.lookup 2 regs)
   assertEqual "x3 set to 7 after both branches" (Just 7) (Map.lookup 3 regs)
@@ -259,7 +261,7 @@ case_jalSquash = do
         addi x1 x0 99 -- squashed
         placeAt target
         addi x1 x0 42
-      regs = regsFrom (run prog 12)
+      regs = regsFrom (run prog 20)
   assertEqual "x1 not overwritten by squashed ADDI" (Just 42) (Map.lookup 1 regs)
 
 {- |
@@ -316,9 +318,18 @@ case_pcFromReset = do
 
 {- |
 Driving @stall@ high for a few cycles in the middle of a straight-
-line program must freeze the core: no writeback may commit during
-the stalled cycles, and after the stall releases, execution resumes
-from where it left off with no lost or duplicated retirements.
+line program must not lose or duplicate retirements: regardless of
+when writebacks happen exactly, after the stall releases and the
+pipeline drains, all five ADDIs must have retired with their
+correct values.
+
+In the 5-stage F|D|X|M|W pipeline, @stall@ freezes the front
+(pcFetch, IF/ID, ID/EX) while M and W continue to drain. That
+means writebacks __can__ commit during stall cycles — namely
+instructions that already cleared X before the stall went high.
+So we don't assert "no writebacks during stall"; we assert
+end-state correctness and let the pipeline shape choose its own
+retirement cadence.
 -}
 case_stallFreezesWb :: Assertion
 case_stallFreezesWb = do
@@ -328,22 +339,13 @@ case_stallFreezesWb = do
         addi x3 x0 33
         addi x4 x0 44
         addi x5 x0 55
-      -- Stall pattern: low for the reset + warmup, then raise high
-      -- for three cycles somewhere in the middle of the ADDIs, then
-      -- drop low again. Cycles [0..1]=low (reset+warmup), [2]=low
-      -- (first ADDI retires), [3..5]=stall, [6..]=low.
-      stallPattern = [P.False, P.False, P.False] P.++ P.replicate 3 P.True
-      trace = runWithStall prog 15 stallPattern
-      -- Per-cycle (stall, writeback) pairs — the writeback column
-      -- should be Nothing on every stalled cycle.
-      paired = P.zip stallPattern [wb | (_, wb, _, _) <- trace]
-      stallCycleWbs = [wb | (P.True, wb) <- paired]
-  assertBool
-    ("writeback committed during stall cycles: " P.++ P.show stallCycleWbs)
-    (P.all (P.== Nothing) stallCycleWbs)
-  -- And after the full run we should still have retired all five
-  -- ADDIs — none dropped by the stall.
-  let regs = regsFrom trace
+      -- Stall pattern: low for the reset + pipe fill, then raise
+      -- high for three cycles in the middle, then drop low. The
+      -- test generously runs more cycles than strictly necessary
+      -- so the pipeline drains fully.
+      stallPattern = P.replicate 5 P.False P.++ P.replicate 3 P.True
+      trace = runWithStall prog 25 stallPattern
+      regs = regsFrom trace
   assertEqual
     "all 5 ADDIs retired despite mid-run stall"
     (Map.fromList [(1, 11), (2, 22), (3, 33), (4, 44), (5, 55)])

@@ -110,26 +110,28 @@ simulateProgram n program =
     samples
 
 {- | Strip reset + pipeline-warmup cycles from the head of a trace.
-Clash's default 'resetGen' asserts reset for more than one cycle
-on the 'System' domain; combined with the pipelined core's
-F → X hand-off, the first two observed samples have
-pcExec = 0 (reset value) before the first real instruction
-retires on sample 2.
+The 5-stage F|D|X|M|W pipeline needs four clock edges to fill
+(one pipe register per boundary) on top of Clash's one-cycle
+reset, so the first valid @pcExec@ / writeback appears on sample
+@6@ of the trace. Dropping six keeps the later samples aligned
+with the instruction-at-pc-0, instruction-at-pc-4, … retirement
+sequence the tests actually inspect.
 -}
 afterReset :: [a] -> [a]
-afterReset = P.drop 2
+afterReset = P.drop 6
 
 -- * Cases ----------------------------------------------------------
 
 case_pcAdvance :: Assertion
 case_pcAdvance = do
-  -- Three NOPs; PC should be 0, 4, 8, 12, … in successive cycles.
+  -- Three NOPs; PC should be 0, 4, 8, 12, … in successive cycles
+  -- after the pipeline fills.
   let Right prog = assemble $ do
         nop
         nop
         nop
         nop
-      trace = simulateProgram 8 prog
+      trace = simulateProgram 12 prog
       pcs = P.map (\(pc, _, _, _, _) -> pc) (afterReset trace)
   assertBool
     ("expected PC to advance 4 per cycle, got: " P.++ P.show pcs)
@@ -145,7 +147,7 @@ case_addiWb = do
         addi x1 x0 42
         addi x2 x0 7
         nop
-      trace = simulateProgram 7 prog
+      trace = simulateProgram 12 prog
       pcs = P.map (\(pc, _, _, _, _) -> pc) (afterReset trace)
   assertBool
     ("expected PC to advance 4 per cycle through ADDIs, got: " P.++ P.show pcs)
