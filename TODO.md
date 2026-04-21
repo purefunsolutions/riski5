@@ -13,9 +13,8 @@ rules around maintaining it.
 
 ## In flight
 
-- **P2A-5. Silicon validation of the 5-stage @ 40 MHz bitstream.**
-  Flashing + running the on-board Hello test agent (SRAM / SDRAM
-  round-trips via UART + LCD). If green, P2A closes.
+- (nothing — phase 2 P2-A shipped end-to-end on silicon at 40 MHz
+  on 2026-04-21, see "Done — phase 2 P2-A" below.)
 
 ## Next up
 
@@ -66,6 +65,23 @@ rules around maintaining it.
   combinational cone (`idExS → handleInstr dispatch → EX/MEM`),
   ~18.6 ns. Documented in
   [`docs/timing/pipeline5-2026-04-21.md`](./docs/timing/pipeline5-2026-04-21.md).
+- **P2A-5. ✓ ✦ Silicon green at 40 MHz (2026-04-21 → fixup
+  commit 735796e).** First flash of the 5-stage bitstream
+  turned up a silicon-only bug — SW/SRAM words stored
+  with a corrupted hi half — traced to forwarding collapse
+  when EX/MEM drained to bubble during stall cycles (the
+  stalled SW's rs2 forwarding fell back to the stale
+  ID/EX-captured value, so SRAM latched the right lo half
+  at cycle-N WE↑ but the wrong hi half at cycle-N+2 WE↑).
+  Fix: EX/MEM and MEM/WB now hold frozen on stall instead
+  of draining to bubble; `writeBackOutS` + `rvfiValidS`
+  gated on `not stall` so a held MEM/WB doesn't retire
+  repeatedly. All five phase-1 Hello diagnostics then print
+  OK on `nios2-terminal` first try: `hello, world` /
+  `M-ext OK` / `SRAM OK` / `SRAM W32 OK` / `SDRAM OK` on
+  the freshly flashed DE2 at 40 MHz. Same bitstream closes
+  with +6.35 ns slack on slow-85 °C STA.
+  **Phase 2 P2-A complete end-to-end.**
 
 ## Done — phase 1D
 
