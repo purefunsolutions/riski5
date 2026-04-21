@@ -229,7 +229,20 @@ in
           output wire        SRAM_OE_N,
           output wire        SRAM_WE_N,
           output wire        SRAM_UB_N,
-          output wire        SRAM_LB_N
+          output wire        SRAM_LB_N,
+          // SDR SDRAM — 8 MB IS42S16400-class, driven by the Altera
+          // altera_avalon_new_sdram_controller IP instantiated below.
+          output wire [11:0] DRAM_ADDR,
+          output wire [1:0]  DRAM_BA,
+          output wire        DRAM_CAS_N,
+          output wire        DRAM_CKE,
+          output wire        DRAM_CLK,
+          output wire        DRAM_CS_N,
+          inout  wire [15:0] DRAM_DQ,
+          output wire        DRAM_LDQM,
+          output wire        DRAM_UDQM,
+          output wire        DRAM_RAS_N,
+          output wire        DRAM_WE_N
       );
 
         // ----- PLL: 50 MHz → 40 MHz ------------------------------------
@@ -322,6 +335,64 @@ in
         assign uart_rdata  = jtag_uart_readdata;
         wire   uart_ready  = ~jtag_uart_waitrequest;
 
+        // ----- SDRAM bus tap ⇄ Altera IP Avalon-MM slave --------------
+        // The Clash-side Riski5.Sdram adapter produces the 16-bit
+        // master-side signals (CS, 22-bit word address, 16-bit write
+        // data, 2-bit byte-enable, and active-high read / write
+        // strobes). Altera's Avalon-MM slave expects active-low
+        // *_n strobes, so we invert at this boundary. The IP's
+        // za_data / za_valid / za_waitrequest feed back to the Clash
+        // adapter via the three SDRAM_* input ports on the core.
+        wire        sdram_cs;
+        wire [21:0] sdram_addr_bus;
+        wire [15:0] sdram_wdata;
+        wire [1:0]  sdram_be;
+        wire        sdram_rd;
+        wire        sdram_wr;
+
+        wire [15:0] sdram_ip_readdata;
+        wire        sdram_ip_valid;
+        wire        sdram_ip_waitrequest;
+
+        // DRAM_DQ is inout on both the top-level port and the IP's
+        // zs_dq port — the Altera IP owns the tristate enable logic
+        // internally, so we just wire them together directly. (SRAM
+        // needs our own resolution because the core drives those
+        // pins from pure logic without an Avalon-MM IP in between.)
+
+        // DRAM_CLK is forwarded from the core clock. At 30 MHz the
+        // setup/hold margin at the SDRAM pins is > 15 ns either way,
+        // well above the IS42S16400-7B's 1.5 / 0.8 ns requirements,
+        // so we can share clk30 directly without a phase-shifted PLL
+        // tap. Revisit in phase 1E if the target clock climbs.
+        assign DRAM_CLK = clk30;
+
+        riski5_sdram u_sdram (
+            .clk            (clk30),
+            .reset_n        (rst30_n),
+            // Avalon-MM slave (master-side driven by Clash adapter)
+            .az_cs          (sdram_cs),
+            .az_addr        (sdram_addr_bus),
+            .az_data        (sdram_wdata),
+            .az_be_n        (~sdram_be),
+            .az_rd_n        (~sdram_rd),
+            .az_wr_n        (~sdram_wr),
+            .za_data        (sdram_ip_readdata),
+            .za_valid       (sdram_ip_valid),
+            .za_waitrequest (sdram_ip_waitrequest),
+            // SDRAM-chip side — directly to the board pads
+            .zs_addr        (DRAM_ADDR),
+            .zs_ba          (DRAM_BA),
+            .zs_cas_n       (DRAM_CAS_N),
+            .zs_cke         (DRAM_CKE),
+            .zs_cs_n        (DRAM_CS_N),
+            .zs_dq          (DRAM_DQ),
+            .zs_dqm         ({DRAM_UDQM, DRAM_LDQM}),
+            .zs_ras_n       (DRAM_RAS_N),
+            .zs_we_n        (DRAM_WE_N)
+        );
+        wire sdram_ready = ~sdram_ip_waitrequest;
+
         // ----- Clash riski5 core --------------------------------------
         riski5 u_riski5 (
             .CLOCK_30    (clk30),
@@ -331,6 +402,9 @@ in
             .SRAM_DQ_I   (SRAM_DQ),
             .UART_RDATA  (uart_rdata),
             .UART_READY  (uart_ready),
+            .SDRAM_RDATA (sdram_ip_readdata),
+            .SDRAM_VALID (sdram_ip_valid),
+            .SDRAM_READY (sdram_ready),
             .LEDR        (LEDR),
             .LEDG        (LEDG),
             .LCD_DATA    (LCD_DATA),
@@ -351,7 +425,13 @@ in
             .UART_ADDR   (uart_addr),
             .UART_WDATA  (uart_wdata),
             .UART_BE     (uart_be),
-            .UART_RE     (uart_re)
+            .UART_RE     (uart_re),
+            .SDRAM_CS    (sdram_cs),
+            .SDRAM_ADDR  (sdram_addr_bus),
+            .SDRAM_WDATA (sdram_wdata),
+            .SDRAM_BE    (sdram_be),
+            .SDRAM_RD    (sdram_rd),
+            .SDRAM_WR    (sdram_wr)
         );
 
       endmodule

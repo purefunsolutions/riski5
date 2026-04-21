@@ -65,6 +65,7 @@ import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
+import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
 import Riski5.Sram (SramPins (..), sram)
 
 {- |
@@ -99,6 +100,13 @@ data SocIn = SocIn
   model returns constant @True@ because the sim model has no
   registered write-data path.
   -}
+  , siSdramReply :: SdramIpReply
+  {- ^ Slave → master return channel from the Altera SDRAM
+  Controller IP (or 'sdramIpSim' in sim). Carries @za_data@,
+  @za_valid@, and @~za_waitrequest@; the SoC's stall logic
+  feeds @~waitrequest@ back to the core and the 'Riski5.Sdram'
+  adapter latches @za_data@ when @za_valid@ pulses.
+  -}
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -123,6 +131,14 @@ data SocOut = SocOut
   through 'app/Top.hs' to the Altera JTAG UART IP; in simulation,
   'socSim' pipes it into 'jtagUartSim' and feeds the resulting
   read-data back into 'siUartRdata'.
+  -}
+  , soSdramBus :: SdramIpBus
+  {- ^ Live bus tap for the SDRAM slave. 16-bit Avalon-MM master
+  signals produced by the 32 ↔ 16 width adapter in
+  "Riski5.Sdram". On hardware, routed through the Verilog
+  wrapper to the Altera SDRAM Controller IP; in simulation,
+  'socSim' pipes it into 'sdramIpSim' and feeds the resulting
+  reply back into 'siSdramReply'.
   -}
   }
   deriving stock (Eq, Show, Generic)
@@ -271,33 +287,47 @@ soc progInit dataInit inS = outS
   (sramRdataS, sramPinsS, sramReadyS) =
     sram sramSelS dAddrS dWdataS dBeS dRenS sramDqInS
 
+  -- ----- SDRAM (off-chip 8 MB IS42S16400-class via Altera IP) --
+  -- 'Riski5.Sdram.sdram' is the 32 ↔ 16 adapter FSM; the actual
+  -- SDRAM controller is the Altera IP instantiated in the Verilog
+  -- wrapper outside the Clash boundary. Like SRAM, 'sdramReadyS'
+  -- is False while a transaction is in flight; the core stalls
+  -- via 'stallS' until it goes True.
+  sdramSelS = (\a -> slaveOf a == SlaveSdram) <$> dAddrS
+  sdramReplyS = siSdramReply <$> inS
+  (sdramRdataS, sdramBusS, sdramReadyS) =
+    sdram sdramSelS dAddrS dWdataS dBeS dRenS sdramReplyS
+
   -- Bus-level stall: any selected slave can deassert ready. Today
-  -- SRAM stalls on read-latency and UART stalls for the
+  -- SRAM + SDRAM stall on read-latency and UART stalls for the
   -- 1-cycle-registered @av_waitrequest@ the Altera
   -- @altera_avalon_jtag_uart@ IP asserts on the first cycle of every
   -- Avalon-MM transaction. BRAM / GPIO / LCD are single-cycle.
   uartReadyS = siUartReady <$> inS
   stallS =
-    ( \s sramRdy uartRdy ->
+    ( \s sramRdy sdramRdy uartRdy ->
         case s of
           SlaveSram -> not sramRdy
+          SlaveSdram -> not sdramRdy
           SlaveJtagUart -> not uartRdy
           _ -> False
     )
       <$> (slaveOf <$> dAddrS)
       <*> sramReadyS
+      <*> sdramReadyS
       <*> uartReadyS
 
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
   dmemRdataS =
-    ( \s bR uR lR gR sR ->
+    ( \s bR uR lR gR sR dR ->
         case s of
           SlaveBram -> bR
           SlaveJtagUart -> uR
           SlaveLcd -> lR
           SlaveGpio -> gR
           SlaveSram -> sR
+          SlaveSdram -> dR
           _ -> 0
     )
       <$> (slaveOf <$> dAddrS)
@@ -306,10 +336,11 @@ soc progInit dataInit inS = outS
       <*> lcdRdataS
       <*> gpioRdataS
       <*> sramRdataS
+      <*> sdramRdataS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins lcdIrq sramPins uartBus ->
+    ( \gpo lcdPins lcdIrq sramPins uartBus sdramBus ->
         SocOut
           { soLedR = gpoLedR gpo
           , soLedG = gpoLedG gpo
@@ -317,6 +348,7 @@ soc progInit dataInit inS = outS
           , soLcdIrq = lcdIrq
           , soSramPins = sramPins
           , soUartBus = uartBus
+          , soSdramBus = sdramBus
           }
     )
       <$> gpOutS
@@ -324,6 +356,7 @@ soc progInit dataInit inS = outS
       <*> lcdIrqS
       <*> sramPinsS
       <*> uartBusS
+      <*> sdramBusS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
@@ -346,19 +379,38 @@ socSim ::
 socSim progInit dataInit inSimS = outSimS
  where
   fullInS =
-    ( \SocInSim {..} ur ->
+    ( \SocInSim {..} ur sdr ->
         SocIn
           { siSwitches = sisSwitches
           , siKeys = sisKeys
           , siSramDqIn = sisSramDqIn
           , siUartRdata = ur
           , siUartReady = True
+          , siSdramReply = sdr
           }
     )
       <$> inSimS
       <*> uartRdataS
+      <*> sdramReplyS
   outS = soc progInit dataInit fullInS
-  busS = soUartBus <$> outS
+
+  -- JTAG UART sim-model tap.
+  uartBusS = soUartBus <$> outS
   (uartRdataS, uartTxS) =
-    jtagUartSim (ambSel <$> busS) (ambAddr <$> busS) (ambWdata <$> busS) (ambBe <$> busS) (ambRe <$> busS)
+    jtagUartSim
+      (ambSel <$> uartBusS)
+      (ambAddr <$> uartBusS)
+      (ambWdata <$> uartBusS)
+      (ambBe <$> uartBusS)
+      (ambRe <$> uartBusS)
+
+  -- SDRAM sim-model tap. 16 Ki half-words = 32 KB of addressable
+  -- sim memory; tests that only touch the lower portion of the
+  -- 8 MB SDRAM address space are fine, and 'sdramIpSim' wraps
+  -- modulo the vector length anyway.
+  sdramBusS = soSdramBus <$> outS
+  sdramReplyS = sdramIpSim simMem sdramBusS
+  simMem :: Vec 16384 (BitVector 16)
+  simMem = CP.repeat 0
+
   outSimS = (\o t -> SocOutSim {sosOut = o, sosUartTx = t}) <$> outS <*> uartTxS

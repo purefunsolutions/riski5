@@ -39,6 +39,7 @@ import Clash.Prelude
 import Hello (helloFirmwareWords)
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
+import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
 import Riski5.Sram (SramPins (..))
 import Prelude qualified as P
@@ -125,6 +126,18 @@ topEntity ::
   IP's FIFO captures it.
   -}
   "UART_READY" ::: Signal Dom30 Bool ->
+  {- | 16-bit read-data returned by the Altera SDRAM Controller IP
+  on @za_data@. Valid on the cycle @SDRAM_VALID@ is asserted.
+  -}
+  "SDRAM_RDATA" ::: Signal Dom30 (BitVector 16) ->
+  {- | SDRAM read-data-valid strobe (@za_valid@) — rises on the
+  cycle the IP has the read-data ready on @SDRAM_RDATA@.
+  -}
+  "SDRAM_VALID" ::: Signal Dom30 Bool ->
+  {- | Complement of the SDRAM IP's @za_waitrequest@ — the core
+  stalls while this is low, same stall mechanism as the JTAG UART.
+  -}
+  "SDRAM_READY" ::: Signal Dom30 Bool ->
   ""
     ::: ( "LEDR" ::: Signal Dom30 (BitVector 18)
         , "LEDG" ::: Signal Dom30 (BitVector 9)
@@ -151,16 +164,41 @@ topEntity ::
         , "UART_WDATA" ::: Signal Dom30 (BitVector 32)
         , "UART_BE" ::: Signal Dom30 (BitVector 4)
         , "UART_RE" ::: Signal Dom30 Bool
+        , -- SDRAM bus tap — 16-bit Avalon-MM master signals produced
+          -- by the 32 ↔ 16 adapter 'Riski5.Sdram.sdram'. Routed by
+          -- @riski5_top.v@ to the Altera SDRAM Controller IP.
+          "SDRAM_CS" ::: Signal Dom30 Bool
+        , "SDRAM_ADDR" ::: Signal Dom30 (BitVector 22)
+        , "SDRAM_WDATA" ::: Signal Dom30 (BitVector 16)
+        , "SDRAM_BE" ::: Signal Dom30 (BitVector 2)
+        , "SDRAM_RD" ::: Signal Dom30 Bool
+        , "SDRAM_WR" ::: Signal Dom30 Bool
         )
-topEntity clk30 rst30 keyS swS sramDqInS uartRdataS uartReadyS =
+topEntity
+  clk30
+  rst30
+  keyS
+  swS
+  sramDqInS
+  uartRdataS
+  uartReadyS
+  sdramRdataS
+  sdramValidS
+  sdramReadyS =
   withClockResetEnable clk30 rst30 enableGen
-    $ let inS =
+    $ let sdramReplyS =
+            (\d v r -> SdramIpReply {sirRdata = d, sirValid = v, sirWaitrequest = P.not r})
+              <$> sdramRdataS
+              <*> sdramValidS
+              <*> sdramReadyS
+          inS =
             SocIn
               <$> swS
               <*> keyS
               <*> sramDqInS
               <*> uartRdataS
               <*> uartReadyS
+              <*> sdramReplyS
           outS = soc firmwareImage dataImage inS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
@@ -189,6 +227,13 @@ topEntity clk30 rst30 keyS swS sramDqInS uartRdataS uartReadyS =
           uartWdataS = ambWdata <$> uartBusS
           uartBeS = ambBe <$> uartBusS
           uartReS = ambRe <$> uartBusS
+          sdramBusS = soSdramBus <$> outS
+          sdramCsS = sibCs <$> sdramBusS
+          sdramAddrOutS = sibAddr <$> sdramBusS
+          sdramWdataOutS = sibWdata <$> sdramBusS
+          sdramBeS = sibBe <$> sdramBusS
+          sdramRdS = sibRd <$> sdramBusS
+          sdramWrS = sibWr <$> sdramBusS
        in ( ledrS
           , ledgS
           , lcdDataS
@@ -210,6 +255,12 @@ topEntity clk30 rst30 keyS swS sramDqInS uartRdataS uartReadyS =
           , uartWdataS
           , uartBeS
           , uartReS
+          , sdramCsS
+          , sdramAddrOutS
+          , sdramWdataOutS
+          , sdramBeS
+          , sdramRdS
+          , sdramWrS
           )
 
 {- | Exported Clash-usable top-entity annotation so
