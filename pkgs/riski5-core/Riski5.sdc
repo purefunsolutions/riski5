@@ -23,7 +23,7 @@ set_false_path -from [get_ports KEY0] -to [all_registers]
 # DRAM_CLK is a gated / forwarded copy of the core clock driving the
 # external SDR SDRAM chip. Declare it as a generated clock so STA
 # knows the SDRAM pins are synchronous to CLOCK_50 → ALTPLL → clk30
-# and doesn't raise unconstrained-output warnings. At 30 MHz the
+# and doesn't raise unconstrained-output warnings. At 40 MHz the
 # chip has > 18 ns of setup/hold margin either side of the FPGA →
 # SDRAM edge (IS42S16400-7 requires 1.5 / 0.8 ns), so the default
 # I/O register constraints are enough and we don't yet need a

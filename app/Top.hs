@@ -65,7 +65,7 @@ and KEY0 is released.
 createDomain
   vSystem
     { vName = "Dom30"
-    , vPeriod = 33333
+    , vPeriod = 25000
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
     }

@@ -120,8 +120,8 @@ in
             # two 16-bit chips in parallel, which the DE2 doesn't have.
             #
             # Timing parameters are sized for the -7 speed grade of the
-            # DE2's chip and a 30 MHz (Dom30) clock, leaving generous
-            # margin:
+            # DE2's chip and a 40 MHz (Dom30 — name kept even after the
+            # phase-2 PLL retarget) clock, leaving generous margin:
             #
             #   casLatency       = 2   — fine below ~133 MHz for a -7 part
             #   TRCD             = 20  ns (≥ 15 ns data-sheet min)
@@ -267,7 +267,7 @@ in
         defparam u_altpll.bandwidth_type        = "AUTO";
         defparam u_altpll.clk0_divide_by        = 5;
         defparam u_altpll.clk0_duty_cycle       = 50;
-        defparam u_altpll.clk0_multiply_by      = 3;
+        defparam u_altpll.clk0_multiply_by      = 4;
         defparam u_altpll.clk0_phase_shift      = "0";
         defparam u_altpll.compensate_clock      = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
@@ -360,11 +360,11 @@ in
         // needs our own resolution because the core drives those
         // pins from pure logic without an Avalon-MM IP in between.)
 
-        // DRAM_CLK is forwarded from the core clock. At 30 MHz the
-        // setup/hold margin at the SDRAM pins is > 15 ns either way,
+        // DRAM_CLK is forwarded from the core clock. At 40 MHz the
+        // setup/hold margin at the SDRAM pins is ~10 ns either way,
         // well above the IS42S16400-7B's 1.5 / 0.8 ns requirements,
         // so we can share clk30 directly without a phase-shifted PLL
-        // tap. Revisit in phase 1E if the target clock climbs.
+        // tap. Revisit if the target clock climbs past ~60 MHz.
         assign DRAM_CLK = clk30;
 
         riski5_sdram u_sdram (
