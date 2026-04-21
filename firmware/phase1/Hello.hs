@@ -50,6 +50,10 @@ helloFirmware = do
   loadAddr lcdReg 0x1000_0040
   loadAddr gpioReg 0x1000_0020
   loadAddr sramReg 0x2000_0000
+  -- SDRAM base = 0x8000_0000 — top bit set, so li expands to
+  -- LUI 0x80000 + ADDI 0. The 8 MB SDRAM is decoded from upper
+  -- 4 bits 0x8 by Bus.hs's address decoder (see Riski5.MemMap).
+  loadAddr sdramReg 0x8000_0000
 
   -- LEDs cleared at boot.
   ledrSet 0
@@ -184,28 +188,59 @@ helloFirmware = do
 
   placeAt sramWordAfter
 
-  -- Combined SRAM summary for LCD + LEDs.
+  -- T38: SDRAM 32-bit round-trip. Writes 0xCAFEBABE to SDRAM[0..3]
+  -- via the Altera SDRAM Controller IP, reads it back via LW, and
+  -- reports on the UART. Exercises the full path:
+  --   core bus → Riski5.Sdram adapter FSM → Avalon-MM slave
+  --   → altera_avalon_new_sdram_controller IP → DRAM_* pins on the
+  --   off-chip IS42S16400 chip, round-tripping back through the
+  --   IP's FIFO + za_data.
+  li scratchReg 0xCAFEBABE
+  sw sdramReg scratchReg 0
+  lw resultReg sdramReg 0
+
+  li scratchReg 0xCAFEBABE
+  sdramOk <- labelUnplaced
+  beq resultReg scratchReg sdramOk
+
+  -- Failure path: flag it in hexReg, log the bad value.
+  li tmpReg 4
+  or_ hexReg hexReg tmpReg
+  uartString "SDRAM ERR got=0x"
+  srli tmpReg resultReg 16
+  uartHex16 tmpReg
+  uartHex16 resultReg
+  uartChar 0x0A
+  sdramAfter <- labelUnplaced
+  j sdramAfter
+
+  placeAt sdramOk
+  uartString "SDRAM OK\n"
+
+  placeAt sdramAfter
+
+  -- Combined SRAM/SDRAM summary for LCD + LEDs.
   sramAllOk <- labelUnplaced
   beq hexReg x0 sramAllOk
 
   -- Any failure: light LEDG[8] and report on LCD.
   ledgSet 0x100
   lcdCmd 0x80
-  lcdString "riski5: SRAM ERR"
+  lcdString "riski5: MEM ERR "
   sramLcdAfter <- labelUnplaced
   j sramLcdAfter
 
   placeAt sramAllOk
-  -- Both tests green: light LEDR[17], banner on LCD.
+  -- All three memory tests green: light LEDR[17], banner on LCD.
   ledrSet 0x20000
   lcdCmd 0x80
-  lcdString "riski5: SRAM OK "
+  lcdString "riski5: MEM OK  "
 
   placeAt sramLcdAfter
 
-  -- Line 2: a fixed status line.
+  -- Line 2: a fixed status line showing the three test patterns.
   lcdCmd 0xC0
-  lcdString "half A5A5 w DEAD"
+  lcdString "SRAM+SDRAM:CAFE "
 
   spin <- label
   j spin
@@ -218,11 +253,12 @@ helloFirmwareWords =
 
 -- * Convenience registers ------------------------------------------
 
-uartReg, lcdReg, gpioReg, sramReg, tmpReg, scratchReg, resultReg, hexReg :: Reg
+uartReg, lcdReg, gpioReg, sramReg, sdramReg, tmpReg, scratchReg, resultReg, hexReg :: Reg
 uartReg = x20
 lcdReg = x21
 gpioReg = x23
 sramReg = x15
+sdramReg = x24
 tmpReg = x22
 scratchReg = x31
 resultReg = x14

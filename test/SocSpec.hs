@@ -59,6 +59,7 @@ tests =
     "Riski5.Soc"
     [ testCase "firmware writes 'Hi' to the JTAG UART" case_hi
     , testCase "LEDR driven by a GPIO write becomes observable" case_ledr
+    , testCase "SDRAM round-trip surfaces on the JTAG UART" case_sdramRoundTrip
     ]
 
 -- * Catalog --------------------------------------------------------
@@ -94,6 +95,29 @@ progLedr = do
   Asm.addi x10 x0 0x15 -- x10 = 0x15 (= 0b010101, visible on low LEDRs)
   Asm.emit (Sw x11 x10 0)
   -- \*LEDR = 0x15
+  spin <- Asm.label
+  Asm.j spin
+
+{- |
+SDRAM end-to-end round-trip. Writes a byte to SDRAM, reads it
+back, then echoes it on the JTAG UART so the test can observe
+the value. If the whole chain — core stall, SDRAM adapter FSM,
+SDRAM IP sim model, bus read-mux — works, the UART TX stream
+contains the byte we wrote.
+-}
+progSdramRoundTrip :: Asm ()
+progSdramRoundTrip = do
+  -- x11 = SDRAM base = 0x8000_0000
+  Asm.lui x11 0x80000
+  -- x13 = UART base = 0x1000_0000
+  Asm.lui x13 0x10000
+  -- Store a recognizable value to SDRAM[0..3].
+  Asm.addi x10 x0 0x5A
+  Asm.emit (Sw x11 x10 0)
+  -- Load it back.
+  Asm.emit (Lw x12 x11 0)
+  -- Echo the low byte on the UART.
+  Asm.emit (Sw x13 x12 0)
   spin <- Asm.label
   Asm.j spin
 
@@ -143,3 +167,23 @@ case_ledr = do
     "LEDR contains 0x15"
     P.True
     (P.any (P.== 0x15) ledrs)
+
+{- | Verify SDRAM access goes through the bus decoder, the 32 ↔ 16
+width adapter, the SDRAM IP sim model, and comes back as an
+observable UART byte. Acts as a mini end-to-end smoke test before
+the hardware bring-up.
+-}
+case_sdramRoundTrip :: Assertion
+case_sdramRoundTrip = do
+  -- 50 cycles easily covers: 5 fetches + 1 SW (3) + 1 LW (5) +
+  -- 1 SW (UART, 1 cycle) plus pipeline fills. Any trailing j-spin
+  -- is harmless.
+  let trace = runSoc progSdramRoundTrip 80
+      txBytes = [b | SocOutSim {sosUartTx = Just b} <- trace]
+  case txBytes of
+    [b] -> assertEqual "UART TX reflects SDRAM round-trip byte" 0x5A b
+    other ->
+      assertFailure
+        ( "expected exactly 1 TX byte (0x5A), got "
+            P.++ P.show other
+        )
