@@ -13,17 +13,17 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 1D shipped end-to-end on 2026-04-21 with T39
-  SDRAM silicon verification; see "Done — phase 1D" below.)
+- (nothing — phase 1D + 1E both shipped 2026-04-21; see "Done —
+  phase 1E" below.)
 
 ## Next up
 
-- **Phase 1E — max out fmax** (plan T40–T44). Pipelineless
-  single-cycle design at ~33 MHz has real margin at 30 MHz but
-  the STA report still flags the imem → regfile cone at
-  ~30 ns. A contained exploration run: sweep target clocks via
-  Quartus STA, look for one or two combinational offenders, and
-  record fmax / LE / M4K deltas under `docs/timing/`.
+- **Phase 2 P2-A — pipelining**. Phase 1E's baseline documented
+  that the pipelineless single-cycle design is physically capped
+  at ~33 MHz because the imem-address → regfile cone settles in
+  30 ns flat. The next meaningful Fmax step is a 2-stage F | XM
+  pipeline; see the Tiny-tier roadmap in
+  [`docs/core-family.md`](./docs/core-family.md).
 
 ## Done — phase 1D
 
@@ -95,6 +95,24 @@ rules around maintaining it.
   summary line flips between "riski5: MEM OK" and
   "riski5: MEM ERR" based on all three checks (SRAM half-word,
   SRAM 32-bit, SDRAM 32-bit). Firmware size 680 / 1024 words.
+## Done — phase 1E
+
+- **T40. ✓ Baseline fmax + critical-path snapshot (2026-04-21).**
+  `docs/timing/baseline-2026-04-21.md` + archived STA / fit
+  reports capture the post-phase-1D state: 32.98 MHz slow-model
+  Fmax, +3.012 ns slack at the 30 MHz target, worst path is the
+  imem address register → regfile write-port cone at 30.287 ns
+  data delay. That's the whole pipelineless single-cycle
+  datapath in one clock period (fetch → decode → regfile read →
+  ALU / MulDiv / CSR → writeback mux → regfile write).
+  T41 / T43 / T44 skipped — no PLL retarget that closes timing
+  is available and no Quartus-effort change moves the needle
+  meaningfully. The next Fmax step is **phase-2 P2-A
+  pipelining**, which is what the plan's T42 scope-guard
+  prescribed for this outcome.
+
+## Done — phase 1D
+
 - **T39. ✓ ✦ SDRAM green on DE2 silicon (2026-04-21).**
   First flash with the T38 firmware bitstream
   (`42sswq0r95k3j83lzwf3bslk284gaswg`): `nios2-terminal`
