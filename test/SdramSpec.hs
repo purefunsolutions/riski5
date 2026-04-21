@@ -80,6 +80,7 @@ tests =
     , testCase "addresses route through sdramBase offset correctly" case_baseOffset
     , testCase "back-to-back SH writes to same word both land" case_backToBackWrites
     , testCase "ready pulses at the expected cycle counts" case_readyCycleCounts
+    , testCase "SB at each byte lane preserves the other three" case_byteSelectivity
     ]
 
 -- * Harness --------------------------------------------------------
@@ -279,6 +280,54 @@ case_backToBackWrites = do
 -- | Pin the exact ready-high cycles for SW and LW so a regression
 -- (e.g. adding an accidental wait state) is caught immediately
 -- rather than quietly slowing the whole data-path down.
+-- | Byte-selective stores: after priming a word with 0xFEEDFACE
+-- via SW, each SB should rewrite exactly the targeted byte lane
+-- and leave the other three bytes untouched. Exercises the
+-- adapter's @loActive / hiActive@ decoding plus the per-lane
+-- @az_be_n[1:0]@ mapping against the sim model's byte-enable
+-- merge path.
+case_byteSelectivity :: Assertion
+case_byteSelectivity = do
+  -- One SW to prime, then four SBs (at byte 0..3) each overwrite
+  -- one byte; after each SB a LW checks the remaining bytes
+  -- preserve their original 0xFE / 0xED / 0xFA / 0xCE values.
+  --
+  -- SB at byte 0: be=0b0001, lo-half only, lower byte lane.
+  -- SB at byte 1: be=0b0010, lo-half only, upper byte lane.
+  -- SB at byte 2: be=0b0100, hi-half only, lower byte lane.
+  -- SB at byte 3: be=0b1000, hi-half only, upper byte lane.
+  let reset_ = (False, 0, 0, 0)
+      -- After SW, memory[sdramBase] = 0xFEEDFACE:
+      --   byte 0 (addr+0) = 0xCE  lo-half bits [7:0]
+      --   byte 1 (addr+1) = 0xFA  lo-half bits [15:8]
+      --   byte 2 (addr+2) = 0xED  hi-half bits [7:0]
+      --   byte 3 (addr+3) = 0xFE  hi-half bits [15:8]
+      sw = (True, sdramBase, 0xFEED_FACE, 0b1111)
+      -- SB writes the new byte at the same address:
+      sb0 = (True, sdramBase, 0x0000_0011, 0b0001) -- byte 0 → 0x11
+      sb1 = (True, sdramBase + 1, 0x0000_2200, 0b0010) -- byte 1 → 0x22
+      sb2 = (True, sdramBase + 2, 0x0033_0000, 0b0100) -- byte 2 → 0x33
+      sb3 = (True, sdramBase + 3, 0x4400_0000, 0b1000) -- byte 3 → 0x44
+      ld = (True, sdramBase, 0, 0)
+      seq_ =
+        [reset_]
+          P.++ holdFor 3 sw
+          P.++ holdFor 2 sb0
+          P.++ holdFor 2 sb1
+          P.++ holdFor 2 sb2
+          P.++ holdFor 2 sb3
+          P.++ holdFor 5 ld
+      (sels, addrs, wdatas, bes) = splitBus seq_
+      (rdata, readyT) = runSdram 20 sels addrs wdatas bes
+      readCycle =
+        P.head
+          [ i | (i, _, rdy) <- P.zip3 [0 ..] rdata readyT, i P.>= 12, rdy
+          ]
+  assertEqual
+    "all four bytes overwritten individually, no cross-contamination"
+    0x4433_2211
+    (rdata P.!! readCycle)
+
 case_readyCycleCounts :: Assertion
 case_readyCycleCounts = do
   -- Pin the ready-high cycles so a regression adding an accidental

@@ -76,6 +76,7 @@ module Riski5.Sdram (
 ) where
 
 import Clash.Prelude hiding (not, (&&), (||))
+import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
 import Riski5.MemMap (sdramBase)
 
@@ -462,6 +463,7 @@ sdramIpSim ::
   forall dom m.
   ( HiddenClockResetEnable dom
   , KnownNat m
+  , 1 <= m
   ) =>
   -- | initial memory contents
   Vec m (BitVector 16) ->
@@ -483,51 +485,54 @@ sdramIpSim initMem busS = replyS
   acceptWriteS = (&&) <$> csS <*> wrS
   acceptReadS = (&&) <$> csS <*> rdS
 
-  -- Memory: synchronous-write, asynchronous-read model. Clash's
-  -- @blockRam@ gives us the right shape (1-cycle read latency)
-  -- — the corresponding @az_valid@ pulse lands on the cycle
-  -- after the read was accepted.
   idxS :: Signal dom (Index m)
   idxS = (\a -> fromInteger (fromIntegral a `mod` natVal (Proxy :: Proxy m))) <$> addrS
 
-  -- Build write-enable signal as a Maybe-write for blockRam. With
-  -- byte-enable support: low two bits of @be@ mask; zero means no
-  -- write that cycle. We do the byte-enable merge by reading the
-  -- current word, mixing in the new bytes, and writing the result.
-  -- That merge cycle happens inside 'sdramIpSim', not in the FSM.
+  -- Vec-backed memory with __async__ read. Matches 'Riski5.Bram''s
+  -- pattern: the whole Vec lives in a register; reads mux into it
+  -- combinationally; writes update the register on the next edge.
+  -- The earlier version used 'Clash.Prelude.blockRam', whose
+  -- one-cycle read latency meant the @readDataRawS@ fed into the
+  -- byte-enable merge logic reflected @memory[idxS_{N-1}]@, not
+  -- @memory[idxS_N]@. That's correct for the reply path (it
+  -- matches the real IP's pipelined @za_valid@ delay), but wrong
+  -- for the merge — a partial-byte SB at address A, landing on
+  -- the cycle after a bus idle at address 0, would merge with
+  -- @memory[0]@'s bytes instead of @memory[A]@'s. Cross-word
+  -- contamination. Async-read makes the merge see the correct
+  -- old value; the reply path adds its own register back for the
+  -- 1-cycle valid latency.
   --
-  -- Simplification for phase 1: assume byte-enable is either 0b11
-  -- (both bytes) or a strict subset. The SDRAM adapter always uses
-  -- 0b11 for reads and the correct mask for writes, so anything else
-  -- is an adapter bug we'd rather catch than silently tolerate.
+  -- The Vec register costs a lot of flip-flops in hardware but
+  -- this is sim-only code. The real IP has internal DRAM arrays,
+  -- not a Vec.
+  memS :: Signal dom (Vec m (BitVector 16))
+  memS = register initMem memNextS
 
-  mergedS :: Signal dom (BitVector 16)
-  mergedS =
-    ( \be new old ->
-        let newLo = if testBit be 0 then slice d7 d0 new else slice d7 d0 old
-            newHi = if testBit be 1 then slice d15 d8 new else slice d15 d8 old
-         in newHi ++# newLo
+  memNextS =
+    ( \mem idx doWrite be new ->
+        if doWrite && be /= 0
+          then
+            let old = mem CP.!! idx
+                newLo =
+                  if testBit be 0 then slice d7 d0 new else slice d7 d0 old
+                newHi =
+                  if testBit be 1 then slice d15 d8 new else slice d15 d8 old
+                merged = newHi ++# newLo
+             in replace idx merged mem
+          else mem
     )
-      <$> beS
-      <*> wdataS
-      <*> readDataRawS
-
-  -- Write signal: (Maybe (index, data)).
-  writeS =
-    ( \accept be idx merged ->
-        if accept && be /= 0
-          then Just (idx, merged)
-          else Nothing
-    )
-      <$> acceptWriteS
-      <*> beS
+      <$> memS
       <*> idxS
-      <*> mergedS
+      <*> acceptWriteS
+      <*> beS
+      <*> wdataS
 
-  readDataRawS = blockRam initMem idxS writeS
-
-  -- Valid is just the accept-read strobe delayed by one cycle to
-  -- match blockRam's read latency.
+  -- Current-cycle combinational read, then registered once to
+  -- model the IP's pipelined response (za_valid arrives one cycle
+  -- after the read request was accepted).
+  currentReadS = (\mem idx -> mem CP.!! idx) <$> memS <*> idxS
+  readDataS = register 0 currentReadS
   validS = register False acceptReadS
   replyS =
     ( \rd v ->
@@ -537,5 +542,5 @@ sdramIpSim initMem busS = replyS
           , sirWaitrequest = False
           }
     )
-      <$> readDataRawS
+      <$> readDataS
       <*> validS
