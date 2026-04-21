@@ -22,6 +22,7 @@ import LcdSpec qualified
 import PipelineSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SdramSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
 import SpikeDiffSpec qualified
@@ -50,6 +51,7 @@ main =
       , LcdSpec.tests
       , SocSpec.tests
       , SramSpec.tests
+      , SdramSpec.tests
       , HelloSpec.tests
       , SocHwSim.tests
       , SpikeDriverSpec.tests

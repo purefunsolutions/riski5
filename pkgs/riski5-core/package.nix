@@ -108,6 +108,83 @@ in
               --component-parameter=writeBufferDepth=64
             echo 'set_global_assignment -name VERILOG_FILE "altera-ip/jtag-uart/riski5_jtag_uart.v"' >> Riski5.qsf
 
+            # Generate the Altera SDRAM Controller IP for the DE2's single
+            # 16-bit SDR SDRAM chip (ISSI IS42S16400-class: 4 M × 16, 4
+            # banks, 12-bit row × 8-bit column × 2-bit bank × 16-bit data =
+            # 8 MB total). dataWidth=16 matches the physical chip; the
+            # Avalon-MM slave exposed to the riski5 SoC is therefore also
+            # 16-bit wide. Our Clash-side `Riski5.Sdram` module does the
+            # 32↔16 width adaptation — two back-to-back 16-bit Avalon
+            # transactions per 32-bit LW/SW, exactly like `Riski5.Sram`
+            # does for the async SRAM. At dataWidth=32 the IP would expect
+            # two 16-bit chips in parallel, which the DE2 doesn't have.
+            #
+            # Timing parameters are sized for the -7 speed grade of the
+            # DE2's chip and a 30 MHz (Dom30) clock, leaving generous
+            # margin:
+            #
+            #   casLatency       = 2   — fine below ~133 MHz for a -7 part
+            #   TRCD             = 20  ns (≥ 15 ns data-sheet min)
+            #   TRP              = 20  ns (≥ 15 ns)
+            #   TRFC             = 70  ns (Altera default; ≥ 60 ns needed)
+            #   TWR              = 14  ns (data-sheet 14 ns absolute)
+            #   TMRD             = 2   cycles
+            #   TAC              = 5.5 ns (data-sheet-typical)
+            #   refreshPeriod    = 15.625 µs (64 ms / 4096 rows)
+            #   powerUpDelay     = 100 µs (initialisation NOP window)
+            #   initRefreshCommands = 2
+            #   clockRate        = 30_000_000 Hz
+            #
+            # Geometry:
+            #   rowWidth   = 12   → 4096 rows
+            #   columnWidth = 8   → 256 cols
+            #   numberOfBanks = 4
+            #   size (bytes) = 8 * 1024 * 1024 = 8388608
+            #   addressWidth = 22 (byte-address bits covering 4 M × 16-bit
+            #                      words = 8 MB; the az_addr bus that the
+            #                      IP exposes is 22 bits wide indexed by
+            #                      16-bit words, which we derive from
+            #                      addr[22:1] in the Clash-side adapter)
+            #   bankWidth    = 2
+            #
+            # `registerDataIn=true` puts an output flop on the za_data path
+            # so Quartus can place it in an I/O register for better timing
+            # on the DRAM_DQ return leg.
+            mkdir -p altera-ip/sdram
+            ip-generate \
+              --component-file=${quartus-ii-13}/share/altera13.0sp1/ip/altera/sopc_builder_ip/altera_avalon_new_sdram_controller/altera_avalon_new_sdram_controller_hw.tcl \
+              --output-directory=altera-ip/sdram \
+              --output-name=riski5_sdram \
+              --file-set=QUARTUS_SYNTH \
+              --language=VERILOG \
+              --system-info=DEVICE_FAMILY=CYCLONEII \
+              --system-info=DEVICE=EP2C35F672C6 \
+              --component-parameter=casLatency=2 \
+              --component-parameter=columnWidth=8 \
+              --component-parameter=rowWidth=12 \
+              --component-parameter=dataWidth=16 \
+              --component-parameter=numberOfBanks=4 \
+              --component-parameter=numberOfChipSelects=1 \
+              --component-parameter=refreshPeriod=15.625 \
+              --component-parameter=initRefreshCommands=2 \
+              --component-parameter=initNOPDelay=100.0 \
+              --component-parameter=powerUpDelay=100.0 \
+              --component-parameter=TAC=5.5 \
+              --component-parameter=TRCD=20.0 \
+              --component-parameter=TRFC=70.0 \
+              --component-parameter=TRP=20.0 \
+              --component-parameter=TWR=14.0 \
+              --component-parameter=TMRD=2 \
+              --component-parameter=clockRate=30000000 \
+              --component-parameter=size=8388608 \
+              --component-parameter=addressWidth=22 \
+              --component-parameter=bankWidth=2 \
+              --component-parameter=generateSimulationModel=false \
+              --component-parameter=pinsSharedViaTriState=false \
+              --component-parameter=registerDataIn=true \
+              --component-parameter=model=custom
+            echo 'set_global_assignment -name VERILOG_FILE "altera-ip/sdram/riski5_sdram.v"' >> Riski5.qsf
+
             # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
             # instantiation. The Clash top now takes clk30 / rst30_n as
             # inputs (rather than owning altpllSync internally), so this

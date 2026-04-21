@@ -89,6 +89,7 @@ library
     Riski5.Reference
     Riski5.Regfile
     Riski5.Rvfi
+    Riski5.Sdram
     Riski5.Soc
     Riski5.SpikeDriver
     Riski5.Sram
@@ -155,6 +156,7 @@ test-suite riski5-test
     PipelineSpec
     ReferenceSpec
     RegfileSpec
+    SdramSpec
     SocHwSim
     SocSpec
     SpikeDiffSpec
