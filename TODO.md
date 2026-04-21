@@ -13,25 +13,20 @@ rules around maintaining it.
 
 ## In flight
 
-- **T32. Avalon-MM bus shim [started 2026-04-21]** — shipped as the
-  first step of phase 1D. Captures the shared master-side record
-  shape the JTAG UART and SDRAM Avalon-MM taps use under one name.
-  See "Done — phase 1D start" below.
+- **T39. Silicon verification [started 2026-04-21]** — `nix build
+  .#riski5-core` running with the T38 firmware + all pieces in
+  place; Quartus flow reached quartus_fit stage. Once the .sof
+  lands, flash + nios2-terminal to observe `hello, world` /
+  `M-ext OK` / `SRAM OK` / `SRAM W32 OK` / `SDRAM OK` — the
+  last line is the T39 milestone marker. If SDRAM fails, the
+  UART prints `SDRAM ERR got=0xXXXXXXXX` with the faulty value.
 
 ## Next up
 
-- **T33. Generate Altera SDRAM Controller IP** (user-interactive
-  MegaWizard / Qsys step; needs to be run before T34 can black-box
-  anything). Try `ip-generate` script first — the JTAG UART IP
-  was produced that way in the Nix build.
-- **T34. Black-box SDRAM IP from Clash** — pattern matches
-  `Riski5.JtagUart` now that T32 is in place; produce
-  `Riski5.Sdram` with an `sdramSim` counterpart and the Clash
-  black-box annotations for the generated Verilog.
-- T35 – T39: pins, SDC, bus routing at `0x8000_0000`, MemSpec,
-  firmware bring-up demo, silicon milestone.
+- (phase 1D wraps up with T39 silicon. Afterwards, phase 1E's
+  fmax hunt picks up — see plan T40–T44.)
 
-## Done — phase 1D start
+## Done — phase 1D
 
 - **T32. ✓ Avalon-MM bus shim (2026-04-21).** New
   `src/Riski5/AvalonMm.hs` owns the canonical master-side record
@@ -47,6 +42,60 @@ rules around maintaining it.
   table and signal-bundling round-trip so a future refactor of
   the shim breaks a test instead of silently propagating into
   every IP wrapper. Full suite **135 / 135 green**.
+- **T33. ✓ Generate Altera SDRAM Controller IP (2026-04-21).**
+  The `altera_avalon_new_sdram_controller_hw.tcl` component is
+  scriptable via `ip-generate` just like the JTAG UART IP was —
+  no MegaWizard hand-click needed. `pkgs/riski5-core/package.nix`
+  gets a second `ip-generate` invocation with the IS42S16400-7B
+  timing parameters (CL=2, tRCD=20, tRP=20, tRFC=70, tWR=14 ns;
+  refresh 15.625 µs, powerUp 100 µs, dataWidth=16). The generated
+  `altera-ip/sdram/riski5_sdram.v` drops alongside the UART IP
+  and the .qsf picks it up as a VERILOG_FILE source.
+- **T34. ✓ Black-box SDRAM IP from Clash (2026-04-21).**
+  `src/Riski5/Sdram.hs` mirrors `Riski5.Sram` in shape: a 7-state
+  FSM splits 32-bit core accesses into two back-to-back 16-bit
+  Avalon-MM transactions against the IP. `SdramIpBus` carries the
+  master-side signals to the IP; `SdramIpReply` carries @za_data@
+  / @za_valid@ / @za_waitrequest@ back. `sdramIpSim` provides a
+  behavioural IP-plus-chip model for the Clash testbench. Cycle
+  costs at 30 MHz (best case, no chip-level bank contention):
+  SB/SH 2 cycles, SW 3 cycles, LW 5 cycles. Six new `SdramSpec`
+  tests cover round-trips, byte-index routing, back-to-back
+  writes, and pin the exact ready-high cycle counts. Full suite
+  **141 / 141 green**.
+- **T35. ✓ SDRAM pins + SDC (2026-04-21).** All 38 DRAM_* pin
+  assignments added to `Riski5.qsf` (pulled from
+  `docs/de2/DE2_Pin_Table_2006-02-15.pdf` via pdftotext +
+  cross-reference). `Riski5.sdc` gains a `create_generated_clock`
+  for DRAM_CLK so STA carries the constraint to the SDRAM-chip
+  output pins. DRAM_CLK is forwarded from clk30 directly (no
+  phase-shifted PLL tap) — at 30 MHz the setup/hold margin
+  against IS42S16400-7B's 1.5 / 0.8 ns requirements is well
+  over 15 ns either way.
+- **T36. ✓ Route SDRAM onto bus at 0x8000_0000 (2026-04-21).**
+  `Soc.hs` grows `siSdramReply` input and `soSdramBus` output
+  plus the Slave{Bus,Stall,ReadMux} arms; `socSim` plugs
+  `sdramIpSim` into the bus tap so the whole SoC simulation
+  keeps working end-to-end through SDRAM accesses.
+  `app/Top.hs` exposes 3 input + 6 output ports for the SDRAM
+  signals. `riski5_top.v` instantiates `riski5_sdram`, inverts
+  our active-high strobes into the IP's active-low
+  `az_{rd,wr}_n` / `az_be_n`, forwards clk30 to DRAM_CLK, and
+  wires the IP's `zs_*` ports to the DRAM_* board pads (with
+  the inout DRAM_DQ handled by the IP internally).
+- **T37. ✓ SDRAM sim coverage (2026-04-21).** `SocSpec` gains
+  `case_sdramRoundTrip`, which SW/LWs 0x5A at sdramBase through
+  the full SoC (bus → adapter → sim IP) and observes the
+  round-tripped byte surface on the JTAG UART TX stream.
+  **142 / 142 green** after this lands.
+- **T38. ✓ Firmware SDRAM bring-up demo (2026-04-21).** Hello
+  firmware gets an SDRAM block after the SRAM checks: writes
+  0xCAFEBABE to sdramBase, reads back via LW, folds the
+  comparison into the hexReg failure accumulator, and prints
+  `SDRAM OK` / `SDRAM ERR got=0xXXXXXXXX` on the UART. LCD
+  summary line flips between "riski5: MEM OK" and
+  "riski5: MEM ERR" based on all three checks (SRAM half-word,
+  SRAM 32-bit, SDRAM 32-bit). Firmware size 680 / 1024 words.
 
 ## Done — phase 1C completion
 
