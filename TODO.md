@@ -13,18 +13,17 @@ rules around maintaining it.
 
 ## In flight
 
-- **T39. Silicon verification [started 2026-04-21]** — `nix build
-  .#riski5-core` running with the T38 firmware + all pieces in
-  place; Quartus flow reached quartus_fit stage. Once the .sof
-  lands, flash + nios2-terminal to observe `hello, world` /
-  `M-ext OK` / `SRAM OK` / `SRAM W32 OK` / `SDRAM OK` — the
-  last line is the T39 milestone marker. If SDRAM fails, the
-  UART prints `SDRAM ERR got=0xXXXXXXXX` with the faulty value.
+- (nothing — phase 1D shipped end-to-end on 2026-04-21 with T39
+  SDRAM silicon verification; see "Done — phase 1D" below.)
 
 ## Next up
 
-- (phase 1D wraps up with T39 silicon. Afterwards, phase 1E's
-  fmax hunt picks up — see plan T40–T44.)
+- **Phase 1E — max out fmax** (plan T40–T44). Pipelineless
+  single-cycle design at ~33 MHz has real margin at 30 MHz but
+  the STA report still flags the imem → regfile cone at
+  ~30 ns. A contained exploration run: sweep target clocks via
+  Quartus STA, look for one or two combinational offenders, and
+  record fmax / LE / M4K deltas under `docs/timing/`.
 
 ## Done — phase 1D
 
@@ -96,6 +95,20 @@ rules around maintaining it.
   summary line flips between "riski5: MEM OK" and
   "riski5: MEM ERR" based on all three checks (SRAM half-word,
   SRAM 32-bit, SDRAM 32-bit). Firmware size 680 / 1024 words.
+- **T39. ✓ ✦ SDRAM green on DE2 silicon (2026-04-21).**
+  First flash with the T38 firmware bitstream
+  (`42sswq0r95k3j83lzwf3bslk284gaswg`): `nios2-terminal`
+  printed `hello, world` / `M-ext OK` / `SRAM OK` /
+  `SRAM W32 OK` / `SDRAM OK` on boot — the 0xCAFEBABE 32-bit
+  SW / LW round-trip through the off-chip IS42S16400 via the
+  Altera `altera_avalon_new_sdram_controller` IP + our
+  `Riski5.Sdram` 32 ↔ 16 FSM came back intact. LEDR[17] lit,
+  LCD line 1 "riski5: MEM OK  ", line 2 "SRAM+SDRAM:CAFE ".
+  Fit: 10,774 LEs (+474 vs pre-SDRAM = 32 % of EP2C35);
+  31,744 block memory bits (~7 M4K of 105); Fmax 32.98 MHz
+  at slow-85 °C, well above the 30 MHz core clock.
+  **Phase 1D complete.** Next up is phase 1E's fmax
+  exploration.
 
 ## Done — phase 1C completion
 
