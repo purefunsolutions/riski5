@@ -31,6 +31,24 @@ rules around maintaining it.
 
 ## Done — phase 2 milestones
 
+- **Phase 2B on silicon. ✓ RV32M smoke test green on DE2
+  (2026-04-21).** Rebuilt the bitstream with Hello firmware
+  extended to run five UART-diagnosed M-op checks before
+  SRAM / LCD: MUL (7×6=42), DIVU (100/7=14), REMU (100%7=2),
+  MULH signed ((-1)×(-1) high-32 = 0), DIVU-by-zero (→ -1).
+  `nios2-terminal` showed `MUL OK` / `DIVU OK` / `REMU OK`
+  / `MULH OK` / `DIV0 OK` in that order on the first boot.
+  The iterative FU, the `stallInternal = stallS ‖ mdBusy`
+  path, and the `writeBackWithMd` retire mux all behave on
+  Cyclone II exactly like they do in sim and formal —
+  silicon agrees with the 126/126 + 61/61 proofs. Fit
+  report: 10,268 LEs (+1,134 vs pre-M baseline = 31 % of
+  EP2C35); Fmax 32.86 MHz (vs pre-M 34.22 MHz — 1.4 MHz
+  drop, still closing with real margin at the 30 MHz core
+  clock). ProgSize bumped 256 → 512 words (the extended
+  firmware is 455 words); M4K usage rose from 2 → 4 blocks,
+  still far under the ~95-block budget.
+
 - **Phase 2B. ✓ RV32M M-extension via iterative MulDiv FU
   (2026-04-21).** Eight new `Instr` constructors (MUL / MULH /
   MULHSU / MULHU / DIV / DIVU / REM / REMU) wired through

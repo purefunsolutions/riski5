@@ -71,17 +71,22 @@ createDomain
 
 -- * Firmware --------------------------------------------------------
 
-{- | 256-word (1 KB) instruction memory — enough for the Hello
-firmware plus headroom. Unused words are NOPs.
+{- | 512-word (2 KB) instruction memory — sized for the Phase 2B
+Hello firmware (455 words: SRAM self-test + UART banner + LCD
+status + RV32M on-silicon smoke tests). Unused tail words are
+NOPs so pc-overflow wraps to NOP rather than producing
+undefined behaviour. The M4K cost is 4 blocks (4608 bits each at
+128×36) vs the earlier 256-word layout's 2 M4K; well inside the
+~95-block Cyclone II budget.
 -}
-type ProgSize = 256
+type ProgSize = 512
 
 -- | 64-word data memory. Phase-1B Hello firmware doesn't touch it.
 type DataSize = 64
 
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
-  $(listToVecTH (P.take 256 (helloFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
+  $(listToVecTH (P.take 512 (helloFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0

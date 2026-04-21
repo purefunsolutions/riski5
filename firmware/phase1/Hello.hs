@@ -61,6 +61,86 @@ helloFirmware = do
   -- busy flag until that completes.
   uartString "hello, world\n"
 
+  -- ===== RV32M smoke tests (Phase 2B on silicon) =====
+  -- Run FIRST, before SRAM/LCD, so the M-ext verdict on hardware is
+  -- visible via UART even if a later-stage peripheral hangs. Each
+  -- test does the op, XORs against expected, branches to OK/ERR.
+
+  -- MUL 7 * 6 = 42
+  li tmpReg 7
+  li scratchReg 6
+  mul resultReg tmpReg scratchReg
+  addi tmpReg x0 42
+  xor_ resultReg resultReg tmpReg
+  mulErrL <- labelUnplaced
+  bne resultReg x0 mulErrL
+  uartString "MUL OK\n"
+  afterMulL <- labelUnplaced
+  j afterMulL
+  placeAt mulErrL
+  uartString "MUL ERR\n"
+  placeAt afterMulL
+
+  -- DIVU 100 / 7 = 14
+  li tmpReg 100
+  li scratchReg 7
+  divu resultReg tmpReg scratchReg
+  addi tmpReg x0 14
+  xor_ resultReg resultReg tmpReg
+  divuErrL <- labelUnplaced
+  bne resultReg x0 divuErrL
+  uartString "DIVU OK\n"
+  afterDivuL <- labelUnplaced
+  j afterDivuL
+  placeAt divuErrL
+  uartString "DIVU ERR\n"
+  placeAt afterDivuL
+
+  -- REMU 100 % 7 = 2
+  li tmpReg 100
+  li scratchReg 7
+  remu resultReg tmpReg scratchReg
+  addi tmpReg x0 2
+  xor_ resultReg resultReg tmpReg
+  remuErrL <- labelUnplaced
+  bne resultReg x0 remuErrL
+  uartString "REMU OK\n"
+  afterRemuL <- labelUnplaced
+  j afterRemuL
+  placeAt remuErrL
+  uartString "REMU ERR\n"
+  placeAt afterRemuL
+
+  -- MULH — signed, negative × negative. (-1) * (-1) = 1, high 32 = 0.
+  li tmpReg (-1)
+  li scratchReg (-1)
+  mulh resultReg tmpReg scratchReg
+  mulhErrL <- labelUnplaced
+  bne resultReg x0 mulhErrL
+  uartString "MULH OK\n"
+  afterMulhL <- labelUnplaced
+  j afterMulhL
+  placeAt mulhErrL
+  uartString "MULH ERR\n"
+  placeAt afterMulhL
+
+  -- DIVU by zero → Q = 0xFFFFFFFF (all ones, signed -1).
+  li tmpReg 42
+  addi scratchReg x0 0
+  divu resultReg tmpReg scratchReg
+  addi tmpReg x0 (-1)
+  xor_ resultReg resultReg tmpReg
+  divzErrL <- labelUnplaced
+  bne resultReg x0 divzErrL
+  uartString "DIV0 OK\n"
+  afterDivzL <- labelUnplaced
+  j afterDivzL
+  placeAt divzErrL
+  uartString "DIV0 ERR\n"
+  placeAt afterDivzL
+
+  uartString "M-ext smoke complete\n"
+
   -- SRAM round-trip self-test (T30). Single-address: write 0xA5A5
   -- to base, settle, read back twice (controller registers
   -- SRAM_DQ_I one cycle on hardware-timing-closure grounds — see
