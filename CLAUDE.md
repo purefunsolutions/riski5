@@ -216,14 +216,26 @@ milestone hit, a design decision flipped — update the article's
 "Current progress" and "What's next" sections. Don't batch updates;
 the article should be readable as a live document at any point.
 
-When editing:
+**Delegate blog updates to a sub-agent.** Blog prose work is
+verbose (long paragraphs, several edits per milestone, a
+`cargo build` round-trip to verify the generated Yew still
+compiles) and rarely needs the main session's context. When a
+riski5 commit lands that's worth capturing, spawn a
+`general-purpose` agent with:
 
-- Edit the markdown in `~/purefun-front/src/blog/posts/…`.
-- Re-run `cargo build` under `nix develop` in purefun-front to confirm
-  the generated Yew code still compiles.
-- Commit there as a separate commit on the
-  `blog_claude_building_verilator` branch — don't push unless the
-  user asks.
+- The riski5 commit SHA(s) to describe + a one-paragraph brief
+  covering *what changed and why* (not a diff dump — the agent
+  can `git show` if it needs the detail).
+- A pointer at the article path and the
+  `blog_claude_building_verilator` branch of
+  `~/purefun-front`.
+- Instructions to edit, run `cargo build --release` under
+  `nix develop` in `~/purefun-front/`, commit on the branch,
+  and report the new SHA back. Don't push unless the user
+  asks.
+
+Keeping the update out-of-band stops blog prose from churning
+the main session's context around code.
 
 ## Reference docs are pinned
 
