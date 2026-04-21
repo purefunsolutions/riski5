@@ -13,17 +13,59 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 1D + 1E both shipped 2026-04-21; see "Done —
-  phase 1E" below.)
+- **P2A-5. Silicon validation of the 5-stage @ 40 MHz bitstream.**
+  Flashing + running the on-board Hello test agent (SRAM / SDRAM
+  round-trips via UART + LCD). If green, P2A closes.
 
 ## Next up
 
-- **Phase 2 P2-A — pipelining**. Phase 1E's baseline documented
-  that the pipelineless single-cycle design is physically capped
-  at ~33 MHz because the imem-address → regfile cone settles in
-  30 ns flat. The next meaningful Fmax step is a 2-stage F | XM
-  pipeline; see the Tiny-tier roadmap in
-  [`docs/core-family.md`](./docs/core-family.md).
+- **Phase 2 P2-B.** M4K regfile swap (`regfileAsync` →
+  `regfileSync` — the `RegfileBacking` scaffolding from P2A-1 is
+  already in place). Saves ~300 LEs, consumes 2 M4K. Requires
+  ID/EX reg to carry addresses instead of data, plus a
+  regfile-output forwarding mux at X.
+- **Phase 2 P2-C.** Sync dmem + first caches (direct-mapped
+  1 KB I$ + 1 KB D$, per the Tiny tier defaults in
+  [`docs/core-family.md`](./docs/core-family.md) §4.3).
+- **Phase 2 P2-D.** PLL bump to 45 MHz once the X cone shrinks
+  (either from M4K regfile or the M-stage split) gives headroom.
+
+## Done — phase 2 P2-A (pipelining + PLL retarget)
+
+- **P2A-1. ✓ Regfile backing abstraction (2026-04-21 → commit
+  3b9ce6a).** `Riski5.Regfile` now exports two interchangeable
+  backings with identical black-box semantics modulo read
+  latency: `regfileAsync` (today's LE-based combinational-read
+  register-array) and `regfileSync` (2 × `blockRamPow2`, maps
+  to two M4K on Cyclone II, 1-cycle read latency). A
+  value-level `RegfileBacking` tag documents the choice for
+  future `CoreConfig` integration. Existing `regfile` stays as
+  a backward-compat alias for `regfileAsync`. `RegfileSpec`
+  grows a second matching test group for the sync backing.
+  147 / 147 green.
+- **P2A-2. ✓ 5-stage F|D|X|M|W with full forwarding (2026-04-21
+  → commit 10fa187).** Full rewrite of `Riski5.Core` from
+  2-stage F+X to the classic 5-stage in-order pipeline the
+  Tiny tier targets. Pipe registers IF/ID / ID/EX / EX/MEM /
+  MEM/WB; EX→X + MEM→X 3-source forwarding muxes at X stage
+  inputs; W→D same-cycle bypass on the async regfile read
+  path; 2-cycle branch-taken flush (flush + flushPrev) to
+  cover the sync-imem stale-fetch slot after redirect; held
+  imem register preserves the about-to-latch instruction at
+  stall onset so SRAM / SDRAM back-pressure doesn't lose an
+  instruction. Full test suite (147 / 147) green; tests
+  updated for the deeper pipeline depth (6-cycle warm-up
+  drop, RVFI-valid-counted `take nSteps` so retirements match
+  the Reference's step budget).
+- **P2A-4. ✓ Quartus synthesis + Fmax measurement + PLL
+  retarget (2026-04-21 → commit 4a023c3).** New slow-model
+  Fmax **53.62 MHz** (+62.6 % over baseline 32.98 MHz). PLL
+  retargeted 50 × 3 / 5 = 30 MHz → 50 × 4 / 5 = 40 MHz, closing
+  with +6.35 ns slack at the slow-85 °C corner. LEs 10,955 / 33,216
+  (33 %; −432 vs baseline). Critical path now the X stage's
+  combinational cone (`idExS → handleInstr dispatch → EX/MEM`),
+  ~18.6 ns. Documented in
+  [`docs/timing/pipeline5-2026-04-21.md`](./docs/timing/pipeline5-2026-04-21.md).
 
 ## Done — phase 1D
 
