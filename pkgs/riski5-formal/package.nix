@@ -75,8 +75,22 @@ in
       export HOME=$(mktemp -d)
 
       # 1. Clash → riski5_formal.v.
+      #
+      # -DFORMAL_FAST_MULDIV swaps 'Riski5.Core.FU.MulDiv.mulDivFU'
+      # from the 34-cycle iterative FSM to 'mulDivFUCombinational'
+      # — a single-cycle retire that uses Haskell's native @*@,
+      # @`quot`@, and @`rem`@. See the module's header comment for
+      # the soundness argument (formal proves the core pipeline
+      # + architectural M-op contract; the triple-diff harness in
+      # test/CoreSimSpec.hs covers the iterative FSM on concrete
+      # inputs). Without this flag the depth-40 BMC formula for
+      # each insn_mul*/div*/rem* proof doesn't close inside a
+      # 30-minute wall-clock budget on z3 — the iterative FSM's
+      # 32-deep counter + 64-bit accumulator balloons the SMT
+      # formula too much.
       clash --verilog -fclash-hdlsyn Quartus \
         -XGHC2021 -XImplicitPrelude \
+        -optP-DFORMAL_FAST_MULDIV \
         -isrc \
         Riski5.FormalTop
 
@@ -102,18 +116,27 @@ in
       python3 ../../checks/genchecks.py
 
       # 3b. Swap the SMT solver from boolector (genchecks.py
-      # default) to z3 for the k-induction CSR-consistency
-      # proofs (csrc_any_*). Boolector's bit-blaster stalls
-      # on those quantifier-heavy inductive invariants; z3
-      # closes them in seconds. The pure-bitvector per-
-      # instruction formulas stay on boolector (2-3× faster
-      # there). reg_ch0 stays on boolector too — same engine
-      # + depth 10 that nerv uses — to avoid re-running z3's
-      # slow path on a proof boolector closes naturally.
+      # default) to z3 for two proof families where
+      # boolector's bit-blaster stalls:
+      #
+      # - csrc_any_*: k-induction CSR-consistency invariants
+      #   with quantifiers — boolector 5+ min idle, z3
+      #   closes in seconds.
+      # - insn_mul*/mulh*/mulhsu*/mulhu*/div*/divu*/rem*/remu*:
+      #   even with FORMAL_FAST_MULDIV collapsing the FU to a
+      #   single-cycle combinational multiplier / divider,
+      #   the 32×32 → 64-bit multiply is a large bit-blasted
+      #   SAT problem. Boolector takes 5-10 min per proof;
+      #   z3's theory-aware bitvector solver handles the
+      #   multiplier primitive natively and closes in seconds.
+      #
       # Per-check engine config isn't supported by riscv-
       # formal's checks.cfg, so we sed the generated .sby
       # files.
-      for f in checks/csrc_any_*.sby; do
+      for f in checks/csrc_any_*.sby \
+               checks/insn_mul*.sby \
+               checks/insn_div*.sby \
+               checks/insn_rem*.sby; do
         test -f "$f" || continue
         sed -i 's/^smtbmc boolector$/smtbmc z3/' "$f"
       done
@@ -129,6 +152,11 @@ in
       if [ -f checks/liveness_ch0.sby ]; then
         sed -i '/^\[options\]$/a timeout 120' checks/liveness_ch0.sby
       fi
+
+      # (no insn_mul*/div*/rem* timeout — with
+      # FORMAL_FAST_MULDIV the formula is shallow enough to
+      # close inside the default sby budget; the timeout bump
+      # from the pre-combinational-FU era is gone.)
 
       # 4. Run the whole check suite. `make -C checks` without a
       # specific target runs every generated .sby job — per-insn
