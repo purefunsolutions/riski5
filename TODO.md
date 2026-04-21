@@ -13,8 +13,39 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 2 P2-A shipped end-to-end on silicon at 40 MHz
-  on 2026-04-21, see "Done — phase 2 P2-A" below.)
+- **CM — CoreMark on riski5 silicon.** Port the EEMBC CoreMark 1.01
+  C benchmark, cross-compile via `pkgsCross.riscv32-embedded`, run
+  on the DE2, read the score over JTAG-UART. Gives us a publishable
+  number comparable against the EEMBC score database
+  (https://www.eembc.org/coremark/scores.php) and against Cortex-M0 /
+  PicoRV32 / VexRiscv reference runs. Four sub-tasks:
+  - **CM-1. ✓ Nix derivation** `pkgs/coremark/package.nix` (+
+    `bin-to-mif.py`). Fetches `eembc/coremark@v1.01`, drops our
+    riski5 port alongside upstream ports, cross-compiles to
+    `coremark.elf` + `coremark.bin` + `coremark.mif` + disasm +
+    size report. Not wired into `pkgs/default.nix` yet (CM-3) —
+    wiring waits until the port directory exists so
+    `nix flake check` stays green.
+  - **CM-2. Platform port.** `firmware/phase2/coremark-port/`:
+    `core_portme.{c,h,mak}`, `start.S`, `linker.ld`. `start.S`
+    sets up the stack + BSS zero-init + jumps to `main`;
+    `linker.ld` lays `.text` at `0x0000_0000` with reset at the
+    entry; `core_portme.c` implements `start_time` /
+    `stop_time` / `get_time` / `time_in_secs` against `mcycle`
+    (read via `rdcycle` CSR), `portable_init` / `portable_fini`
+    nop, `uart_putchar` → JTAG UART MMIO at `0x1000_0000`.
+  - **CM-3. Wire into the flake + firmware image.** Add
+    `coremark = pkgs.callPackage ./coremark/package.nix {};` to
+    `pkgs/default.nix`. New `firmware/phase1/CoreMark.hs` wrapper
+    + `app/Top.hs` edit loads the ELF's `.mif`. Bump `ProgSize`
+    to fit CoreMark's ~20–40 KB .text (to 4096 or 8192 words;
+    M4K budget has ~40 free).
+  - **CM-4. Silicon run + writeup.** Flash, capture score on
+    `nios2-terminal`, document in
+    `docs/perf/coremark-2026-04-22.md` with CoreMark version,
+    GCC version, flags, iteration count, wall-clock, raw score,
+    CoreMarks/MHz, and comparison rows against the EEMBC
+    database for Cortex-M0 / PicoRV32 / VexRiscv.
 
 ## Next up
 
