@@ -120,7 +120,7 @@ in
             # two 16-bit chips in parallel, which the DE2 doesn't have.
             #
             # Timing parameters are sized for the -7 speed grade of the
-            # DE2's chip and a 40 MHz (Dom30 — name kept even after the
+            # DE2's chip and a 50 MHz (Dom30 — name kept even after the
             # phase-2 PLL retarget) clock, leaving generous margin:
             #
             #   casLatency       = 2   — fine below ~133 MHz for a -7 part
@@ -189,7 +189,7 @@ in
             # instantiation. The Clash top now takes clk30 / rst30_n as
             # inputs (rather than owning altpllSync internally), so this
             # wrapper owns the PLL and the IP. Both the riski5 core and the
-            # JTAG UART share the same 40 MHz clock — one source of truth.
+            # JTAG UART share the same 50 MHz clock — one source of truth.
             mkdir -p verilog/riski5_top
             cat > verilog/riski5_top/riski5_top.v <<'EOF'
       // SPDX-License-Identifier: MIT OR BSD-3-Clause
@@ -197,7 +197,7 @@ in
       // Top-level wrapper around the Clash-emitted `riski5` module.
       //
       // Responsibilities:
-      //   1. Derive the 40 MHz core clock (clk30) from CLOCK_50 via a
+      //   1. Derive the 50 MHz core clock (clk30) from CLOCK_50 via a
       //      directly-instantiated altpll.
       //   2. Build rst30_n = KEY0 & pll_locked so the design holds reset
       //      until the PLL has locked and the user has released KEY0.
@@ -245,7 +245,7 @@ in
           output wire        DRAM_WE_N
       );
 
-        // ----- PLL: 50 MHz → 40 MHz ------------------------------------
+        // ----- PLL: CLOCK_50 (50 MHz) → clk30 (50 MHz) -----------------
         wire [4:0] altpll_clk_vec;
         wire       clk30 = altpll_clk_vec[0];
         wire       pll_locked;
@@ -265,9 +265,9 @@ in
             .vcounderrange ()
         );
         defparam u_altpll.bandwidth_type        = "AUTO";
-        defparam u_altpll.clk0_divide_by        = 5;
+        defparam u_altpll.clk0_divide_by        = 10;
         defparam u_altpll.clk0_duty_cycle       = 50;
-        defparam u_altpll.clk0_multiply_by      = 4;
+        defparam u_altpll.clk0_multiply_by      = 10;
         defparam u_altpll.clk0_phase_shift      = "0";
         defparam u_altpll.compensate_clock      = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
@@ -360,7 +360,7 @@ in
         // needs our own resolution because the core drives those
         // pins from pure logic without an Avalon-MM IP in between.)
 
-        // DRAM_CLK is forwarded from the core clock. At 40 MHz the
+        // DRAM_CLK is forwarded from the core clock. At 50 MHz the
         // setup/hold margin at the SDRAM pins is ~10 ns either way,
         // well above the IS42S16400-7B's 1.5 / 0.8 ns requirements,
         // so we can share clk30 directly without a phase-shifted PLL
