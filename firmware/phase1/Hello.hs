@@ -62,9 +62,17 @@ helloFirmware = do
   uartString "hello, world\n"
 
   -- ===== RV32M smoke tests (Phase 2B on silicon) =====
-  -- Run FIRST, before SRAM/LCD, so the M-ext verdict on hardware is
-  -- visible via UART even if a later-stage peripheral hangs. Each
-  -- test does the op, XORs against expected, branches to OK/ERR.
+  -- Fold the per-op outcome into a single summary bit (in hexReg).
+  -- UART stays compact — the Altera JTAG UART IP's 64-byte TX FIFO
+  -- back-pressures the core once exceeded, and prior runs with a
+  -- line per op tripped that boundary and stalled the downstream
+  -- SRAM / LCD diagnostics. M-ext correctness itself is already
+  -- validated in sim + formal; the on-silicon run just has to
+  -- confirm the FU is wired correctly.
+  --
+  -- hexReg accumulates "failures-so-far"; any nonzero at the end
+  -- flips the UART line to M-ext FAIL.
+  add hexReg x0 x0 -- hexReg := 0
 
   -- MUL 7 * 6 = 42
   li tmpReg 7
@@ -72,14 +80,7 @@ helloFirmware = do
   mul resultReg tmpReg scratchReg
   addi tmpReg x0 42
   xor_ resultReg resultReg tmpReg
-  mulErrL <- labelUnplaced
-  bne resultReg x0 mulErrL
-  uartString "MUL OK\n"
-  afterMulL <- labelUnplaced
-  j afterMulL
-  placeAt mulErrL
-  uartString "MUL ERR\n"
-  placeAt afterMulL
+  or_ hexReg hexReg resultReg
 
   -- DIVU 100 / 7 = 14
   li tmpReg 100
@@ -87,14 +88,7 @@ helloFirmware = do
   divu resultReg tmpReg scratchReg
   addi tmpReg x0 14
   xor_ resultReg resultReg tmpReg
-  divuErrL <- labelUnplaced
-  bne resultReg x0 divuErrL
-  uartString "DIVU OK\n"
-  afterDivuL <- labelUnplaced
-  j afterDivuL
-  placeAt divuErrL
-  uartString "DIVU ERR\n"
-  placeAt afterDivuL
+  or_ hexReg hexReg resultReg
 
   -- REMU 100 % 7 = 2
   li tmpReg 100
@@ -102,44 +96,31 @@ helloFirmware = do
   remu resultReg tmpReg scratchReg
   addi tmpReg x0 2
   xor_ resultReg resultReg tmpReg
-  remuErrL <- labelUnplaced
-  bne resultReg x0 remuErrL
-  uartString "REMU OK\n"
-  afterRemuL <- labelUnplaced
-  j afterRemuL
-  placeAt remuErrL
-  uartString "REMU ERR\n"
-  placeAt afterRemuL
+  or_ hexReg hexReg resultReg
 
-  -- MULH — signed, negative × negative. (-1) * (-1) = 1, high 32 = 0.
+  -- MULH — signed, (-1)*(-1) high 32 = 0.
   li tmpReg (-1)
   li scratchReg (-1)
   mulh resultReg tmpReg scratchReg
-  mulhErrL <- labelUnplaced
-  bne resultReg x0 mulhErrL
-  uartString "MULH OK\n"
-  afterMulhL <- labelUnplaced
-  j afterMulhL
-  placeAt mulhErrL
-  uartString "MULH ERR\n"
-  placeAt afterMulhL
+  or_ hexReg hexReg resultReg
 
-  -- DIVU by zero → Q = 0xFFFFFFFF (all ones, signed -1).
+  -- DIVU by zero → Q = 0xFFFFFFFF.
   li tmpReg 42
   addi scratchReg x0 0
   divu resultReg tmpReg scratchReg
   addi tmpReg x0 (-1)
   xor_ resultReg resultReg tmpReg
-  divzErrL <- labelUnplaced
-  bne resultReg x0 divzErrL
-  uartString "DIV0 OK\n"
-  afterDivzL <- labelUnplaced
-  j afterDivzL
-  placeAt divzErrL
-  uartString "DIV0 ERR\n"
-  placeAt afterDivzL
+  or_ hexReg hexReg resultReg
 
-  uartString "M-ext smoke complete\n"
+  -- Emit one summary line.
+  mextFailL <- labelUnplaced
+  bne hexReg x0 mextFailL
+  uartString "M-ext OK\n"
+  afterMextL <- labelUnplaced
+  j afterMextL
+  placeAt mextFailL
+  uartString "M-ext FAIL\n"
+  placeAt afterMextL
 
   -- SRAM round-trip self-test (T30). Single-address: write 0xA5A5
   -- to base, settle, read back twice (controller registers
@@ -156,16 +137,21 @@ helloFirmware = do
   sramOk <- labelUnplaced
   beq resultReg scratchReg sramOk
 
-  -- Failure path: light LEDG[8] and write \"riski5: SRAM ERR\".
+  -- Failure path: light LEDG[8], UART-log the bad read-back value,
+  -- write \"riski5: SRAM ERR\" to the LCD.
   ledgSet 0x100
+  uartString "SRAM ERR got=0x"
+  uartHex16 resultReg
+  uartChar 0x0A -- newline
   lcdCmd 0x80
   lcdString "riski5: SRAM ERR"
   sramAfter <- labelUnplaced
   j sramAfter
 
   placeAt sramOk
-  -- Success path: light LEDR[17] and write \"riski5: SRAM OK\".
+  -- Success path: light LEDR[17], UART-banner \"SRAM OK\", write to LCD.
   ledrSet 0x20000
+  uartString "SRAM OK\n"
   lcdCmd 0x80
   lcdString "riski5: SRAM OK "
 
@@ -281,3 +267,24 @@ uartChar ch = do
 
 uartString :: P.String -> Asm ()
 uartString = P.mapM_ (uartChar . P.fromEnum)
+
+{- | Print the four-character hex representation of the low 16 bits
+of @rd@ over the UART. Same nibble-walk structure as 'lcdHex16'.
+-}
+uartHex16 :: Reg -> Asm ()
+uartHex16 rd =
+  forM_ [12, 8, 4, 0 :: Int] $ \shift -> do
+    if shift P.== 0
+      then add hexReg x0 rd
+      else srli hexReg rd (P.fromIntegral shift)
+    andi hexReg hexReg 0xF
+    addi tmpReg x0 10
+    isAlpha <- labelUnplaced
+    bge hexReg tmpReg isAlpha
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0') :: Signed 12)
+    afterChar <- labelUnplaced
+    j afterChar
+    placeAt isAlpha
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10) :: Signed 12)
+    placeAt afterChar
+    sw uartReg hexReg 0
