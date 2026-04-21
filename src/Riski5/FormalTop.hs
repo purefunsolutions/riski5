@@ -47,7 +47,7 @@ module Riski5.FormalTop (
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
 import Riski5.Core.Assembly (coreWith)
-import Riski5.Core.Presets (tiny32)
+import Riski5.Core.Presets (tiny32M)
 import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
 
 -- * Clock domain ---------------------------------------------------
@@ -150,7 +150,7 @@ formalTopEntity ::
 formalTopEntity clk rst imemRdataS dmemRdataS =
   withClockResetEnable clk rst enableGen $
     let (pcFetchS, _pcExecS, dmemAddrS, dmemWdataS, dmemWmaskS, dmemRenS, _wbS, rvfiS) =
-          coreWith tiny32 imemRdataS dmemRdataS (pure False)
+          coreWith tiny32M imemRdataS dmemRdataS (pure False)
      in ( pcFetchS -- imem_addr
         , dmemAddrS
         , dmemWdataS

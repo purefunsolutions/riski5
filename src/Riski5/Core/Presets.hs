@@ -20,6 +20,7 @@ phases a concrete starting point to walk forward from.
 module Riski5.Core.Presets (
   -- * Tiny — in-order pipelined (phase 2)
   tiny32,
+  tiny32M,
   tiny64,
 
   -- * Little — entry-level OoO (phase 3B, 5B)
@@ -101,6 +102,35 @@ tiny32 =
     , ccPriv = mModeOnly
     , ccRVFI = True
     , ccDeviceClass = CycloneII
+    }
+
+{- | @tiny32M@ — @tiny32@ plus the RV32M integer-multiply /
+divide extension (phase 2B). Layered as a single-field override
+over 'tiny32': the 'ExtConfig' record gets @extM = True@ and
+'ccMulDiv' switches from 'MdNone' to 'MdIterative' with the
+32-iter multiplier and 33-iter divider cycle counts today's
+'Riski5.Core.FU.MulDiv' ships.
+
+The shipping FU is an iterative shift-and-add multiplier + a
+restoring divider — no DSP inference, so the 35 embedded 18×18
+multipliers on the EP2C35 stay reserved for future FPU work
+('big32'\/'performance32' flip @mdDspBacked = True@ on
+'MdPipelined' presets to claim them). LE cost over 'tiny32'
+is ~400 LEs for the FU itself plus a handful of muxes in the
+core's writeback / stall paths — well inside the DE2 budget
+(pre-M LE utilisation was ~27 %).
+
+Latency: MUL*\/DIV*\/REM* retire in 34 cycles. Divide-by-zero
+short-circuits to 2 cycles via the 'launchDiv' early-out.
+Everything else in the core — @PipeInOrder 2@ shape, BpuStatic
+branch prediction, no caches, no fusion, M-mode only — stays
+identical to 'tiny32'.
+-}
+tiny32M :: CoreConfig
+tiny32M =
+  tiny32
+    { ccMulDiv = MdIterative {mdCyclesMul = 32, mdCyclesDiv = 33}
+    , ccExt = (ccExt tiny32) {extM = True}
     }
 
 {- | @tiny64@ — planned RV64 sibling of 'tiny32'. Phase 5A lands

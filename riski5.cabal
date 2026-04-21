@@ -73,6 +73,7 @@ library
     Riski5.Core
     Riski5.Core.Assembly
     Riski5.Core.Config
+    Riski5.Core.FU.MulDiv
     Riski5.Core.Presets
     Riski5.CSR
     Riski5.Decode

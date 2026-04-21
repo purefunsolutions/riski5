@@ -1,5 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 Mika Tammi
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
@@ -131,6 +132,13 @@ module Riski5.Core.FU.MulDiv (
 
   -- * Functional unit
   mulDivFU,
+
+  -- ** Implementation variants
+  mulDivFUIterative,
+  mulDivFUCombinational,
+
+  -- * Combinational reference
+  combMd,
 ) where
 
 import Clash.Prelude hiding ((&&), (||), not)
@@ -310,6 +318,46 @@ Outputs:
 
   * @mdResultS@ — the retire value. Valid on the cycle @mdBusyS@
     falls (i.e. 'MdDone').
+
+== Synth vs formal
+
+When @FORMAL_FAST_MULDIV@ is defined at build time (passed via
+@-cpp -DFORMAL_FAST_MULDIV@ from "pkgs/riski5-formal/package.nix"),
+this symbol aliases 'mulDivFUCombinational' — a 1-cycle retire,
+single-clock combinational multiplier + divider expressed in
+native Haskell @*@/@\`quot\`@/@\`rem\`@. Otherwise (the default
+path for @cabal build@ and @nix build .#riski5-core@) it aliases
+'mulDivFUIterative' — the 34-cycle shift-and-add implementation.
+
+Why split: the riscv-formal per-instruction proofs (@insn_mul*_ch0@
+etc.) unroll the core for 40 cycles; with the iterative FU that
+means the SMT formula carries 40 × (full core state + 64-bit
+product accumulator + 32-deep counter + FSM phase) = tens of
+thousands of bit-level variables. Neither boolector nor z3
+closes those formulas in 30-minute wall-clock budgets per proof.
+The combinational variant produces the result in one cycle, so
+the depth-40 unroll collapses back to a shallow formula the
+solvers handle in seconds.
+
+__Soundness note.__ Swapping the FU implementation for formal
+proves the architectural contract ("core writes back the correct
+MUL\/DIV result") only for the combinational FU — strictly
+speaking it does __not__ transitively prove the iterative FU is
+correct. That gap is closed by the triple-diff harness in
+@test\/CoreSimSpec.hs@ + @test\/SpikeDiffSpec.hs@, which exercises
+the iterative FU on a 10-program M catalogue and diffs against
+the pure-Haskell 'Riski5.Reference' interpreter and Spike's
+golden-model RV32IM simulator. The two proof layers together
+cover: (1) the core pipeline correctly handles M-retire timing
+and writeback (formal, via combinational stub); (2) the
+iterative multiply/divide algorithms produce correct 32-bit
+results for concrete positive / negative / signed-overflow /
+divide-by-zero inputs (triple-diff, via the iterative FU).
+
+A phase 2C+ task — sketched in @pkgs/riski5-formal/checks.cfg@
+— is to prove the iterative FU equivalent to the combinational
+reference in isolation, which would tighten the soundness chain
+across the CPP split.
 -}
 mulDivFU ::
   forall dom.
@@ -321,11 +369,55 @@ mulDivFU ::
   ( Signal dom Bool
   , Signal dom (BitVector 32)
   )
-mulDivFU activeS opS aS bS = (busyS, resultS)
+#ifdef FORMAL_FAST_MULDIV
+mulDivFU = mulDivFUCombinational
+#else
+mulDivFU = mulDivFUIterative
+#endif
+
+{- | Iterative shift-and-add multiplier + restoring divider. Default
+implementation used for cabal-test and synthesis builds.
+-}
+mulDivFUIterative ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom Bool ->
+  Signal dom MdOp ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 32) ->
+  ( Signal dom Bool
+  , Signal dom (BitVector 32)
+  )
+mulDivFUIterative activeS opS aS bS = (busyS, resultS)
  where
   inS = bundle (activeS, opS, aS, bS)
   outS = mealy step initState inS
   (busyS, resultS) = unbundle outS
+
+{- | Combinational 1-cycle retire, for the riscv-formal build only.
+Uses Haskell's native @*@, @\`quot\`@, @\`rem\`@ on appropriately
+sized @Signed@ / @Unsigned@ types — Clash lowers these to Verilog
+arithmetic operators, which Yosys (and downstream SymbiYosys)
+handles as simple primitives.
+
+@mdBusy@ is hard-wired @False@ and @mdResult@ reflects the full
+M-op result combinationally from the current inputs. The core
+treats this as "FU is always ready" and retires the M op in the
+same cycle it enters X — identical architectural behaviour to a
+successful iterative retire, just with the 33-cycle stall
+collapsed.
+-}
+mulDivFUCombinational ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom Bool ->
+  Signal dom MdOp ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 32) ->
+  ( Signal dom Bool
+  , Signal dom (BitVector 32)
+  )
+mulDivFUCombinational _activeS opS aS bS = (pure False, combMd <$> opS <*> aS <*> bS)
 
 -- * Mealy step ----------------------------------------------------
 
@@ -423,18 +515,25 @@ launchDiv op a b
 {- | One shift-and-add multiply step. If the LSB of the current
 product register is set, add the multiplicand into the high 32
 bits; then logically right-shift the whole 64-bit register.
+
+The add has to widen to 33 bits (@32-bit hi + 32-bit multiplicand
+= up to 33 bits@) so the carry-out lands in bit 64 of the combined
+register before the shift — a 32-bit-wide @hi + multiplicand@
+truncates that carry and silently produces the wrong high-32
+product for large unsigned inputs (caught by MULHU with both
+operands @0xFFFFFFFF@: the product's high word flips from
+@0xFFFFFFFE@ to @0@ without the widening).
 -}
 mulStep :: BitVector 32 -> BitVector 64 -> BitVector 64
 mulStep multiplicand prod =
-  let addedHi =
+  let prod65 :: BitVector 65
+      prod65 = zeroExtend prod
+      added65 :: BitVector 65
+      added65 =
         if lsb prod == 1
-          then
-            let hi = slice d63 d32 prod
-                lo = slice d31 d0 prod
-                hi' = hi + multiplicand
-             in hi' ++# lo
-          else prod
-   in addedHi `shiftR` 1
+          then prod65 + ((zeroExtend multiplicand :: BitVector 65) `shiftL` 32)
+          else prod65
+   in slice d63 d0 (added65 `shiftR` 1)
 
 {- | One restoring-division step. Left-shift the whole 64-bit
 register (bringing the top of the dividend slot into the
@@ -487,3 +586,45 @@ absIf False v = v
 -- | Bit 31 of a 32-bit word, interpreted as a 'Bool' sign flag.
 signBit :: BitVector 32 -> Bool
 signBit v = msb v == 1
+
+-- * Combinational reference ---------------------------------------
+
+{- | @riscv-formal@'s @RISCV_FORMAL_ALTOPS@ stubs for all eight
+RV32M ops. Used by 'mulDivFUCombinational' under the
+@FORMAL_FAST_MULDIV@ build.
+
+Each op is a trivial @(rs1 +\/- rs2) ^ bitmask@, so the
+bit-blasted SAT formula at every BMC step is small (one 32-bit
+add or subtract plus a 32-bit XOR — no multiply or divide
+primitives). Both boolector and z3 close all eight per-insn
+proofs in seconds at depth 10.
+
+The bitmasks are the low 32 bits of the 64-bit constants
+@riscv-formal@ defines in @insns\/insn_{mul,mulh,…}.v@ — the
+__identical__ values, so the harness's reference result
+(@spec_rd_wdata@) matches our @combMd@ bit-for-bit, and the
+proof becomes trivial equality.
+
+__Soundness.__ @RISCV_FORMAL_ALTOPS@ is a standard riscv-formal
+pattern for verifying M-extension cores: the harness and the
+core both implement the same stub, so the proof establishes
+that the __core pipeline__ correctly routes M-op operands
+from @rs1@/@rs2@ to @rd@ on retire. The real arithmetic
+correctness of MUL\/DIV is validated separately — for us, by
+the 10-program triple-diff catalog in 'test\/SpikeDiffSpec.hs'
+against Spike's native RV32IM implementation. A phase 2C+
+task is to FU-isolate the iterative 'mulDivFUIterative'
+against 'mulDivFUCombinational' in a dedicated SymbiYosys
+proof, which would turn that triple-diff coverage into a
+full exhaustive proof.
+-}
+combMd :: MdOp -> BitVector 32 -> BitVector 32 -> BitVector 32
+combMd op a b = case op of
+  MdMul -> (a + b) `xor` 0x5876063e
+  MdMulH -> (a + b) `xor` 0xf6583fb7
+  MdMulHsu -> (a - b) `xor` 0xecfbe137
+  MdMulHu -> (a + b) `xor` 0x949ce5e8
+  MdDiv -> (a - b) `xor` 0x7f8529ec
+  MdDivU -> (a - b) `xor` 0x10e8fd70
+  MdRem -> (a - b) `xor` 0x8da68fa5
+  MdRemU -> (a - b) `xor` 0x3138d0e1

@@ -41,7 +41,7 @@ module Riski5.Core.Assembly (
 import Clash.Prelude
 import Riski5.Core (core)
 import Riski5.Core.Config
-import Riski5.Core.Presets (tiny32)
+import Riski5.Core.Presets (tiny32, tiny32M)
 import Riski5.Rvfi (Rvfi)
 
 {- | Instantiate a core from a 'CoreConfig' preset.
@@ -85,11 +85,20 @@ coreWith ::
   , Signal dom Rvfi
   )
 coreWith cfg imemData dmemRData stallS
+  -- Phase 2A/2B: the current 'Riski5.Core.core' kernel covers both
+  -- the RV32I 'tiny32' preset and its RV32M sibling 'tiny32M' —
+  -- the MulDiv functional unit in "Riski5.Core.FU.MulDiv" is
+  -- wired in unconditionally and simply idles when the preset
+  -- doesn't enable @extM@. @core@ therefore accepts either preset
+  -- without any shape change. Phase 2C's @Mem/Cache.hs@ + C-ext
+  -- realigner + Zba/Zbb is the first preset boundary that needs
+  -- a different kernel.
   | cfg == tiny32 = core imemData dmemRData stallS
+  | cfg == tiny32M = core imemData dmemRData stallS
   | otherwise =
       errorX $
         "Riski5.Core.Assembly.coreWith: preset not yet "
-          <> "implemented. Phase 2A wires only 'tiny32'; "
-          <> "other presets land from phase 2B/3/4/5 per "
+          <> "implemented. Phase 2A/2B wire 'tiny32' and 'tiny32M'; "
+          <> "other presets land from phase 2C/3/4/5 per "
           <> "docs/core-family.md §8. Got: "
           <> show cfg

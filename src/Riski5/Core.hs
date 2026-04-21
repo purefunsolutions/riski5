@@ -12,7 +12,7 @@
 
 {- |
 Module      : Riski5.Core
-Description : 2-stage pipelined RV32I core with M-mode CSRs + traps.
+Description : 2-stage pipelined RV32I + RV32M core with M-mode CSRs + traps.
 
 Two overlapping pipeline stages:
 
@@ -31,6 +31,21 @@ Back-to-back sequential instructions retire at 1/clock in steady
 state. The only source of bubbles is a non-sequential PC change
 (taken branch, JAL, JALR, MRET, trap) which squashes the
 pre-fetched instruction on the next cycle.
+
+== RV32M via multi-cycle functional unit
+
+Phase 2B wires an iterative multiplier + divider FU alongside the
+ALU (see "Riski5.Core.FU.MulDiv"). When an RV32M op enters X,
+@mdActiveS@ goes high; the FU's combinational @mdBusy@ output is
+OR'd with the external @stallS@ into @stallInternal@, which gates
+every sequential register in the core. The op stays in X for
+~34 clocks while the FU iterates; when the FU reaches @MdDone@,
+@mdBusy@ drops, the writeback mux (@writeBackWithMd@) substitutes
+the FU's 32-bit result for the handler's placeholder value, and
+the op retires through the same RVFI path as any other integer
+instruction. @tiny32@ (@extM = False@) and @tiny32M@ (@extM =
+True@) share this kernel — the FU sits idle on programs that
+never issue M ops.
 
 == Pipeline control
 
@@ -60,6 +75,7 @@ module Riski5.Core (
 
 import Clash.Prelude hiding (And, Xor, not, (!!), (&&), (||))
 import Riski5.ALU (AluOp (..), BranchOp (..), alu, branchTaken)
+import Riski5.Core.FU.MulDiv (MdOp (..), isMdOp, mdOpOf, mulDivFU)
 import Riski5.CSR (
   Csrs (..),
   applyTrap,
@@ -139,13 +155,21 @@ core imemData dmemRData stallS =
   , rvfiS
   )
  where
+  -- ----- Internal stall ---------------------------------------------
+  -- External back-pressure from the bus (SRAM / Avalon-MM slaves)
+  -- OR'd with the MulDiv FU's busy flag. Every sequential register
+  -- in the core gates on this combined signal: the M op remains
+  -- in X until the FU retires, exactly as SRAM reads do today.
+  stallInternal :: Signal dom Bool
+  stallInternal = (\s m -> s || m) <$> stallS <*> mdBusyS
+
   -- ----- F-stage: pcFetch drives imem --------------------------------
   pcFetch :: Signal dom (BitVector 32)
-  pcFetch = register 0 (mux stallS pcFetch pcFetchNext)
+  pcFetch = register 0 (mux stallInternal pcFetch pcFetchNext)
 
   -- ----- X-stage PC: one cycle behind pcFetch ------------------------
   pcExec :: Signal dom (BitVector 32)
-  pcExec = register 0 (mux stallS pcExec pcFetch)
+  pcExec = register 0 (mux stallInternal pcExec pcFetch)
 
   -- ----- Squash register ---------------------------------------------
   -- True on the cycle immediately after this cycle's X took a
@@ -160,7 +184,7 @@ core imemData dmemRData stallS =
   -- the first real read has propagated. Squash-on-reset means
   -- that garbage never reaches decode.
   squashNext :: Signal dom Bool
-  squashNext = register True (mux stallS squashNext pcChangedS)
+  squashNext = register True (mux stallInternal squashNext pcChangedS)
 
   -- ----- CSR state (frozen on stall or squash) -----------------------
   csrs :: Signal dom Csrs
@@ -168,19 +192,20 @@ core imemData dmemRData stallS =
     register
       initCsrs
       ( (\stall sq next cur -> if stall || sq then cur else next)
-          <$> stallS
+          <$> stallInternal
           <*> squashNext
           <*> csrsNext
           <*> csrs
       )
 
   -- Stall from the previous cycle. Using this (not the current
-  -- @stallS@) to gate the held-imem logic avoids a combinational
-  -- cycle: if @effectiveImemS@ depended on the current cycle's
-  -- @stallS@, decode output → @dAddrS@ → SoC bus mux → @stallS@ →
-  -- @effectiveImemS@ would be a loop.
+  -- @stallInternal@) to gate the held-imem logic avoids a
+  -- combinational cycle: if @effectiveImemS@ depended on the
+  -- current cycle's @stallInternal@, decode output → @mdActiveS@
+  -- → @mdBusyS@ → @stallInternal@ → @effectiveImemS@ would be
+  -- a loop.
   stallPrev :: Signal dom Bool
-  stallPrev = register False stallS
+  stallPrev = register False stallInternal
 
   -- F/X pipeline latch. The external imem (blockRam or the
   -- register-wrapped Vec lookup in tests) has a 1-cycle read delay,
@@ -217,12 +242,15 @@ core imemData dmemRData stallS =
       <*> imemData
       <*> heldImemS
 
-  -- Suppress regfile writeback on stall or squash.
+  -- Suppress regfile writeback on stall or squash. The wrapped
+  -- @writeBackWithMd@ — not the raw @writeBack@ — replaces the
+  -- handler's placeholder value for RV32M ops with the FU's
+  -- real 32-bit result on the retire cycle.
   writeBackGated =
     (\stall sq wb -> if stall || sq then Nothing else wb)
-      <$> stallS
+      <$> stallInternal
       <*> squashNext
-      <*> writeBack
+      <*> writeBackWithMd
 
   -- Suppress memory-write byte-enable only on squash. A squashed
   -- fake-store must not commit. But we MUST NOT gate on stall
@@ -255,6 +283,48 @@ core imemData dmemRData stallS =
   rs2Addr = slice d24 d20 <$> effectiveImemS
 
   (rs1V, rs2V) = regfile rs1Addr rs2Addr writeBackGated
+
+  -- ----- RV32M functional unit --------------------------------------
+  -- The MulDiv FU runs iteratively alongside decode + ALU. On the
+  -- first cycle an RV32M op enters X, 'mdActiveS' goes high; the
+  -- FU latches the operands and transitions Idle → Busy; its
+  -- @busy@ output feeds @stallInternal@ above, freezing every
+  -- sequential register in the core. When the FU reaches 'MdDone'
+  -- the busy flag drops, the writeback mux ('writeBackWithMd')
+  -- swaps in the 32-bit result, and the M op retires normally.
+  mdActiveS :: Signal dom Bool
+  mdActiveS =
+    ( \mi -> case mi of
+        Just i -> isMdOp i
+        Nothing -> False
+    )
+      <$> mInstr
+
+  mdOpS :: Signal dom MdOp
+  mdOpS =
+    ( \mi -> case mi of
+        Just i -> mdOpOf i
+        Nothing -> MdMul -- safe default — FU ignores inputs outside Idle → Busy
+    )
+      <$> mInstr
+
+  mdBusyS :: Signal dom Bool
+  mdResultS :: Signal dom (BitVector 32)
+  (mdBusyS, mdResultS) = mulDivFU mdActiveS mdOpS rs1V rs2V
+
+  -- Replace the handler's placeholder writeback value with the
+  -- FU's real result on cycles when an M op is retiring. The rd
+  -- field comes from the handler (latched from the instruction
+  -- word); the value comes from the FU.
+  writeBackWithMd :: Signal dom (Maybe (BitVector 5, BitVector 32))
+  writeBackWithMd =
+    ( \isMd mdR wb -> case (isMd, wb) of
+        (True, Just (rd, _)) -> Just (rd, mdR)
+        _ -> wb
+    )
+      <$> mdActiveS
+      <*> mdResultS
+      <*> writeBack
 
   -- ----- Combinational dispatch --------------------------------------
   bundledOut =
@@ -300,7 +370,7 @@ core imemData dmemRData stallS =
   -- (pre-fetched instruction past a branch). A trapping instruction
   -- also retires — rvfi_trap flags it separately.
   rvfiValidS :: Signal dom Bool
-  rvfiValidS = (\st sq -> not st && not sq) <$> stallS <*> squashNext
+  rvfiValidS = (\st sq -> not st && not sq) <$> stallInternal <*> squashNext
 
   -- Monotonic retire counter. Latches once per retire cycle.
   rvfiOrderS :: Signal dom (BitVector 64)
@@ -338,13 +408,13 @@ core imemData dmemRData stallS =
   -- ignores writes to x0, so the architectural state is right,
   -- but the observability field must also reflect zero.
   rvfiRdAddrS, rvfiRdWdataS :: Signal dom (BitVector 32)
-  rvfiRdAddrS = maybe 0 (resize . fst) <$> writeBack
+  rvfiRdAddrS = maybe 0 (resize . fst) <$> writeBackWithMd
   rvfiRdWdataS =
     ( \mwb -> case mwb of
         Just (rd, val) | rd /= 0 -> val
         _ -> 0
     )
-      <$> writeBack
+      <$> writeBackWithMd
 
   -- Memory-read byte mask: bytes of rfMemRdata the instruction
   -- actually consumed. Derived from the instruction's opcode +
@@ -609,6 +679,21 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   Sra rd _ _ -> aluReg cs rd AluSra rs1V rs2V pc
   Or rd _ _ -> aluReg cs rd AluOr rs1V rs2V pc
   And rd _ _ -> aluReg cs rd AluAnd rs1V rs2V pc
+  -- ----- RV32M (iterative FU in 'Riski5.Core.FU.MulDiv') -------
+  -- The handler returns a placeholder writeback @Just (rd, 0)@
+  -- every cycle the M op is in X; the core's 'writeBackWithMd'
+  -- mux swaps in the FU's real result on the retire cycle. pc
+  -- advances by 4 sequentially — the stall path keeps X frozen
+  -- until the FU is ready, so the "advance" only takes effect
+  -- on the retire cycle.
+  Mul rd _ _ -> regWb cs rd 0 (pc + 4)
+  MulH rd _ _ -> regWb cs rd 0 (pc + 4)
+  MulHsu rd _ _ -> regWb cs rd 0 (pc + 4)
+  MulHu rd _ _ -> regWb cs rd 0 (pc + 4)
+  Div rd _ _ -> regWb cs rd 0 (pc + 4)
+  DivU rd _ _ -> regWb cs rd 0 (pc + 4)
+  Rem rd _ _ -> regWb cs rd 0 (pc + 4)
+  RemU rd _ _ -> regWb cs rd 0 (pc + 4)
   -- ----- MISC-MEM (FENCE as no-op until we have caches) ----------
   Fence _ _ -> nop cs pc
   FenceI -> nop cs pc

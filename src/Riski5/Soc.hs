@@ -59,7 +59,7 @@ import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
 import Riski5.Bram (bram)
 import Riski5.Core.Assembly (coreWith)
-import Riski5.Core.Presets (tiny32)
+import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (JtagUartBus (..), jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
@@ -183,7 +183,7 @@ soc progInit dataInit inS = outS
   -- identical; phase-2 pipelining will make them differ by one
   -- cycle (fetch leads execute).
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
-    coreWith tiny32 imemDataS dmemRdataS stallS
+    coreWith tiny32M imemDataS dmemRdataS stallS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- imem driven from the core's F-stage pcFetchS via Clash
