@@ -51,10 +51,10 @@ import Data.Bits (
   (.&.),
   (.|.),
  )
-import Data.Int (Int32)
+import Data.Int (Int32, Int64)
 import Data.Map.Strict (Map)
 import Data.Map.Strict qualified as Map
-import Data.Word (Word32, Word8)
+import Data.Word (Word32, Word64, Word8)
 import Riski5.Decode (decode)
 import Riski5.ISA
 
@@ -302,6 +302,67 @@ execute i s = case i of
       )
   Or rd rs1 rs2 -> next (writeReg rd (readReg rs1 s .|. readReg rs2 s) s)
   And rd rs1 rs2 -> next (writeReg rd (readReg rs1 s .&. readReg rs2 s) s)
+  -- RV32M — integer multiply / divide.
+  Mul rd rs1 rs2 ->
+    -- Low 32 bits of the 64-bit product; sign-agnostic.
+    next (writeReg rd (readReg rs1 s * readReg rs2 s) s)
+  MulH rd rs1 rs2 ->
+    let a :: Int64
+        a = fromIntegral (toSigned (readReg rs1 s))
+        b :: Int64
+        b = fromIntegral (toSigned (readReg rs2 s))
+        hi = fromIntegral ((a * b) `shiftR` 32) :: Word32
+     in next (writeReg rd hi s)
+  MulHsu rd rs1 rs2 ->
+    let a :: Int64
+        a = fromIntegral (toSigned (readReg rs1 s))
+        b :: Int64
+        b = fromIntegral (readReg rs2 s) -- zero-extend unsigned → Int64 is still positive
+        hi = fromIntegral ((a * b) `shiftR` 32) :: Word32
+     in next (writeReg rd hi s)
+  MulHu rd rs1 rs2 ->
+    let a :: Word64
+        a = fromIntegral (readReg rs1 s)
+        b :: Word64
+        b = fromIntegral (readReg rs2 s)
+        hi = fromIntegral ((a * b) `shiftR` 32) :: Word32
+     in next (writeReg rd hi s)
+  Div rd rs1 rs2 ->
+    -- Signed division, truncated toward zero. Special cases per the
+    -- RV32M spec §7.2 "Semantics for Divide by Zero and Division
+    -- Overflow": dividing by zero yields -1 (all 1s), and signed
+    -- INT_MIN / -1 yields INT_MIN (quotient overflow, no trap).
+    let a = toSigned (readReg rs1 s)
+        b = toSigned (readReg rs2 s)
+        q
+          | b == 0 = -1
+          | a == minBound && b == -1 = a
+          | otherwise = a `quot` b
+     in next (writeReg rd (fromIntegral q) s)
+  DivU rd rs1 rs2 ->
+    let a = readReg rs1 s
+        b = readReg rs2 s
+        q
+          | b == 0 = maxBound -- 2^32 - 1
+          | otherwise = a `quot` b
+     in next (writeReg rd q s)
+  Rem rd rs1 rs2 ->
+    -- Remainder has the sign of the dividend. Special cases:
+    -- b == 0 → r = rs1; INT_MIN `rem` -1 → 0.
+    let a = toSigned (readReg rs1 s)
+        b = toSigned (readReg rs2 s)
+        r
+          | b == 0 = a
+          | a == minBound && b == -1 = 0
+          | otherwise = a `rem` b
+     in next (writeReg rd (fromIntegral r) s)
+  RemU rd rs1 rs2 ->
+    let a = readReg rs1 s
+        b = readReg rs2 s
+        r
+          | b == 0 = a
+          | otherwise = a `rem` b
+     in next (writeReg rd r s)
   -- MISC-MEM
   Fence {} -> next s -- no caches, nothing to synchronise
   FenceI -> next s -- ditto for instruction fetch

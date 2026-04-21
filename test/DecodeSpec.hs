@@ -154,6 +154,14 @@ genInstr =
     , Sra <$> genReg <*> genReg <*> genReg
     , Or <$> genReg <*> genReg <*> genReg
     , And <$> genReg <*> genReg <*> genReg
+    , Mul <$> genReg <*> genReg <*> genReg
+    , MulH <$> genReg <*> genReg <*> genReg
+    , MulHsu <$> genReg <*> genReg <*> genReg
+    , MulHu <$> genReg <*> genReg <*> genReg
+    , Div <$> genReg <*> genReg <*> genReg
+    , DivU <$> genReg <*> genReg <*> genReg
+    , Rem <$> genReg <*> genReg <*> genReg
+    , RemU <$> genReg <*> genReg <*> genReg
     , Fence <$> genBv4 <*> genBv4
     , pure FenceI
     , pure Ecall

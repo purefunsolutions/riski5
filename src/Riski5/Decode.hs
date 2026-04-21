@@ -177,6 +177,16 @@ decodeOp rd rs1 rs2 funct3 funct7 = case (funct3, funct7) of
   (0b101, 0b0100000) -> Just (Sra rd rs1 rs2)
   (0b110, 0b0000000) -> Just (Or rd rs1 rs2)
   (0b111, 0b0000000) -> Just (And rd rs1 rs2)
+  -- RV32M: same opcode + R-type as integer ops, funct7 = 0b0000001
+  -- disambiguates. funct3 selects the specific variant.
+  (0b000, 0b0000001) -> Just (Mul rd rs1 rs2)
+  (0b001, 0b0000001) -> Just (MulH rd rs1 rs2)
+  (0b010, 0b0000001) -> Just (MulHsu rd rs1 rs2)
+  (0b011, 0b0000001) -> Just (MulHu rd rs1 rs2)
+  (0b100, 0b0000001) -> Just (Div rd rs1 rs2)
+  (0b101, 0b0000001) -> Just (DivU rd rs1 rs2)
+  (0b110, 0b0000001) -> Just (Rem rd rs1 rs2)
+  (0b111, 0b0000001) -> Just (RemU rd rs1 rs2)
   _ -> Nothing
 
 decodeBranch :: Reg -> Reg -> Signed 13 -> BitVector 3 -> Maybe Instr

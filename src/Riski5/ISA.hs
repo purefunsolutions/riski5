@@ -32,6 +32,10 @@ Instruction coverage:
   * M-mode privileged: @MRET@ (trap return). @WFI@ is not
     implemented yet — in phase 1 it decodes as an illegal
     instruction and traps like any other.
+  * M-extension (RV32M): @MUL@, @MULH@, @MULHSU@, @MULHU@,
+    @DIV@, @DIVU@, @REM@, @REMU@. Same R-type encoding as
+    @OpOp@ ALU instructions but with @funct7 = 0b0000001@; see
+    "Riski5.Decode" for the dispatch.
 -}
 module Riski5.ISA (
   -- * Registers
@@ -364,6 +368,16 @@ data Instr
   | Sra Reg Reg Reg
   | Or Reg Reg Reg
   | And Reg Reg Reg
+  | -- R-type M-extension (RV32M). Same bit layout as the integer
+    -- R-type above but with @funct7 = 0b0000001@.
+    Mul Reg Reg Reg
+  | MulH Reg Reg Reg
+  | MulHsu Reg Reg Reg
+  | MulHu Reg Reg Reg
+  | Div Reg Reg Reg
+  | DivU Reg Reg Reg
+  | Rem Reg Reg Reg
+  | RemU Reg Reg Reg
   | -- MISC-MEM
 
     -- | @FENCE pred succ@; rd/rs1 and @fm@ are 0 for the non-TSO form.

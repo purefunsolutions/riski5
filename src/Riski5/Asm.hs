@@ -90,6 +90,16 @@ module Riski5.Asm (
   or_,
   and_,
 
+  -- ** M-extension (RV32M)
+  mul,
+  mulh,
+  mulhsu,
+  mulhu,
+  div_,
+  divu,
+  rem_,
+  remu,
+
   -- ** Memory-ordering (Zifencei)
   fence,
   fenceI,
@@ -372,6 +382,44 @@ clashing with @Prelude.and@ on @[Bool]@.
 -}
 and_ :: Reg -> Reg -> Reg -> Asm ()
 and_ rd rs1 rs2 = emit (And rd rs1 rs2)
+
+-- * M-extension wrappers ---------------------------------------------
+
+-- | @MUL rd, rs1, rs2@ — low 32 bits of the 64-bit product.
+mul :: Reg -> Reg -> Reg -> Asm ()
+mul rd rs1 rs2 = emit (Mul rd rs1 rs2)
+
+-- | @MULH rd, rs1, rs2@ — high 32 bits of the 64-bit signed × signed product.
+mulh :: Reg -> Reg -> Reg -> Asm ()
+mulh rd rs1 rs2 = emit (MulH rd rs1 rs2)
+
+-- | @MULHSU rd, rs1, rs2@ — high 32 bits of signed × unsigned.
+mulhsu :: Reg -> Reg -> Reg -> Asm ()
+mulhsu rd rs1 rs2 = emit (MulHsu rd rs1 rs2)
+
+-- | @MULHU rd, rs1, rs2@ — high 32 bits of unsigned × unsigned.
+mulhu :: Reg -> Reg -> Reg -> Asm ()
+mulhu rd rs1 rs2 = emit (MulHu rd rs1 rs2)
+
+{- | @DIV rd, rs1, rs2@ — signed integer division. Trailing
+underscore avoids clashing with @Prelude.div@.
+-}
+div_ :: Reg -> Reg -> Reg -> Asm ()
+div_ rd rs1 rs2 = emit (Div rd rs1 rs2)
+
+-- | @DIVU rd, rs1, rs2@ — unsigned integer division.
+divu :: Reg -> Reg -> Reg -> Asm ()
+divu rd rs1 rs2 = emit (DivU rd rs1 rs2)
+
+{- | @REM rd, rs1, rs2@ — signed remainder. Trailing underscore
+avoids clashing with @Prelude.rem@.
+-}
+rem_ :: Reg -> Reg -> Reg -> Asm ()
+rem_ rd rs1 rs2 = emit (Rem rd rs1 rs2)
+
+-- | @REMU rd, rs1, rs2@ — unsigned remainder.
+remu :: Reg -> Reg -> Reg -> Asm ()
+remu rd rs1 rs2 = emit (RemU rd rs1 rs2)
 
 -- | @FENCE pred, succ@ — memory ordering fence (Zifencei).
 fence :: BitVector 4 -> BitVector 4 -> Asm ()

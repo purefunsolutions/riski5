@@ -128,12 +128,21 @@ data SpikeOptions = SpikeOptions
   deriving stock (Eq, Show)
 
 {- | Defaults tuned for small catalog programs.
+
+'spikeIsa' defaults to @rv32im@ (phase 2B) so the golden-model
+differential test covers the eight RV32M ops the core now
+implements alongside the base integer set. Spike's @rv32im@
+is a superset of @rv32i@ — RV32I programs still execute
+identically. Tests targeting strictly base-integer semantics
+(e.g. verifying illegal-instruction traps for M encodings on
+a hypothetical @tiny32@-only variant) can override via
+@defaultSpikeOptions { spikeIsa = \"rv32i\" }@.
 -}
 defaultSpikeOptions :: SpikeOptions
 defaultSpikeOptions =
   SpikeOptions
     { spikeExecutable = "spike"
-    , spikeIsa = "rv32i"
+    , spikeIsa = "rv32im"
     , spikePriv = "m"
     , spikeBaseAddr = spikeElfBaseAddr
     , spikeMaxCommits = 200

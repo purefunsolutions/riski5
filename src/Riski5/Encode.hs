@@ -73,6 +73,15 @@ encode = \case
   Sra rd rs1 rs2 -> rType 0b0100000 rs2 rs1 0b101 rd
   Or rd rs1 rs2 -> rType 0b0000000 rs2 rs1 0b110 rd
   And rd rs1 rs2 -> rType 0b0000000 rs2 rs1 0b111 rd
+  -- RV32M — R-type, funct7 = 0b0000001.
+  Mul rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b000 rd
+  MulH rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b001 rd
+  MulHsu rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b010 rd
+  MulHu rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b011 rd
+  Div rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b100 rd
+  DivU rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b101 rd
+  Rem rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b110 rd
+  RemU rd rs1 rs2 -> rType 0b0000001 rs2 rs1 0b111 rd
   -- FENCE: I-type with imm[11:0] = [fm(4) | pred(4) | succ(4)], rs1=0,
   -- rd=0, funct3=000. We always emit fm=0 (standard FENCE, not
   -- FENCE.TSO).
