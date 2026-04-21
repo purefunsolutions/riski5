@@ -119,7 +119,10 @@ library riski5-top
 library riski5-firmware
   import:          warnings, language
   hs-source-dirs:  firmware/phase1
-  exposed-modules: Hello
+  exposed-modules:
+    Hello
+    MemTest
+
   build-depends:
     , base
     , clash-prelude

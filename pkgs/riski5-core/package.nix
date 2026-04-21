@@ -120,7 +120,7 @@ in
             # two 16-bit chips in parallel, which the DE2 doesn't have.
             #
             # Timing parameters are sized for the -7 speed grade of the
-            # DE2's chip and a 50 MHz (Dom30 — name kept even after the
+            # DE2's chip and a 40 MHz (Dom30 — name kept even after the
             # phase-2 PLL retarget) clock, leaving generous margin:
             #
             #   casLatency       = 2   — fine below ~133 MHz for a -7 part
@@ -265,9 +265,9 @@ in
             .vcounderrange ()
         );
         defparam u_altpll.bandwidth_type        = "AUTO";
-        defparam u_altpll.clk0_divide_by        = 10;
+        defparam u_altpll.clk0_divide_by        = 5;
         defparam u_altpll.clk0_duty_cycle       = 50;
-        defparam u_altpll.clk0_multiply_by      = 10;
+        defparam u_altpll.clk0_multiply_by      = 4;
         defparam u_altpll.clk0_phase_shift      = "0";
         defparam u_altpll.compensate_clock      = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;

@@ -612,22 +612,40 @@ core imemData dmemRData stallS =
   -- committed at edges prior to this cycle.
   (dRs1RawS, dRs2RawS) = regfile dRs1AddrS dRs2AddrS writeBackOutS
 
-  -- W→D same-cycle bypass. At cycle N, W is about to commit
-  -- @writeBackOutS@ at edge N→N+1. The async regfile doesn't
-  -- reflect that commit until cycle N+1, but D wants to capture
-  -- the freshest value at this same edge. Bypass: if W writes
-  -- the same rd D is reading, take the W value directly.
-  -- Equivalent to a write-before-read port at the regfile — but
-  -- kept at D's call site so the regfile module stays pure.
-  wdForward :: BitVector 5 -> BitVector 32 -> Maybe (BitVector 5, BitVector 32) -> BitVector 32
-  wdForward rsAddr rsData mwb
+  -- D-stage forwarding. Mirrors the X-stage forwarding mux shape:
+  -- EX/MEM takes priority, then MEM/WB, then the raw regfile read.
+  --
+  -- Why D needs forwarding at all (ex-comment was just "W→D
+  -- bypass"): on stall cycles, @writeBackOutS@ is gated off so
+  -- the instruction sitting in MEM/WB doesn't actually commit
+  -- its writeback this cycle — but @memWbS@ still carries that
+  -- pending-commit data. Same with EX/MEM during stall chains.
+  -- If D only consulted the gated @writeBackOutS@, it would
+  -- capture stale-regfile data into ID/EX.rs1Data / rs2Data,
+  -- and X's forwarding mux can only see EX/MEM and MEM/WB at
+  -- X's cycle — not at D's cycle — so the stale ID/EX data
+  -- would reach the ALU when the original producer has long
+  -- since moved past.
+  --
+  -- Consulting EX/MEM + MEM/WB here covers:
+  --   * The usual two-ahead write-then-read hazard that
+  --     forwarding always handles.
+  --   * Any writeback that's stuck in the back of the pipeline
+  --     during multi-cycle memory stalls — since EX/MEM and
+  --     MEM/WB freeze on stall (matching my stall fix), they
+  --     hold the in-flight writeback exactly until the stall
+  --     clears, so the D-stage sees it every cycle regardless
+  --     of how many stall cycles the producer has been waiting
+  --     in the back.
+  dForward :: BitVector 5 -> BitVector 32 -> ExMem -> MemWb -> BitVector 32
+  dForward rsAddr rsData exM mwM
     | rsAddr == 0 = 0
-    | otherwise = case mwb of
-        Just (rd, val) | rd == rsAddr && rd /= 0 -> val
-        _ -> rsData
+    | emValid exM && emWbEn exM && emRd exM == rsAddr = emWbData exM
+    | mwValid mwM && mwWbEn mwM && mwRd mwM == rsAddr = mwWbData mwM
+    | otherwise = rsData
 
-  dRs1DataS = wdForward <$> dRs1AddrS <*> dRs1RawS <*> writeBackOutS
-  dRs2DataS = wdForward <$> dRs2AddrS <*> dRs2RawS <*> writeBackOutS
+  dRs1DataS = dForward <$> dRs1AddrS <*> dRs1RawS <*> exMemS <*> memWbS
+  dRs2DataS = dForward <$> dRs2AddrS <*> dRs2RawS <*> exMemS <*> memWbS
 
   -- ====================================================================
   -- ID/EX pipeline register

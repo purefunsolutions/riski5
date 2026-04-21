@@ -36,7 +36,7 @@ module Top (
 
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
-import Hello (helloFirmwareWords)
+import MemTest (memTestFirmwareWords)
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
@@ -69,28 +69,31 @@ and KEY0 is released.
 createDomain
   vSystem
     { vName = "Dom30"
-    , vPeriod = 20000
+    , vPeriod = 25000
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
     }
 
 -- * Firmware --------------------------------------------------------
 
-{- | 1024-word (4 KB) instruction memory — sized for the Phase 2B+
-Hello firmware (~580 words after the SRAM-diagnostics UART hex
-path landed). Unused tail words are NOPs so pc-overflow wraps to
-NOP rather than producing undefined behaviour. M4K cost is 8
-blocks (4608 bits each at 128×36); still a small slice of the
-Cyclone II EP2C35's ~105-block pool.
+{- | 2048-word (8 KB) instruction memory — grown from 1024 to fit the
+phase-2-P2-A BIOS-style memtest firmware (~2048 words after the
+UART + LCD progress strings land). The previous Hello firmware
+fit easily in 1024; @MemTest@'s four patterns × two passes ×
+two regions push it exactly over the 1024 boundary. Unused tail
+words are NOPs so pc-overflow wraps to NOP rather than producing
+undefined behaviour. M4K cost is 16 blocks (4608 bits each at
+128 × 36); ~15 % of the EP2C35's 105-block pool, still well under
+the 58-block reserve we keep for phase-2C caches.
 -}
-type ProgSize = 1024
+type ProgSize = 2048
 
 -- | 64-word data memory. Phase-1B Hello firmware doesn't touch it.
 type DataSize = 64
 
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
-  $(listToVecTH (P.take 1024 (helloFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
+  $(listToVecTH (P.take 2048 (memTestFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0
