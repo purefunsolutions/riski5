@@ -122,14 +122,31 @@ Decision recorded here when made.
 - SDRAM: Altera IP first (phase 1D, T31–T39). Own Clash controller is
   the fallback (T32a–T36a) only if the IP fails to bring up.
 
-**Forward-looking — SoC configurability.** Phase 1 builds one concrete
-SoC. Phase 2+ grows a type-parameterised SoC generator: IP-provider
-choice per peripheral (Altera vs own-Clash), cache configurations,
-four core classes (tiny / little / big / performance). Every variant
-we ship along the way records Fmax / LE / M4K data that feeds that
-design. See
+**Forward-looking — core family + SoC configurability.** Phase 1
+builds one concrete SoC. Phase 2+ grows a type-parameterised core
+and SoC generator: five core tiers (**Tiny / Little / Mid / Big /
+Performance**), each in RV32 and RV64 editions (plus speculative
+RV128 for Performance), selected by a type-level `CoreConfig`
+record. Every architectural extension (M, A, F, D, C, H,
+Zba / Zbb / Zbs / Zbc, Zcmp / Zcmt, Zicbom / Zicboz / Zicbop, Zicond,
+Zawrs, Zfa / Zfh, Smaia / Ssaia, Sstc, Svadu / Svnapot / Svpbmt,
+Smepmp, Smstateen, …) is an individual per-core knob; presets only
+set defaults. The SoC level additionally varies IP-provider per
+peripheral (Altera vs own-Clash) and cache configuration. Every
+variant we ship records Fmax / LE / M4K data that feeds the design.
+
+**Board reality (budget).** We have exactly one board — the Altera
+DE2 (Cyclone II EP2C35). No funds for DE2-115 / Cyclone V / Arria 10
+/ Agilex kits in the near term. Tiny (both editions) is the
+primary-fit tier on DE2; minimal variants of Little / Mid / Big /
+Performance exist to document LE / M4K cost via Quartus Fit even
+when the bitstream won't flash. Board procurement is a future
+decision informed by those fit reports.
+
+See [docs/core-family.md](./docs/core-family.md) for the full
+core-family plan (supersedes the four-tier sketch).
 [docs/future-soc-configurability.md](./docs/future-soc-configurability.md)
-for the full note.
+retains the SoC-level IP-provider / cache-configuration story.
 
 ## Verilambda policy
 

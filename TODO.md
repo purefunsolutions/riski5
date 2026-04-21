@@ -16,6 +16,20 @@ rules around maintaining it.
 - (nothing — phase 1B checkpoint complete; see "Done" below
   for the latest landed milestone.)
 
+## Phase-2+ planning artefacts
+
+- **Core-family plan landed (2026-04-21).** Forward-looking design
+  note at [docs/core-family.md](./docs/core-family.md) — five tiers
+  (Tiny / Little / Mid / Big / Performance) each in RV32 / RV64
+  editions (+ speculative RV128 Performance), `CoreConfig`
+  type-level parameter space, composable block layer, DE2
+  minimal-variant feasibility math, phase 2–5 roadmap.
+  [docs/future-soc-configurability.md](./docs/future-soc-configurability.md)
+  carries a forward-pointer header noting supersession;
+  [CLAUDE.md](./CLAUDE.md) forward-looking section updated.
+  First implementation step (phase 2A) is still pending — not
+  blocked on anything; any session can pick it up.
+
 ## Done — phase 1B hardware + verification milestones
 
 - **T19-continued. ✓ Altera JTAG UART IP verified on hardware

@@ -5,6 +5,19 @@ SPDX-License-Identifier: MIT OR BSD-3-Clause
 
 # Future SoC configurability (design note)
 
+> **Superseded by [`core-family.md`](./core-family.md) for the
+> core-tier story.** The four-tier sketch below (Tiny / Little / Big
+> / Performance) has been replaced by a five-tier plan (Tiny / Little
+> / Mid / Big / Performance), each in RV32 and RV64 editions, with a
+> type-level `CoreConfig` parameter space documented fully in the new
+> doc. Read `core-family.md` first.
+>
+> This file is retained for its **SoC-level** story: the
+> IP-provider-per-peripheral choice (Altera vs own-Clash), the
+> cache-configuration dimensions, and the historical note on why we
+> didn't build the config machinery in phase 1. Those parts are
+> unchanged by the core-family expansion.
+
 Status: **not yet implemented** — this is a forward-looking design note
 captured while we are still in phase 1. The first concrete uses land in
 phase 2+, once the single-variant phase-1 SoC has proven itself on
