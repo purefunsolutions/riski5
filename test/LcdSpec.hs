@@ -192,22 +192,49 @@ case_userPulseWidth = do
 
 case_irqLatching :: Assertion
 case_irqLatching = do
-  -- Boot takes <120 cycles. During boot, busy falls 7 times (between
-  -- BootStep N's Wait and BootStep (N+1)'s Setup on each boundary)
-  -- — but actually we engineered the FSM to go directly from Wait→
-  -- Setup of the next boot step, so busy stays 1 throughout. The
-  -- only busy-falling edge in the boot is the final Clear's Wait→
-  -- Ready transition. Let's verify that + one user transaction.
-  let statusAddr = lcdBase + 8
-      trace1 = simLcd smallParams 200 []
+  -- STATUS[1] (irq_pending) is only visible through the register
+  -- port when CTRL[0] (irq_enable) is set — mirroring the IRQ
+  -- output's gate. Firmware that hasn't armed the IRQ sees a
+  -- clean @STATUS = {0, busy}@; firmware that has armed it opts
+  -- in to the sticky-W1C contract.
+  --
+  -- Boot takes <120 cycles. The FSM is engineered to go directly
+  -- from Wait→Setup of the next boot step, so busy stays 1
+  -- throughout; the only busy-falling edge in the boot is the
+  -- final Clear's Wait→Ready transition.
+  let ctrlAddr = lcdBase + 12
+      statusAddr = lcdBase + 8
+      -- Arm the IRQ five cycles in (past the 1-cycle Clash reset
+      -- and a couple of settle cycles) so @CTRL[0] = 1@ is
+      -- latched long before the boot's final busy-falling edge
+      -- opens the gate on the pending bit.
+      armIrq =
+        P.replicate 5 idle
+          P.++ [writeAt ctrlAddr 0x1]
+          P.++ P.repeat idle
+      trace1 = simLcd smallParams 200 armIrq
       statusReads = [(i, s) | (i, (_, s, _)) <- P.zip [0 :: Int ..] trace1]
-      -- irq_pending is STATUS bit 1.
       pendingAt i = (P.snd (statusReads P.!! i) CP..&. 0x2) == 2
-  assertBool "STATUS[1]=0 immediately after reset" (P.not (pendingAt 0))
-  assertBool "STATUS[1]=1 after boot completes" (pendingAt 199)
-  -- Now: do a W1C of STATUS[1] and verify it clears.
+  assertBool "STATUS[1]=0 immediately after reset (pre-boot-done)" (P.not (pendingAt 0))
+  assertBool "STATUS[1]=1 after boot completes (IRQ armed)" (pendingAt 199)
+  -- Without arming IRQ, STATUS[1] stays 0 even after the same
+  -- boot-finish busy-fall. This is the contract that lets
+  -- polling firmware use @while (STATUS != 0)@ safely.
+  let trace1u = simLcd smallParams 200 []
+      pendingUnarmedAt i =
+        let (_, s, _) = trace1u P.!! i
+         in (s CP..&. 0x2) == 2
+  assertBool
+    "STATUS[1]=0 after boot when CTRL[0]=0 (gate closed)"
+    (P.not (pendingUnarmedAt 199))
+  -- Now: do a W1C of STATUS[1] and verify it clears. CTRL[0]=1
+  -- is still armed from the first phase (write at cycle 5).
   let clearCycle = 199 :: Int
-      drives = P.replicate clearCycle idle P.++ [writeAt statusAddr 0x2]
+      drives =
+        P.replicate 5 idle
+          P.++ [writeAt ctrlAddr 0x1]
+          P.++ P.replicate (clearCycle - 6) idle
+          P.++ [writeAt statusAddr 0x2]
       trace2 = simLcd smallParams (clearCycle + 5) drives
       statusAfter i = snd3 (trace2 P.!! i)
       pend i = (statusAfter i CP..&. 0x2) == 2

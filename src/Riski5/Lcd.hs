@@ -421,6 +421,24 @@ lcdWith params selS addrS wdataS beS _readEnS =
       <$> stateS
 
   -- ----- Register reads -----------------------------------------
+  --
+  -- STATUS[1] (irq_pending) is gated by CTRL[0] (irq_enable) at
+  -- read time for __both__ the internal latch and the register
+  -- port. This mirrors the @irqS@ output's gate (@en && pend@):
+  -- firmware that hasn't armed the IRQ via @CTRL[0] = 1@ sees a
+  -- clean @STATUS = {0, busy}@ and can poll with a naive
+  -- @while (status != 0)@ loop. Firmware that does arm the IRQ
+  -- opts in to the sticky-pending contract and must W1C the bit
+  -- after servicing.
+  --
+  -- The earlier "pending always latched, visible regardless of
+  -- enable" design leaked controller state into the
+  -- poll-based path: after the self-init sequence ran its five
+  -- commands (3×0x30, 0x38, 0x0C, 0x06, 0x01) and each one's
+  -- busy-falling edge latched @irqPendS = 1@, the next user
+  -- @lw lcd+0x8@ would return @2@ and any @bne != 0@ loop
+  -- deadlocked. Gating @irqPendS@ by @irqEnS@ at the read port
+  -- puts the contract back in one place.
   rdataS =
     ( \sel addr busy pend en ->
         if not sel
@@ -429,7 +447,7 @@ lcdWith params selS addrS wdataS beS _readEnS =
             a
               | a == offsetStatus ->
                   (if busy then 1 else 0)
-                    .|. (if pend then 2 else 0)
+                    .|. (if en && pend then 2 else 0)
               | a == offsetCtrl ->
                   if en then 1 else 0
               | otherwise -> 0
