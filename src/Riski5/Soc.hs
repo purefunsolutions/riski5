@@ -57,11 +57,12 @@ module Riski5.Soc (
 import Clash.Prelude hiding (And, Xor, not)
 import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
+import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Bram (bram)
 import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
-import Riski5.JtagUart (JtagUartBus (..), jtagUartSim)
+import Riski5.JtagUart (jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sram (SramPins (..), sram)
@@ -116,9 +117,10 @@ data SocOut = SocOut
   watches it so tests don't need to spin on the busy flag.
   -}
   , soSramPins :: SramPins
-  , soUartBus :: JtagUartBus
-  {- ^ Live bus tap for the UART slave. On hardware, routed through
-  'app/Top.hs' to the Altera JTAG UART IP; in simulation,
+  , soUartBus :: AvalonMmBus
+  {- ^ Live bus tap for the UART slave, in the canonical Avalon-MM
+  master-side shape (see "Riski5.AvalonMm"). On hardware, routed
+  through 'app/Top.hs' to the Altera JTAG UART IP; in simulation,
   'socSim' pipes it into 'jtagUartSim' and feeds the resulting
   read-data back into 'siUartRdata'.
   -}
@@ -230,12 +232,12 @@ soc progInit dataInit inS = outS
   uartRdataS = siUartRdata <$> inS
   uartBusS =
     ( \sel a wd be re ->
-        JtagUartBus
-          { ubSel = sel
-          , ubAddr = a
-          , ubWdata = wd
-          , ubBe = be
-          , ubRe = re
+        AvalonMmBus
+          { ambSel = sel
+          , ambAddr = a
+          , ambWdata = wd
+          , ambBe = be
+          , ambRe = re
           }
     )
       <$> jtagSelS
@@ -358,5 +360,5 @@ socSim progInit dataInit inSimS = outSimS
   outS = soc progInit dataInit fullInS
   busS = soUartBus <$> outS
   (uartRdataS, uartTxS) =
-    jtagUartSim (ubSel <$> busS) (ubAddr <$> busS) (ubWdata <$> busS) (ubBe <$> busS) (ubRe <$> busS)
+    jtagUartSim (ambSel <$> busS) (ambAddr <$> busS) (ambWdata <$> busS) (ambBe <$> busS) (ambRe <$> busS)
   outSimS = (\o t -> SocOutSim {sosOut = o, sosUartTx = t}) <$> outS <*> uartTxS

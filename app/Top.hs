@@ -37,7 +37,7 @@ module Top (
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
 import Hello (helloFirmwareWords)
-import Riski5.JtagUart (JtagUartBus (..))
+import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
 import Riski5.Sram (SramPins (..))
@@ -184,11 +184,11 @@ topEntity clk30 rst30 keyS swS sramDqInS uartRdataS uartReadyS =
           sramUbNS = sramUbN . soSramPins <$> outS
           sramLbNS = sramLbN . soSramPins <$> outS
           uartBusS = soUartBus <$> outS
-          uartSelS = ubSel <$> uartBusS
-          uartAddrS = ubAddr <$> uartBusS
-          uartWdataS = ubWdata <$> uartBusS
-          uartBeS = ubBe <$> uartBusS
-          uartReS = ubRe <$> uartBusS
+          uartSelS = ambSel <$> uartBusS
+          uartAddrS = ambAddr <$> uartBusS
+          uartWdataS = ambWdata <$> uartBusS
+          uartBeS = ambBe <$> uartBusS
+          uartReS = ambRe <$> uartBusS
        in ( ledrS
           , ledgS
           , lcdDataS

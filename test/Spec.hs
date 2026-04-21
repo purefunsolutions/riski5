@@ -11,6 +11,7 @@ module Main (main) where
 
 import AluSpec qualified
 import AsmSpec qualified
+import AvalonMmSpec qualified
 import BramCoreSpec qualified
 import BramSpec qualified
 import CoreSimSpec qualified
@@ -37,6 +38,7 @@ main =
       [ DecodeSpec.tests
       , AsmSpec.tests
       , AluSpec.tests
+      , AvalonMmSpec.tests
       , RegfileSpec.tests
       , ReferenceSpec.tests
       , CoreSpec.tests

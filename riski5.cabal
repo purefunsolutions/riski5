@@ -69,6 +69,7 @@ library
     Riski5
     Riski5.ALU
     Riski5.Asm
+    Riski5.AvalonMm
     Riski5.Bram
     Riski5.Core
     Riski5.Core.Assembly
@@ -143,6 +144,7 @@ test-suite riski5-test
   other-modules:
     AluSpec
     AsmSpec
+    AvalonMmSpec
     BramCoreSpec
     BramSpec
     CoreSimSpec

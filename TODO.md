@@ -13,7 +13,40 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — T31a shipped 2026-04-21; see "Done — phase 1C completion" below.)
+- **T32. Avalon-MM bus shim [started 2026-04-21]** — shipped as the
+  first step of phase 1D. Captures the shared master-side record
+  shape the JTAG UART and SDRAM Avalon-MM taps use under one name.
+  See "Done — phase 1D start" below.
+
+## Next up
+
+- **T33. Generate Altera SDRAM Controller IP** (user-interactive
+  MegaWizard / Qsys step; needs to be run before T34 can black-box
+  anything). Try `ip-generate` script first — the JTAG UART IP
+  was produced that way in the Nix build.
+- **T34. Black-box SDRAM IP from Clash** — pattern matches
+  `Riski5.JtagUart` now that T32 is in place; produce
+  `Riski5.Sdram` with an `sdramSim` counterpart and the Clash
+  black-box annotations for the generated Verilog.
+- T35 – T39: pins, SDC, bus routing at `0x8000_0000`, MemSpec,
+  firmware bring-up demo, silicon milestone.
+
+## Done — phase 1D start
+
+- **T32. ✓ Avalon-MM bus shim (2026-04-21).** New
+  `src/Riski5/AvalonMm.hs` owns the canonical master-side record
+  (`AvalonMmBus` — `ambSel` / `ambAddr` / `ambWdata` / `ambBe` /
+  `ambRe`) and a matching `AvalonMmReply` for the slave → master
+  leg, plus tiny helpers (`mkAvalonMmBus`, `mkAvalonMmReply`,
+  `avRead`, `avWrite`). Replaces the old ad-hoc `JtagUartBus`
+  with the shared type so the SDRAM IP wrapper (T34) drops
+  straight in. `Riski5.JtagUart` / `Riski5.Soc` / `app/Top.hs`
+  + hardware wrapper already carried an identical shape under
+  `ubX` field names — renamed through to `ambX`; semantics
+  unchanged. Six new `AvalonMmSpec` tests pin the strobe truth
+  table and signal-bundling round-trip so a future refactor of
+  the shim breaks a test instead of silently propagating into
+  every IP wrapper. Full suite **135 / 135 green**.
 
 ## Done — phase 1C completion
 
