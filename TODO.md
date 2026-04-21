@@ -26,7 +26,7 @@ rules around maintaining it.
     size report. Not wired into `pkgs/default.nix` yet (CM-3) —
     wiring waits until the port directory exists so
     `nix flake check` stays green.
-  - **CM-2. Platform port.** `firmware/phase2/coremark-port/`:
+  - **CM-2. ✓ Platform port.** `firmware/phase2/coremark-port/`:
     `core_portme.{c,h,mak}`, `start.S`, `linker.ld`. `start.S`
     sets up the stack + BSS zero-init + jumps to `main`;
     `linker.ld` lays `.text` at `0x0000_0000` with reset at the

@@ -89,11 +89,10 @@ in
 
     buildPhase = ''
       runHook preBuild
+      # Our port's core_portme.mak sets EXE=.elf so upstream's
+      # coremark$(EXE) target resolves to coremark.elf directly
+      # — no post-build rename needed.
       make PORT_DIR=riski5 ITERATIONS=${toString iterations} link
-      # Upstream names the final artifact coremark.exe even on
-      # freestanding targets; rename to the .elf extension our
-      # tooling (objcopy, flash helpers, Clash listToVecTH) expects.
-      mv coremark.exe coremark.elf
       runHook postBuild
     '';
 
