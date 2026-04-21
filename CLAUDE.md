@@ -249,6 +249,16 @@ explicitly names get committed.
 Small, one task ≈ one commit. Messages describe what changed and
 **why**, not a mechanical diff summary.
 
+**Auto-commit when a task lands green.** This repo overrides the
+default Claude Code "never commit unless explicitly asked" policy.
+Once a task's tests pass (cabal + relevant formal / sim layer),
+commit it immediately — don't wait for a fresh prompt. Standing
+exceptions where explicit user approval is still required: pushing
+to a remote, amending or rebasing published commits, force-pushes,
+and anything touching production / shared infrastructure. The
+hold-for-approval policy still applies to those (see the base
+system-level "Executing actions with care" section).
+
 **Fixes land as `fixup!` / `squash!` commits.** When we find a bug
 later that was introduced by commit `<abc>`, don't land the fix as a
 standalone commit — use `git commit --fixup=<abc>` (or `--squash` when

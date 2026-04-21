@@ -13,8 +13,7 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 1B checkpoint complete; see "Done" below
-  for the latest landed milestone.)
+- (nothing — phase 2B shipped; see "Done" below.)
 
 ## Phase-2+ planning artefacts
 
@@ -29,6 +28,49 @@ rules around maintaining it.
   [CLAUDE.md](./CLAUDE.md) forward-looking section updated.
   First implementation step (phase 2A) is still pending — not
   blocked on anything; any session can pick it up.
+
+## Done — phase 2 milestones
+
+- **Phase 2B. ✓ RV32M M-extension via iterative MulDiv FU
+  (2026-04-21).** Eight new `Instr` constructors (MUL / MULH /
+  MULHSU / MULHU / DIV / DIVU / REM / REMU) wired through
+  `Riski5.ISA` + `Encode` + `Decode` + `Asm` + `Reference`.
+  New `src/Riski5/Core/FU/MulDiv.hs` implements an iterative
+  shift-and-add multiplier (32 iter, 34 cycles including
+  dispatch + done) + restoring-division divider with divide-
+  by-zero early-out (2 cycles) and natural signed-overflow
+  handling. The FU's `mdBusy` OR's into the existing `stallS`
+  path — no pipeline restructure. `tiny32M` preset = `tiny32
+  { ccMulDiv = MdIterative 32 33, extM = True }`; `coreWith`
+  dispatches it through the same kernel (the FU idles when
+  `extM` is off). Synth callers (`Soc.hs`, `FormalTop.hs`,
+  `app/Top.hs` via `Soc`) now target `tiny32M`. Spike driver
+  default ISA flipped to `rv32im`.
+  **Cabal: 126 / 126 green** (+10 M catalog in `CoreSimSpec`,
+  +10 in `SpikeDiffSpec` — triple-diff Spike ↔ Reference ↔
+  Core).
+  **Formal: 61 / 61 PASS.** Closure came via a two-step
+  retreat: first added a `mulDivFUCombinational` variant in
+  `Riski5.Core.FU.MulDiv`, CPP-gated on `FORMAL_FAST_MULDIV`
+  (passed as `-optP-DFORMAL_FAST_MULDIV` from the formal
+  package.nix). That lets the formal build see a 1-cycle
+  retire instead of the 34-cycle FSM. The combinational
+  multiply on its own still left the solver grinding for
+  7+ min per proof (32×32→64 SAT is hard for both boolector
+  and z3). Second fix: route `combMd` through the exact
+  `RISCV_FORMAL_ALTOPS` bitmask formulas upstream riscv-formal
+  ships for exactly this case — `(rs1 ± rs2) ^ 32'h…` per
+  op — and `\`define RISCV_FORMAL_ALTOPS` in checks.cfg. The
+  solver now compares two bit-identical expressions; all 8
+  M proofs close in depth-10 BMC in seconds. Soundness
+  argument: the formal proof establishes the core pipeline
+  routes M-op operands correctly; arithmetic correctness of
+  the iterative FU is covered by the triple-diff harness
+  against Spike's native RV32IM. A phase 2C+ task is the
+  FU-isolation proof (`mulDivFUIterative` ≡
+  `mulDivFUCombinational` under a standalone SymbiYosys
+  proof) that would turn triple-diff into exhaustive
+  coverage for the arithmetic.
 
 ## Done — phase 1B hardware + verification milestones
 
