@@ -59,11 +59,18 @@ import Riski5.Asm (
   assemble,
   beq,
   bne,
+  div_,
+  divu,
   j,
   labelUnplaced,
   li,
+  mul,
+  mulh,
+  mulhu,
   nop,
   placeAt,
+  rem_,
+  remu,
  )
 import Riski5.Asm qualified as Asm
 import Riski5.Core (core)
@@ -78,9 +85,17 @@ tests :: TestTree
 tests =
   testGroup
     "Riski5.Core ≡ Riski5.Reference (diff)"
-    (P.map mkCase catalog)
+    ( P.map mkCase catalog
+        P.++ P.map mkMdCase mdCatalog
+    )
  where
-  mkCase (name, prog, nSteps) = testCase name (diffCore prog nSteps)
+  mkCase (name, prog, nSteps) = testCase name (diffCore prog nSteps 0)
+  -- M ops take ~34 cycles each to retire through the iterative
+  -- MulDiv FU; RV32I ops are 1-cycle. Each catalog entry carries
+  -- the @(nSteps, nMOps)@ pair so 'diffCore' can size the clock
+  -- budget correctly: @nSteps + 34 * nMOps + 2@.
+  mkMdCase (name, prog, nSteps, nMOps) =
+    testCase name (diffCore prog nSteps nMOps)
 
 -- * Catalog --------------------------------------------------------
 
@@ -98,6 +113,25 @@ catalog =
   , ("BNE (not taken) falls through", progBneNotTaken, 3)
   , ("SLTI — signed compare-set", progSlti, 4)
   , ("Backward branch loop counter", progLoop, 7)
+  ]
+
+{- | RV32M catalogue. Each entry is @(name, program, nSteps, nMOps)@
+where @nMOps@ is the count of M-extension instructions in the
+program (so the core sim gets enough clock cycles for the
+iterative FU to retire them all).
+-}
+mdCatalog :: [(String, Asm (), Int, Int)]
+mdCatalog =
+  [ ("MUL — positive × positive low 32", progMulPos, 3, 1)
+  , ("MUL — negative × positive low 32", progMulNeg, 3, 1)
+  , ("MULH — negative × negative high 32", progMulh, 3, 1)
+  , ("MULHU — unsigned × unsigned high 32", progMulhu, 3, 1)
+  , ("DIV — signed quot / rem with negatives", progDivSigned, 6, 2)
+  , ("DIVU — unsigned quot / rem", progDivu, 4, 2)
+  , ("REM — signed remainder, dividend-signed", progRem, 4, 1)
+  , ("REMU — unsigned remainder", progRemu, 4, 1)
+  , ("DIV by zero — Q = -1, R = rs1", progDivZero, 4, 2)
+  , ("DIV overflow — MIN / -1 saturates", progDivOverflow, 4, 2)
   ]
 
 -- * Programs ------------------------------------------------------
@@ -172,17 +206,96 @@ progLoop = do
   addi x3 x0 7 -- after loop
   nop
 
+-- * RV32M programs -------------------------------------------------
+
+progMulPos :: Asm ()
+progMulPos = do
+  addi x1 x0 7
+  addi x2 x0 6
+  mul x3 x1 x2 -- x3 = 42
+
+progMulNeg :: Asm ()
+progMulNeg = do
+  addi x1 x0 (-3)
+  addi x2 x0 5
+  mul x3 x1 x2 -- x3 = 0xFFFFFFF1 (= -15 as Word32)
+
+-- | @(-1) * (-1)@: MULH sign-extends both operands so the high-32
+-- is @0@ (real signed product = @1@). MULHU would give
+-- @0xFFFFFFFE@ instead.
+progMulh :: Asm ()
+progMulh = do
+  addi x1 x0 (-1) -- 0xFFFFFFFF
+  addi x2 x0 (-1)
+  mulh x3 x1 x2 -- x3 = 0 (signed high-32 of 1)
+
+progMulhu :: Asm ()
+progMulhu = do
+  addi x1 x0 (-1) -- 0xFFFFFFFF
+  addi x2 x0 (-1)
+  mulhu x3 x1 x2 -- x3 = 0xFFFFFFFE (unsigned high-32 of big number)
+
+progDivSigned :: Asm ()
+progDivSigned = do
+  addi x1 x0 (-20) -- 0xFFFFFFEC
+  addi x2 x0 3
+  div_ x3 x1 x2 -- x3 = -7 trunc-toward-zero (RISC-V quot, not floor)
+  rem_ x4 x1 x2 -- x4 = -20 - (-7)*3 = -20 + 21 = 1? wait: -20 / 3 = -6 (trunc) with rem -2
+  nop
+  nop
+
+progDivu :: Asm ()
+progDivu = do
+  addi x1 x0 100
+  addi x2 x0 7
+  divu x3 x1 x2 -- x3 = 14
+  remu x4 x1 x2 -- x4 = 2
+
+progRem :: Asm ()
+progRem = do
+  addi x1 x0 (-15)
+  addi x2 x0 4
+  rem_ x3 x1 x2 -- x3 = -3 (rem carries sign of dividend)
+  nop
+
+progRemu :: Asm ()
+progRemu = do
+  addi x1 x0 15
+  addi x2 x0 4
+  remu x3 x1 x2 -- x3 = 3
+  nop
+
+progDivZero :: Asm ()
+progDivZero = do
+  addi x1 x0 42
+  addi x2 x0 0 -- divisor = 0 → spec says Q = -1, R = rs1
+  divu x3 x1 x2 -- x3 = 0xFFFFFFFF
+  remu x4 x1 x2 -- x4 = 42
+
+progDivOverflow :: Asm ()
+progDivOverflow = do
+  li x1 (-2147483648) -- INT_MIN (0x80000000)
+  addi x2 x0 (-1) -- -1
+  div_ x3 x1 x2 -- x3 = INT_MIN (spec: no trap, return INT_MIN)
+  rem_ x4 x1 x2 -- x4 = 0
+
 -- * Differential driver -------------------------------------------
 
 {- | Run the program through Core + Reference; assert they agree on the
 final integer register file after @nSteps@ retired instructions.
+
+@nMOps@ is the count of RV32M ops in the program (or @0@ for pure
+RV32I). Each M op burns ~34 cycles through the iterative FU, so
+the clock-cycle budget gets padded by @34 * nMOps@ beyond the
+baseline @nSteps + 2@ — the Reference side still only walks
+@nSteps@ instructions.
 -}
-diffCore :: Asm () -> Int -> Assertion
-diffCore prog nSteps = do
+diffCore :: Asm () -> Int -> Int -> Assertion
+diffCore prog nSteps nMOps = do
   words_ <- case assemble prog of
     Left err -> assertFailure ("assemble failed: " P.++ P.show err)
     Right ws -> P.pure ws
-  let coreRegs = runCore words_ nSteps
+  let coreRegs = runCore words_ nSteps nMOps
       refRegs = runReference words_ nSteps
   -- Compare only registers that either side wrote; ignore unused.
   assertEqual
@@ -192,10 +305,14 @@ diffCore prog nSteps = do
 
 {- | Simulate the core for @nSteps@ retired instructions, returning the
 reconstructed register file state.
+
+@nMOps@ pads the clock-cycle budget for programs containing
+M-extension ops (each of which takes ~34 cycles through the
+iterative FU).
 -}
-runCore :: [BitVector 32] -> Int -> Map.Map Word32 Word32
-runCore words_ nSteps =
-  let cycles = nSteps P.+ 2 -- reset cycles (Clash System resetGen lasts longer than 1)
+runCore :: [BitVector 32] -> Int -> Int -> Map.Map Word32 Word32
+runCore words_ nSteps nMOps =
+  let cycles = nSteps P.+ 2 P.+ 34 P.* nMOps -- reset cycles + M-op stall budget
       trace =
         sampleN @System cycles $
           withClockResetEnable @System clockGen resetGen enableGen $
@@ -262,11 +379,19 @@ simHarness program =
   let progVec :: Vec ProgSize (BitVector 32)
       progVec = V.unsafeFromList (P.take (natValInt (CP.SNat @ProgSize)) padded)
       padded = program P.++ P.repeat 0x0000_0013
+      progSize :: CP.Unsigned 32
+      progSize = P.fromIntegral (natValInt (CP.SNat @ProgSize))
+      -- Wrap pc → index modulo ProgSize. M-extension tests extend the
+      -- clock budget well past the program tail (the iterative FU
+      -- stalls for 34 cycles per op) and the core keeps issuing NOPs
+      -- against whatever imem returns; without a wrap an out-of-range
+      -- 'fromIntegral' produces an undefined 'Index ProgSize' which
+      -- then infects decode as an X.
       pcToIdx :: BitVector 32 -> Index ProgSize
       pcToIdx pc =
         let wordIdx :: CP.Unsigned 32
             wordIdx = unpack (pc `shiftR` 2)
-         in P.fromIntegral wordIdx
+         in P.fromIntegral (wordIdx `P.mod` progSize)
       -- imem driven by pcFetch; 1-cycle register delay matches the
       -- pipelined core's sync-read expectation. Writeback trace
       -- paired with pcExec.

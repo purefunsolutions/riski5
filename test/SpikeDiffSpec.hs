@@ -42,10 +42,17 @@ import Riski5.Asm (
   assemble,
   beq,
   bne,
+  div_,
+  divu,
   labelUnplaced,
   li,
+  mul,
+  mulh,
+  mulhu,
   nop,
   placeAt,
+  rem_,
+  remu,
  )
 import Riski5.Asm qualified as Asm
 import Riski5.ISA
@@ -86,6 +93,17 @@ catalog =
   , ("BNE (not taken) falls through", progBneNotTaken, 3)
   , ("SLTI — signed compare-set", progSlti, 4)
   , ("Backward branch loop counter", progLoop, 7)
+  , -- RV32M — diff-verified against Spike's @--isa=rv32im@ golden model.
+    ("MUL — positive × positive low 32", progMulPos, 3)
+  , ("MUL — negative × positive low 32", progMulNeg, 3)
+  , ("MULH — signed × signed high 32", progMulhSigned, 3)
+  , ("MULHU — unsigned × unsigned high 32", progMulhu, 3)
+  , ("DIV — signed quot with negatives", progDivSigned, 4)
+  , ("DIVU — unsigned quot / rem", progDivu, 4)
+  , ("REM — signed remainder", progRem, 3)
+  , ("REMU — unsigned remainder", progRemu, 3)
+  , ("DIV by zero — Q = -1, R = rs1", progDivZero, 4)
+  , ("DIV overflow — MIN / -1 saturates", progDivOverflow, 4)
   ]
 
 progAddi :: Asm ()
@@ -150,6 +168,72 @@ progLoop = do
   loopL <- Asm.label
   addi x1 x1 (-1)
   bne x1 x0 loopL
+
+-- * RV32M programs (Spike --isa=rv32im)
+
+progMulPos :: Asm ()
+progMulPos = do
+  addi x1 x0 7
+  addi x2 x0 6
+  mul x3 x1 x2
+
+progMulNeg :: Asm ()
+progMulNeg = do
+  addi x1 x0 (-3)
+  addi x2 x0 5
+  mul x3 x1 x2
+
+progMulhSigned :: Asm ()
+progMulhSigned = do
+  addi x1 x0 (-1)
+  addi x2 x0 (-1)
+  mulh x3 x1 x2
+
+progMulhu :: Asm ()
+progMulhu = do
+  addi x1 x0 (-1)
+  addi x2 x0 (-1)
+  mulhu x3 x1 x2
+
+progDivSigned :: Asm ()
+progDivSigned = do
+  addi x1 x0 (-20)
+  addi x2 x0 3
+  div_ x3 x1 x2
+  nop
+
+progDivu :: Asm ()
+progDivu = do
+  addi x1 x0 100
+  addi x2 x0 7
+  divu x3 x1 x2
+  remu x4 x1 x2
+
+progRem :: Asm ()
+progRem = do
+  addi x1 x0 (-15)
+  addi x2 x0 4
+  rem_ x3 x1 x2
+
+progRemu :: Asm ()
+progRemu = do
+  addi x1 x0 15
+  addi x2 x0 4
+  remu x3 x1 x2
+
+progDivZero :: Asm ()
+progDivZero = do
+  addi x1 x0 42
+  addi x2 x0 0
+  divu x3 x1 x2
+  remu x4 x1 x2
+
+progDivOverflow :: Asm ()
+progDivOverflow = do
+  li x1 (-2147483648)
+  addi x2 x0 (-1)
+  div_ x3 x1 x2
+  rem_ x4 x1 x2
 
 -- * The diff
 
