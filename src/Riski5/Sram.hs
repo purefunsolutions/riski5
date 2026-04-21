@@ -13,7 +13,7 @@
 
 {- |
 Module      : Riski5.Sram
-Description : Async-SRAM controller for the DE2's 512 KB IS61LV25616-class chip.
+Description : FSM-based async-SRAM controller for the DE2's 512 KB IS61LV25616-class chip.
 
 The DE2 carries an 18-address-line × 16-bit asynchronous SRAM
 (256 K × 16 = 512 KB total). Per the DE2 User Manual table 4.17
@@ -29,40 +29,88 @@ the FPGA pins are:
   SRAM_LB_N         low-byte mask   (active LOW = byte enabled)
 @
 
-== Single-cycle constraint
+== T31a: explicit FSM with write recovery + 32-bit access
 
-Riski5's pipelineless core has no stall mechanism: every memory
-access must complete in one core cycle. The IS61LV25616 has
-≈ 10 ns access time; at our 40 MHz core clock (25 ns period) one
-half-word read/write completes well inside one cycle.
+Earlier phase-1C revisions exposed the chip as half-word-only with a
+combinational pin path and a single-cycle write. That worked for
+isolated accesses but two hazards were latent:
 
-A 32-bit access to a 16-bit chip would normally cost two cycles —
-which we can't afford without core surgery. Phase 1C therefore
-exposes the SRAM as a **16-bit half-word memory only**: byte and
-half-word loads/stores work in one cycle; word accesses
-(@be == 0xF@) take this controller's combinational read path
-(only the low half is meaningful) and any firmware that wants to
-move 32-bit data must do it as two half-word transfers. The
-firmware demo uses @lh@ / @lhu@ / @sh@ from @Riski5.Asm@.
+  1. __Back-to-back writes__ kept @WE_N@ low across cycles while
+     @SRAM_ADDR@ and @SRAM_DQ_O@ changed mid-flight — undefined on
+     a real chip (t_AW = 8 ns requires address stable before WE
+     rising). Never tripped because no phase-1 firmware issues
+     consecutive @SRAM@ writes, but a latent bug nonetheless.
+  2. __Read-after-write on the same address__ relied on the
+     simultaneous cycle-edge transitions @WE_N: low→high@ and
+     @OE_N: high→low@ completing within one 33 ns cycle — legal on
+     paper (t_WR = 0 ns) but no built-in margin.
 
-Note: full 32-bit access to SRAM is deliberately deferred to
-**phase 2**, when the core gains pipeline stages (an EX/MEM
-boundary that can introduce a stall slot for the second SRAM
-half-word). At that point this controller's interface stays the
-same; the bus / core just gain a back-pressure signal to gate
-the second cycle.
+T31a replaces the combinational pin drive with an explicit FSM that
+gives every write a __pulse + recovery__ cycle pair, and promotes
+every read to a full 32-bit __word-read__ (two back-to-back
+half-word fetches) so @LW@ works and the controller doesn't need
+to branch on access width.
 
-The CPU address inside the SRAM region is byte-addressed; the
-controller drops bit 0 to form the SRAM half-word index, and uses
-@be@ to derive @UB_N@ / @LB_N@ for byte selectivity.
+Cycle layout (each row = one 30 MHz cycle, 33.33 ns):
+
+@
+    SB / SH:  pulse    (WE=low, addr+data driven, ready=False)
+              recover  (WE=high, addr+data held → rising-edge latches,
+                         ready=True)
+
+    SW:       lo-pulse   (WE=low, addr=lo, data=lo-half, ready=False)
+              lo-recover (WE=high, addr=lo held, ready=False)
+              hi-pulse   (WE=low, addr=hi, data=hi-half, ready=False)
+              hi-recover (WE=high, addr=hi held, ready=True)
+
+    LB/LBU/LH/LHU/LW (uniform word read):
+              lo-pulse   (OE=low, addr=lo, ready=False;
+                           sramDqIn captures SRAM[lo] at cycle end)
+              hi-pulse   (OE=low, addr=hi, ready=False;
+                           sramDqIn captures SRAM[hi] at cycle end,
+                           wordLoReg latches the lo half)
+              commit     (ready=True, rdata = SRAM[hi]<<16 | SRAM[lo])
+@
+
+The core stalls through every non-terminal cycle via @readyS=False@.
+
+Uniform word-read simplifies the FSM (7 states instead of 13) and
+the 32-bit @rdata@ is a superset of what the core needs for LH/LB
+— the core's own load-width masking (see @loadMask@ / @extendLoad@
+in @Riski5.Core@) picks the right bits.
+
+== Cycle counts at 30 MHz (33.33 ns / cycle)
+
+@
+  Op                   Cycles   Wall time
+  LB / LBU / LH / LHU       3     100.00 ns
+  LW                        3     100.00 ns
+  SB / SH                   2      66.67 ns
+  SW                        4     133.33 ns
+@
+
+== Why this should close timing better
+
+Pre-T31a, @sramRdataS@ passed through a combinational chain:
+@external SRAM_DQ pin → FPGA input → byte-select mux → 32-bit rdata
+bus mux in Soc.hs → core writeback mux → rfile write port@. Each
+cycle of that chain had to settle inside 33 ns minus PLL / clock-tree
+skew. T31a breaks the chain at two points: @sramDqInS = register 0
+sramDqInRawS@ registers the chip input pin, and @wordLoReg@ latches
+the lo half one cycle before the hi half. The ALU / writeback cone
+now sees a pre-settled rdata, so Quartus should report a higher
+Fmax on the SRAM data path (the old design was already at 34 MHz;
+T31a is expected to lift the ceiling).
 
 == Simulation
 
 The board's pins are 'BiSignalIn' / 'BiSignalOut'-shaped from the
 core's perspective. For the Clash testbench we provide a
 behavioural model 'sramSim' that wraps the controller with an
-in-memory store, so 'test/SramSpec.hs' can run the full controller
-without any HDL black-box.
+in-memory store. The model latches writes on the __rising edge__
+of @WE_N@ (not on every @WE=low@ cycle) so a controller that skips
+the recovery cycle or cuts hold time short will silently fail the
+test instead of silently passing.
 -}
 module Riski5.Sram (
   -- * Pin bundles
@@ -99,45 +147,57 @@ data SramPins = SramPins
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
 
+-- * Controller FSM ------------------------------------------------
+
+{- | Controller state.
+
+'SIdle' doubles as both "no transaction" (when @selS@ is false) and
+__first cycle of any op__ (when @selS@ is true). Pin logic for
+'SIdle' branches on the bus signals to drive the first-cycle pins
+directly, so a new op starts on the same cycle it's requested.
+
+Terminal states ('SReadHiCommit', 'SHalfWriteRecover',
+'SWordWriteHiRecover') raise @readyS=True@ and the core advances
+at the edge into 'SIdle'.
+-}
+data SramState
+  = -- | Either no transaction or the first cycle of a new op.
+    SIdle
+  | -- | 2nd cycle of any read: driving the hi-half chip address.
+    SReadHiStall
+  | -- | 3rd cycle of any read: @rdata@ presented, ready=True.
+    SReadHiCommit
+  | -- | 2nd cycle of SB/SH: WE rising-edge latches the write.
+    SHalfWriteRecover
+  | -- | 2nd cycle of SW: lo-half WE rising-edge latch; addr+data held.
+    SWordWriteLoRecover
+  | -- | 3rd cycle of SW: driving WE low on the hi half.
+    SWordWriteHiPulse
+  | -- | 4th cycle of SW: hi-half WE rising-edge latch; ready=True.
+    SWordWriteHiRecover
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
 {- |
-SRAM controller.
-
-Combinational read/write directly into the SRAM — at 40 MHz the
-chip's 10 ns access time fits comfortably inside one core cycle.
-Returns @(rdata, pins)@.
-
-* @selS@ — slave-select from the bus decoder ('SlaveSram').
-* @addrS@ — byte-addressed CPU address inside the SRAM region;
-  the lower 19 bits index the 512 KB chip, with bit 0 picking
-  the byte lane within a half-word.
-* @wdataS@ — 32-bit write data; the byte lanes selected by @beS@
-  are routed to the SRAM through @SRAM_UB_N@ / @SRAM_LB_N@.
-* @beS@ — per-byte write-enable; nonzero on the lanes touching
-  this half-word triggers a SRAM write.
-* @sramDqIn@ — what the SRAM is currently driving on @SRAM_DQ@
-  (sampled when @SRAM_OE_N == 0@ and the controller is reading).
+SRAM controller. See module header for the FSM layout + timing
+table.
 -}
 sram ::
   forall dom.
   (HiddenClockResetEnable dom) =>
-  -- | slave-select
+  -- | slave-select from the bus decoder
   Signal dom Bool ->
   -- | CPU byte address
   Signal dom (BitVector 32) ->
   -- | 32-bit write data
   Signal dom (BitVector 32) ->
-  -- | byte-enable
+  -- | byte-enable (nonzero on stores; zero on loads)
   Signal dom (BitVector 4) ->
-  -- | read-enable (unused — read path is always live when selected)
+  -- | read-enable (unused — "read" is inferred from @be == 0@)
   Signal dom Bool ->
-  -- | data driven by the SRAM on the previous half-cycle
+  -- | data driven by the SRAM on @SRAM_DQ@ this cycle (external input)
   Signal dom (BitVector 16) ->
-  {- | @(rdata, pins, ready)@. @ready@ is False on the first cycle
-  of a read with a new address (the controller has issued
-  @SRAM_OE_N@ low but the registered @SRAM_DQ_I@ doesn't yet
-  reflect this address); the core uses it to stall. True for
-  writes, idles, and subsequent cycles of the same-address read.
-  -}
+  -- | @(rdata, pins, ready)@
   ( Signal dom (BitVector 32)
   , Signal dom SramPins
   , Signal dom Bool
@@ -145,160 +205,256 @@ sram ::
 sram selS addrS wdataS beS _renS sramDqInRawS =
   (rdataS, pinsS, readyS)
  where
-  -- Register the off-chip SRAM data input once, *inside* the
-  -- controller. This costs one cycle of read latency in exchange
-  -- for round-trip slack on real hardware. At 40 MHz we have 25 ns
-  -- per cycle and the unregistered path
-  --   SRAM_ADDR pin → SRAM 10 ns access → SRAM_DQ pin → bus mux
-  --   → core writeback flop
-  -- consumes ~25–30 ns end-to-end, which doesn't close timing on
-  -- the slow corner. Registering at the FPGA input gives the input
-  -- flop a full cycle to capture, and the firmware compensates by
-  -- doing each SRAM read twice (first arms the pipeline, second
-  -- collects). Phase-2 pipelining will fold this into the EX/MEM
-  -- stage and the second-read kludge goes away.
+  -- Register the off-chip SRAM DQ input once, inside the controller.
+  -- One cycle of read latency in exchange for slack on the pin →
+  -- input-flop path; see module header.
   sramDqInS = register 0 sramDqInRawS
-  -- The CPU address is byte-addressed, but the SRAM is half-word
-  -- organised. Drop bit 0 to form the chip address.
-  sramAddrS = (\a -> slice d18 d1 (a - sramBase)) <$> addrS
 
-  -- Track the previous-cycle SRAM address + read-state so we can
-  -- emit a back-pressure 'ready' signal: a freshly-issued read
-  -- needs one cycle to flow address→pin→SRAM→pin→input register;
-  -- ready stays low for that first cycle so the core stalls.
-  prevAddrS = register 0 sramAddrS
-  isReadOpS =
-    ( \op -> case op of
-        SramOpRead -> True
-        _ -> False
-    )
-      <$> sramOpS
-  prevWasReadS = register False isReadOpS
-  readyS =
-    ( \op cur prev prevRead ->
-        case op of
-          SramOpIdle -> True
-          SramOpWrite {} -> True
-          SramOpRead -> prevRead && cur == prev
-    )
-      <$> sramOpS
-      <*> sramAddrS
-      <*> prevAddrS
-      <*> prevWasReadS
+  -- Half-word index of the CPU's addressed half-word. Bit 0 may be
+  -- 0 or 1 depending on @addr[1]@ (hi-half within a word).
+  halfIdxS = (\a -> slice d18 d1 (a - sramBase)) <$> addrS
 
-  -- Byte lane within the addressed half-word — picks which byte of
-  -- a halfword gets routed into the upper / lower SRAM lanes.
+  -- Word-aligned chip addresses. For reads (uniform word access),
+  -- lo is the even index, hi is the odd index of the surrounding
+  -- 32-bit word. Works correctly regardless of whether the CPU
+  -- access is word-aligned (LW/SW), half-aligned (LH), or byte-aligned
+  -- (LB) because we always read the entire word and let the core's
+  -- load logic mask the right bits.
+  wordLoAddrS = (\h -> h .&. complement 1) <$> halfIdxS
+  wordHiAddrS = (\h -> h .|. 1) <$> halfIdxS
+
+  -- Decoded op shape — combinational from bus signals.
+  isWriteS = (\be -> be /= 0) <$> beS
+  isWordS = (\be -> be == 0b1111) <$> beS
+
+  -- FSM state register.
+  stateS = register SIdle nextStateS
+  nextStateS = nextState <$> stateS <*> selS <*> isWriteS <*> isWordS
+
+  -- Low-half register for word reads. Latched at the end of
+  -- 'SReadHiStall' when @sramDqInS@ holds the freshly-registered lo
+  -- half. On the following cycle ('SReadHiCommit') the hi half
+  -- appears on @sramDqInS@ and we combine them.
+  wordLoReg = register 0 wordLoNextS
+  wordLoNextS =
+    ( \st dq old -> case st of
+        SReadHiStall -> dq
+        _ -> old
+    )
+      <$> stateS
+      <*> sramDqInS
+      <*> wordLoReg
+
+  -- Ready. True on terminal cycles only; False during every other
+  -- cycle (including 'SIdle' with @selS@ active, which is the first
+  -- cycle of a new op).
+  readyS = ready <$> stateS <*> selS
+
+  -- Pin bundle.
+  pinsS =
+    pinsFor
+      <$> stateS
+      <*> selS
+      <*> isWriteS
+      <*> isWordS
+      <*> halfIdxS
+      <*> wordLoAddrS
+      <*> wordHiAddrS
+      <*> byteSelS
+      <*> beS
+      <*> wdataS
+
+  -- Which half of the 32-bit CPU word the current half / byte access
+  -- targets (hi if @addr[1] == 1@). Drives half-word write data
+  -- routing and byte-enable selection for SB / SH.
   byteSelS = (\a -> testBit a 1) <$> addrS
 
-  -- Decode beS / addr bit 1 into 'a write of any byte to either
-  -- SRAM lane'. With phase-1C's half-word-only contract we treat
-  -- the four CPU byte lanes as two SRAM halves: lanes 0/1 → low
-  -- half (addr bit 1 == 0), lanes 2/3 → high half (addr bit 1 == 1).
-  -- Within the chosen half, individual byte enables drive UB / LB.
-  sramOpS =
-    ( \sel be hi ->
-        if not sel
-          then SramOpIdle
-          else
-            let lowByte = if hi then testBit be 2 else testBit be 0
-                hiByte = if hi then testBit be 3 else testBit be 1
-             in case (lowByte, hiByte) of
-                  (False, False) -> SramOpRead
-                  _ -> SramOpWrite lowByte hiByte
-    )
-      <$> selS
-      <*> beS
-      <*> byteSelS
+  -- Read data presented to the core. Always a full 32-bit word from
+  -- SRAM; the core's load logic masks to the requested width.
+  rdataS = rdata <$> stateS <*> sramDqInS <*> wordLoReg
 
-  -- The half-word the CPU wrote, projected from the requested CPU
-  -- byte lane onto the SRAM data lines.
-  sramWdataS =
-    ( \w hi ->
-        if hi
-          then slice d31 d16 w
-          else slice d15 d0 w
-    )
-      <$> wdataS
-      <*> byteSelS
+-- * FSM helpers ----------------------------------------------------
 
-  -- Drive the pin bundle.
-  pinsS =
-    ( \op a d ->
-        case op of
-          SramOpIdle ->
-            SramPins
-              { sramAddr = a
-              , sramDqOut = 0
-              , sramDqOe = False
-              , sramCeN = high -- chip disabled
-              , sramOeN = high
-              , sramWeN = high
-              , sramUbN = high
-              , sramLbN = high
-              }
-          SramOpRead ->
-            SramPins
-              { sramAddr = a
-              , sramDqOut = 0
-              , sramDqOe = False
-              , sramCeN = low
-              , sramOeN = low
-              , sramWeN = high
-              , sramUbN = low
-              , sramLbN = low
-              }
-          SramOpWrite lo hi ->
-            SramPins
-              { sramAddr = a
-              , sramDqOut = d
-              , sramDqOe = True
-              , sramCeN = low
-              , sramOeN = high
-              , sramWeN = low
-              , sramUbN = if hi then low else high
-              , sramLbN = if lo then low else high
-              }
-    )
-      <$> sramOpS
-      <*> sramAddrS
-      <*> sramWdataS
+-- | Next-state transition function.
+nextState :: SramState -> Bool -> Bool -> Bool -> SramState
+nextState SIdle False _ _ = SIdle
+nextState SIdle True isWrite isWord =
+  case (isWrite, isWord) of
+    (True, True) -> SWordWriteLoRecover -- cycle 0 of SW was the lo pulse
+    (True, False) -> SHalfWriteRecover -- cycle 0 of SB/SH was the pulse
+    (False, _) -> SReadHiStall -- cycle 0 of any read was the lo pulse
+nextState SReadHiStall _ _ _ = SReadHiCommit
+nextState SReadHiCommit _ _ _ = SIdle
+nextState SHalfWriteRecover _ _ _ = SIdle
+nextState SWordWriteLoRecover _ _ _ = SWordWriteHiPulse
+nextState SWordWriteHiPulse _ _ _ = SWordWriteHiRecover
+nextState SWordWriteHiRecover _ _ _ = SIdle
 
-  -- Read data: zero-extend the SRAM half-word into the CPU's 32-bit
-  -- read-data bus, replicating onto the lane the CPU expects so a
-  -- byte read out of the high lane lands in the right shifter slot.
-  rdataS =
-    ( \dqIn hi ->
-        if hi
-          then (zeroExtend dqIn :: BitVector 32) `shiftL` 16
-          else zeroExtend dqIn
-    )
-      <$> sramDqInS
-      <*> byteSelS
+-- | @readyS@ value for a given state.
+ready :: SramState -> Bool -> Bool
+ready SIdle sel = not sel
+ready SReadHiStall _ = False
+ready SReadHiCommit _ = True
+ready SHalfWriteRecover _ = True
+ready SWordWriteLoRecover _ = False
+ready SWordWriteHiPulse _ = False
+ready SWordWriteHiRecover _ = True
 
--- * Internal -------------------------------------------------------
+{- | Pin bundle for the current cycle.
 
-{- | Decoded bus operation. Internal, not exported. The two booleans
-on @SramOpWrite@ are the per-byte enables for low and high SRAM
-lanes respectively.
+When in 'SIdle' with @selS@ active, drives the __first cycle of the
+pending op__ (read lo-pulse, half-write pulse, or word-write lo-pulse)
+so the stall slot is repurposed to drive the initial pulse. Saves
+one cycle per access vs the "start in next cycle" layout.
 -}
-data SramOp
-  = SramOpIdle
-  | SramOpRead
-  | SramOpWrite !Bool !Bool
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFDataX)
+pinsFor ::
+  SramState ->
+  -- | selS
+  Bool ->
+  -- | isWriteS
+  Bool ->
+  -- | isWordS
+  Bool ->
+  -- | halfIdxS (half-word index from CPU addr)
+  BitVector 18 ->
+  -- | wordLoAddrS (word-aligned lo chip addr)
+  BitVector 18 ->
+  -- | wordHiAddrS (word-aligned hi chip addr)
+  BitVector 18 ->
+  -- | byteSelS (half is hi half of CPU word)
+  Bool ->
+  -- | beS
+  BitVector 4 ->
+  -- | wdataS
+  BitVector 32 ->
+  SramPins
+pinsFor st sel isWrite isWord halfIdx wLo wHi byteHi be wdata = case st of
+  SIdle
+    | not sel -> idlePins
+    | isWord && isWrite -> wordWritePulse wLo (slice d15 d0 wdata)
+    | isWord && not isWrite -> wordReadPulse wLo
+    | not isWord && isWrite ->
+        halfWritePulse halfIdx (halfWdata wdata byteHi) (halfLoLane byteHi be) (halfHiLane byteHi be)
+    | otherwise -> wordReadPulse wLo
+  SReadHiStall -> wordReadPulse wHi
+  SReadHiCommit -> wordReadPulse wHi
+  SHalfWriteRecover ->
+    halfWriteRecover halfIdx (halfWdata wdata byteHi) (halfLoLane byteHi be) (halfHiLane byteHi be)
+  SWordWriteLoRecover -> wordWriteRecover wLo (slice d15 d0 wdata)
+  SWordWriteHiPulse -> wordWritePulse wHi (slice d31 d16 wdata)
+  SWordWriteHiRecover -> wordWriteRecover wHi (slice d31 d16 wdata)
+
+-- | Half-word data to drive for a half / byte write — pick the lo
+-- or hi half of the 32-bit CPU word based on @addr[1]@.
+halfWdata :: BitVector 32 -> Bool -> BitVector 16
+halfWdata w True = slice d31 d16 w
+halfWdata w False = slice d15 d0 w
+
+-- | Lo-byte-lane enable (maps to @LB_N@) for a half / byte write.
+halfLoLane :: Bool -> BitVector 4 -> Bool
+halfLoLane True be = testBit be 2
+halfLoLane False be = testBit be 0
+
+-- | Hi-byte-lane enable (maps to @UB_N@) for a half / byte write.
+halfHiLane :: Bool -> BitVector 4 -> Bool
+halfHiLane True be = testBit be 3
+halfHiLane False be = testBit be 1
+
+-- ** Individual per-op pin bundles --------------------------------
+
+-- | No transaction: chip disabled.
+idlePins :: SramPins
+idlePins =
+  SramPins
+    { sramAddr = 0
+    , sramDqOut = 0
+    , sramDqOe = False
+    , sramCeN = high
+    , sramOeN = high
+    , sramWeN = high
+    , sramUbN = high
+    , sramLbN = high
+    }
+
+-- | Read pulse / hold. Both byte lanes enabled; the core masks later.
+wordReadPulse :: BitVector 18 -> SramPins
+wordReadPulse a =
+  SramPins
+    { sramAddr = a
+    , sramDqOut = 0
+    , sramDqOe = False
+    , sramCeN = low
+    , sramOeN = low
+    , sramWeN = high
+    , sramUbN = low
+    , sramLbN = low
+    }
+
+-- | Half-word write pulse — WE low, UB / LB per the per-byte enables
+-- of the addressed half (byte 0 → LB, byte 1 → UB inside the
+-- half-word's position in the 32-bit CPU word).
+halfWritePulse :: BitVector 18 -> BitVector 16 -> Bool -> Bool -> SramPins
+halfWritePulse a d loByte hiByte =
+  SramPins
+    { sramAddr = a
+    , sramDqOut = d
+    , sramDqOe = True
+    , sramCeN = low
+    , sramOeN = high
+    , sramWeN = low
+    , sramUbN = if hiByte then low else high
+    , sramLbN = if loByte then low else high
+    }
+
+-- | Half-word write recovery — WE high (rising edge at entry latches
+-- the write), addr + data held from the pulse cycle.
+halfWriteRecover :: BitVector 18 -> BitVector 16 -> Bool -> Bool -> SramPins
+halfWriteRecover a d loByte hiByte =
+  (halfWritePulse a d loByte hiByte) {sramWeN = high}
+
+-- | Word write pulse — both byte lanes enabled, WE low.
+wordWritePulse :: BitVector 18 -> BitVector 16 -> SramPins
+wordWritePulse a d =
+  SramPins
+    { sramAddr = a
+    , sramDqOut = d
+    , sramDqOe = True
+    , sramCeN = low
+    , sramOeN = high
+    , sramWeN = low
+    , sramUbN = low
+    , sramLbN = low
+    }
+
+-- | Word write recovery — WE high, both byte lanes enabled.
+wordWriteRecover :: BitVector 18 -> BitVector 16 -> SramPins
+wordWriteRecover a d = (wordWritePulse a d) {sramWeN = high}
+
+-- ** Read data mux ------------------------------------------------
+
+-- | Read data presented to the core on the commit cycle. On every
+-- other state the value is don't-care (the core doesn't capture it
+-- unless @readyS@ is True, which only happens on 'SReadHiCommit' for
+-- reads).
+rdata :: SramState -> BitVector 16 -> BitVector 16 -> BitVector 32
+rdata SReadHiCommit dqIn wordLo =
+  ((zeroExtend dqIn :: BitVector 32) `shiftL` 16)
+    .|. (zeroExtend wordLo :: BitVector 32)
+rdata _ _ _ = 0
 
 -- * Behavioural simulation model -----------------------------------
 
 {- |
 Simulation wrapper: run 'sram' against an in-memory half-word store
-of size @n@. Returns the same @(rdata, pins)@ pair, along with the
-internal storage signal so tests can sample what's been written.
+of size @n@. Returns the same @(rdata, pins, ready)@ tuple as the
+real controller, along with the internal storage signal so tests
+can sample what's been written.
 
-The store updates one cycle after a write request (modelling the
-SRAM's WE-rising-edge latch), and reads are combinational — exactly
-what the real chip does at the timescales we care about (10 ns
-access ≪ 25 ns clock period).
+Unlike earlier revisions, this model latches writes on the __rising
+edge__ of @WE_N@ (not on every @WE=low@ cycle). That way a
+controller that forgets the recovery cycle or runs address / data
+through WE transitions will silently fail the test instead of
+silently passing.
 -}
 sramSim ::
   forall dom n.
@@ -321,39 +477,47 @@ sramSim ::
   )
 sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS, readyS)
  where
-  -- Storage: register over Vec n (BitVector 16). Updates on the
-  -- next clock edge after a write request lands.
+  -- Storage: register over Vec n (BitVector 16). Updates at each
+  -- WE_N rising edge when CE_N is asserted.
   storeS = register initial nextStoreS
 
-  -- Project an 18-bit chip address into the model's @Index n@ for
-  -- whatever @n@ the test happens to choose. Tests size the model
-  -- a lot smaller than the real 256K half-words.
   toIndex :: BitVector 18 -> Index n
   toIndex bv = fromInteger (toInteger bv `mod` toInteger (maxBound :: Index n) + 1)
 
-  -- Combinational read of the addressed half-word from the store.
+  -- Combinational read of the addressed half-word from the store —
+  -- using whatever chip address the controller is currently driving
+  -- (not the CPU address directly), so word reads' second half
+  -- returns the right value.
   dqInS =
-    (\store a -> store V.!! toIndex (slice d18 d1 (a - sramBase)))
+    (\store p -> store V.!! toIndex (sramAddr p))
       <$> storeS
-      <*> addrS
+      <*> pinsS
 
   (rdataS, pinsS, readyS) = sram selS addrS wdataS beS renS dqInS
 
-  -- Apply the controller's pin output to the model on each cycle.
+  -- Track WE_N across cycles so we can detect rising edges (which
+  -- is when the real chip latches the write).
+  prevWeNS = register high (sramWeN <$> pinsS)
+  weRisingS =
+    (\prev curr -> prev == low && curr == high)
+      <$> prevWeNS
+      <*> (sramWeN <$> pinsS)
+
   nextStoreS =
-    ( \store p ->
-        if sramWeN p == low && sramCeN p == low
+    ( \store p rising ->
+        if rising && sramCeN p == low
           then
             let ix :: Index n
                 ix = toIndex (sramAddr p)
-                old = store V.!! ix
+                oldHalfWord = store V.!! ix
                 lowMask, hiMask :: BitVector 16
                 lowMask = if sramLbN p == low then 0x00FF else 0
                 hiMask = if sramUbN p == low then 0xFF00 else 0
                 mask = lowMask .|. hiMask
-                new = (old .&. complement mask) .|. (sramDqOut p .&. mask)
-             in V.replace ix new store
+                newHalfWord = (oldHalfWord .&. complement mask) .|. (sramDqOut p .&. mask)
+             in V.replace ix newHalfWord store
           else store
     )
       <$> storeS
       <*> pinsS
+      <*> weRisingS

@@ -13,7 +13,45 @@ rules around maintaining it.
 
 ## In flight
 
-- (nothing — phase 2B shipped; see "Done" below.)
+- (nothing — T31a shipped 2026-04-21; see "Done — phase 1C completion" below.)
+
+## Done — phase 1C completion
+
+- **T31a. ✓ SRAM 32-bit word access (2026-04-21).** `Riski5.Sram`
+  rewritten around an explicit FSM that gives every write a
+  pulse + recovery cycle pair (fixing the latent back-to-back
+  `WE_N`-held-low hazard) and promotes every read to a 3-cycle
+  32-bit word fetch. `LW` returns the full word; `LH` / `LB`
+  still work because the core's own load-width masking picks
+  the right bits from the 32-bit rdata. Byte / half-word writes
+  keep their per-lane `UB_N` / `LB_N` gating. Cycle costs at
+  30 MHz: any read 3 cycles (100 ns); SB / SH 2 cycles (66.67 ns);
+  SW 4 cycles (133.33 ns).
+  `sramSim` tightened to latch only on the `WE_N` rising edge —
+  previously it committed on any `WE=low` cycle, which silently
+  tolerated controllers that skipped the recovery cycle. Three
+  new SramSpec cases cover 32-bit SW/LW round-trip, back-to-back
+  SH overwrite (regression for the latent bug), and same-address
+  read-after-write. Full suite **129 / 129 green** (SramSpec 6/6
+  including the 3 new T31a cases). Hello firmware extended with
+  `SRAM W32 OK` / `SRAM W32 ERR got=0xXXXXXXXX` UART diagnostic
+  and an LCD "half A5A5 w DEAD" status line; firmware 551 / 1024
+  words.
+  **Silicon: green.** `nios2-terminal` from the freshly flashed
+  DE2 showed `hello, world` / `M-ext OK` / `SRAM OK` / `SRAM W32 OK`
+  on first boot — the 32-bit round-trip at `0x2000_0004` with
+  `0xDEADBEEF` survived the SW → LW trip through the off-chip
+  IS61LV25616 and the FSM combined the two half-word reads back
+  into a single 32-bit word correctly. Fit report: 10,300 LEs
+  (+32 vs pre-T31a for the FSM state + `wordLoReg`; 31 % of
+  EP2C35); Fmax 32.7 MHz at slow-85C (vs pre-T31a 32.86 MHz — a
+  0.16 MHz regression within noise, not the uptick expected).
+  The critical path the STA report flags is `altsyncram imem
+  address register → regfile[N]` at 30.5 ns data delay — the
+  pipelineless fetch → decode → ALU → writeback cone, *not* the
+  SRAM data path, so T31a's registration didn't move the
+  overall ceiling. Breaking that cone needs proper pipelining
+  (phase-2 P2-A), not more combinational shortening.
 
 ## Phase-2+ planning artefacts
 
@@ -271,9 +309,8 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
 
 - **Phase 1B** (T8–T25): ALU, regfile, core, CSRs, SoC, DE2 top,
   hello-world on hardware, InstrCatalog, on-board test agent, MemSpec.
-- **Phase 1C** (T26–T31): SRAM controller + tests + firmware demo.
-  Phase-1C exposes the SRAM as **half-word (16-bit) memory only**;
-  see also T31a below for the deferred 32-bit-word access work.
+- **Phase 1C** (T26–T31, incl. T31a): SRAM controller + tests +
+  firmware demo. 32-bit word access landed 2026-04-21.
 
 - **T31b. Optimize the pipelineless single-cycle core — explored;
   most gains deferred to phase 2.**
@@ -316,14 +353,8 @@ Remaining phase-1 work (T8–T44) is detailed in the plan; summary:
   tree is consistent). Revisit if the log ever needs to be
   published externally.
 
-- **T31a. SRAM 32-bit (word) accesses — partially unblocked,
-  still phase 2.** The bus + core now carry a back-pressure
-  `ready` signal (T31c, below), so multi-cycle slaves can stall
-  the core. The remaining work for 32-bit SRAM access is just
-  the controller-side state machine that issues two half-word
-  reads/writes in sequence and only asserts `ready` after the
-  second one settles. Lift to phase 2 alongside pipelining so
-  the natural EX/MEM split absorbs the back-pressure cleanly.
+- **T31a. ✓ SRAM 32-bit word access — shipped 2026-04-21** (see
+  "Done — phase 1C completion" above).
 
 - **T31c. Core back-pressure / multi-cycle memory — done in
   phase 1C.** Added a `ready` output from `Riski5.Sram.sram`
@@ -388,11 +419,8 @@ for the next session's take:
   addresses) should re-test green — phase-1C hit a back-to-back
   bus-contention issue that the stall should now cover.
 
-- **P2-F. 32-bit SRAM access (T31a).** Extend the SRAM
-  controller FSM to issue two half-word accesses per 32-bit `lw`
-  / `sw`; holding `ready` low across both gives the core the
-  natural two-cycle stall. The bus/core plumbing is already done
-  from T31c.
+- **P2-F. 32-bit SRAM access (T31a) — done 2026-04-21** (in
+  phase 1C, not phase 2; see "Done — phase 1C completion" above).
 
 - **P2-G. Re-target PLL.** Once the critical path is shorter,
   walk `Dom40` upward (60, 80, 100 MHz?) via the ALTPLL mult/div

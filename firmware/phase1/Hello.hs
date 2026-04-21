@@ -122,44 +122,90 @@ helloFirmware = do
   uartString "M-ext FAIL\n"
   placeAt afterMextL
 
-  -- SRAM round-trip self-test (T30). Single-address: write 0xA5A5
-  -- to base, settle, read back twice (controller registers
-  -- SRAM_DQ_I one cycle on hardware-timing-closure grounds — see
-  -- Riski5.Sram). Display the result on the LCD, light an LED.
-  -- The SRAM controller now drives a back-pressure 'ready' signal
-  -- that stalls the core until the read result is stable. Firmware
-  -- doesn't need explicit delays or double-reads any more.
+  -- Reset the SRAM failure accumulator (hexReg) — the M-ext block
+  -- above left it nonzero iff M-ext failed; the LCD summary below
+  -- only reflects SRAM status.
+  add hexReg x0 x0
+
+  -- SRAM half-word round-trip (T30). Writes 0xA5A5 to the first
+  -- SRAM half-word, reads back via LHU, compares to the expected
+  -- pattern.
   li scratchReg 0xA5A5
   sh sramReg scratchReg 0
   lhu resultReg sramReg 0
 
   li scratchReg 0xA5A5
-  sramOk <- labelUnplaced
-  beq resultReg scratchReg sramOk
+  sramHalfOk <- labelUnplaced
+  beq resultReg scratchReg sramHalfOk
 
-  -- Failure path: light LEDG[8], UART-log the bad read-back value,
-  -- write \"riski5: SRAM ERR\" to the LCD.
-  ledgSet 0x100
+  -- Half-word failure path: flag it in hexReg, log the bad value.
+  li tmpReg 1
+  or_ hexReg hexReg tmpReg
   uartString "SRAM ERR got=0x"
   uartHex16 resultReg
-  uartChar 0x0A -- newline
+  uartChar 0x0A
+  sramHalfAfter <- labelUnplaced
+  j sramHalfAfter
+
+  placeAt sramHalfOk
+  uartString "SRAM OK\n"
+
+  placeAt sramHalfAfter
+
+  -- T31a: 32-bit SRAM round-trip. The SRAM FSM now splits the access
+  -- into two back-to-back half-word transactions with pulse + recovery
+  -- for writes and a registered-input word-read combine for loads;
+  -- firmware just sees a 4-cycle SW and 3-cycle LW through the
+  -- ready-stall path. Tests SRAM[0..3] concurrently with the
+  -- half-word test above (lo half has 0xA5A5, hi half is fresh).
+  -- Use an alternating-bit pattern far from the half-word test to
+  -- stress byte-lane routing across the full word.
+  li scratchReg 0xDEADBEEF
+  sw sramReg scratchReg 4
+  lw resultReg sramReg 4
+
+  li scratchReg 0xDEADBEEF
+  sramWordOk <- labelUnplaced
+  beq resultReg scratchReg sramWordOk
+
+  -- Word failure path: flag it in hexReg, log both halves.
+  li tmpReg 2
+  or_ hexReg hexReg tmpReg
+  uartString "SRAM W32 ERR got=0x"
+  srli tmpReg resultReg 16
+  uartHex16 tmpReg
+  uartHex16 resultReg
+  uartChar 0x0A
+  sramWordAfter <- labelUnplaced
+  j sramWordAfter
+
+  placeAt sramWordOk
+  uartString "SRAM W32 OK\n"
+
+  placeAt sramWordAfter
+
+  -- Combined SRAM summary for LCD + LEDs.
+  sramAllOk <- labelUnplaced
+  beq hexReg x0 sramAllOk
+
+  -- Any failure: light LEDG[8] and report on LCD.
+  ledgSet 0x100
   lcdCmd 0x80
   lcdString "riski5: SRAM ERR"
-  sramAfter <- labelUnplaced
-  j sramAfter
+  sramLcdAfter <- labelUnplaced
+  j sramLcdAfter
 
-  placeAt sramOk
-  -- Success path: light LEDR[17], UART-banner \"SRAM OK\", write to LCD.
+  placeAt sramAllOk
+  -- Both tests green: light LEDR[17], banner on LCD.
   ledrSet 0x20000
-  uartString "SRAM OK\n"
   lcdCmd 0x80
   lcdString "riski5: SRAM OK "
 
-  placeAt sramAfter
+  placeAt sramLcdAfter
 
   -- Line 2: a fixed status line.
   lcdCmd 0xC0
-  lcdString " expected A5A5  "
+  lcdString "half A5A5 w DEAD"
 
   spin <- label
   j spin
