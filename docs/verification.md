@@ -180,20 +180,21 @@ peripheral.
 ### Layer 2 — RVFI + YosysHQ/riscv-formal on the Clash-emitted Verilog
 
 **Status:** live as of 2026-04-21. All 37 per-instruction proofs,
-all five wider proof families (`pc_fwd`, `pc_bwd`, `reg`, `causal`,
-`ill`), plus the **Zicsr** suite — `csrw_<csr>` for each of the
-six M-mode CSRs we implement (`mstatus`, `mtvec`, `mepc`,
-`mcause`, `mtval`, `mscratch`), and `csrc_any_<csr>` for the
-three purely-CSR-mutated ones (`mstatus`, `mtvec`, `mscratch`) —
-PASS. The three trap-written CSRs (`mepc`, `mcause`, `mtval`)
-are out of scope for `csrc_any`: its shadow-register model
-assumes the CSR is only mutated by CSR instructions, so any
-trap-retire (which our core uses to push `mcause`/`mepc`/
-`mtval`) falsely invalidates the consistency claim. `csrw_*`
-alone still pins the per-CSR-instruction contract on all six.
-`nix build .#riski5-formal` runs the whole suite and writes
-`summary.txt` + per-check counter-example directories into
-`$out`.
+six wider proof families (`pc_fwd`, `pc_bwd`, `reg`, `causal`,
+`ill`, `unique`), plus the **Zicsr** suite — `csrw_<csr>` for
+each of the six M-mode CSRs we implement (`mstatus`, `mtvec`,
+`mepc`, `mcause`, `mtval`, `mscratch`), and `csrc_any_<csr>` for
+the three purely-CSR-mutated ones (`mstatus`, `mtvec`,
+`mscratch`) — PASS. Total: **52 / 52**. The three trap-written
+CSRs (`mepc`, `mcause`, `mtval`) are out of scope for
+`csrc_any`: its shadow-register model assumes the CSR is only
+mutated by CSR instructions, so any trap-retire (which our core
+uses to push `mcause`/`mepc`/`mtval`) falsely invalidates the
+consistency claim. `csrw_*` alone still pins the per-CSR-
+instruction contract on all six.
+`nix build .#riski5-formal` runs the whole suite (boots in
+~2 min 37 sec on 32 cores) and writes `summary.txt` + per-check
+counter-example directories into `$out`.
 
 [`YosysHQ/riscv-formal`](https://github.com/YosysHQ/riscv-formal)
 is the industry-standard formal-verification harness for
@@ -302,7 +303,7 @@ load.
 | Reference executor + Hedgehog | Differential testing (CPU semantics) | Low | 1A+ | Live |
 | Spike (official RV ISS) triple-diff | Independent oracle (CPU semantics) | Medium (binutils + dtc on devshell) | 1A+ | Live (9/9 catalog programs green) |
 | Verilator + verilambda SoC sim | Peripheral / bus protocol testing | Medium (shim setup) | 1B | Live (caught the Avalon-MM UART stall bug) |
-| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | 1B | Live (37/37 insn + pc_fwd/pc_bwd/reg/causal/ill + 6 csrw + 3 csrc_any PASS; caught 2 real bugs) |
+| RVFI + `riscv-formal` | Bounded formal proof on Verilog | Medium (harness setup) | 1B | Live (37/37 insn + pc_fwd/pc_bwd/reg/causal/ill/unique + 6 csrw + 3 csrc_any PASS; caught 2 real bugs) |
 | Liquid Haskell | Static refinement types | Medium-high | 2+ | Opt-in, not adopted |
 
 The phase-1 deal: **Layer 1 now, Layer 1.75 next, Layer 2 right after,
