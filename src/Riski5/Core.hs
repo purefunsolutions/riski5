@@ -789,9 +789,9 @@ core imemData dmemRData stallS =
 
   exMemNextS :: Signal dom ExMem
   exMemNextS =
-    ( \stall ie xWb xAddr xWd xBe xRen xTrap xCsrsNext xCsrsPre xRs1 xRs2 xMem ->
+    ( \stall cur ie xWb xAddr xWd xBe xRen xTrap xCsrsNext xCsrsPre xRs1 xRs2 xMem ->
         if stall
-          then bubbleExMem
+          then cur -- hold frozen on stall — don't drain to bubble
           else
             let (rd, wbData, wbEn) = case xWb of
                   Just (r, v) -> (r, v, True)
@@ -817,6 +817,7 @@ core imemData dmemRData stallS =
                   }
     )
       <$> stallInternalS
+      <*> exMemS
       <*> idExS
       <*> xWbWithMdS
       <*> xDmemAddrS
@@ -845,8 +846,9 @@ core imemData dmemRData stallS =
 
   memWbNextS :: Signal dom MemWb
   memWbNextS =
-    ( \em ->
-        MemWb
+    ( \stall cur em ->
+        if stall then cur
+        else MemWb
           { mwPc = emPc em
           , mwInstr = emInstr em
           , mwMInstr = emMInstr em
@@ -866,7 +868,9 @@ core imemData dmemRData stallS =
           , mwValid = emValid em
           }
     )
-      <$> exMemS
+      <$> stallInternalS
+      <*> memWbS
+      <*> exMemS
 
   -- ====================================================================
   -- W stage — regfile write + RVFI retire event
@@ -874,12 +878,16 @@ core imemData dmemRData stallS =
 
   writeBackOutS :: Signal dom (Maybe (BitVector 5, BitVector 32))
   writeBackOutS =
-    ( \m ->
-        if mwValid m && mwWbEn m
-          then Just (mwRd m, mwWbData m)
-          else Nothing
+    ( \stall m ->
+        if stall
+          then Nothing -- stalled: instr hasn't retired yet
+          else
+            if mwValid m && mwWbEn m
+              then Just (mwRd m, mwWbData m)
+              else Nothing
     )
-      <$> memWbS
+      <$> stallInternalS
+      <*> memWbS
 
   -- ====================================================================
   -- CSR state
@@ -942,7 +950,10 @@ core imemData dmemRData stallS =
   -- ====================================================================
 
   rvfiValidS :: Signal dom Bool
-  rvfiValidS = mwValid <$> memWbS
+  rvfiValidS =
+    (\stall m -> not stall && mwValid m)
+      <$> stallInternalS
+      <*> memWbS
 
   rvfiOrderS :: Signal dom (BitVector 64)
   rvfiOrderS =
