@@ -122,9 +122,13 @@ rules around maintaining it.
   Altera `altera_avalon_new_sdram_controller` IP + our
   `Riski5.Sdram` 32 ↔ 16 FSM came back intact. LEDR[17] lit,
   LCD line 1 "riski5: MEM OK  ", line 2 "SRAM+SDRAM:CAFE ".
-  Fit: 10,774 LEs (+474 vs pre-SDRAM = 32 % of EP2C35);
-  31,744 block memory bits (~7 M4K of 105); Fmax 32.98 MHz
-  at slow-85 °C, well above the 30 MHz core clock.
+  Fit (T38-firmware bitstream `42sswq0r95k3j83lzwf3bslk284gaswg`):
+  11,387 LEs (34 % of EP2C35; +1,087 vs pre-phase-1D baseline,
+  of which ≈ 474 is SDRAM adapter + IP routing and ≈ 613 is the
+  extended Hello firmware's imem M4K bits spilling into tie-off
+  logic), 31,744 block memory bits (~7 M4K of 105), Fmax 32.98 MHz
+  at slow-85 °C — the pre-T38 build's 10,774 LEs was the same
+  design without the T38 firmware expansion baked into imem.
   **Phase 1D complete.** Next up is phase 1E's fmax
   exploration.
 
