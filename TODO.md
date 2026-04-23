@@ -69,11 +69,45 @@ rules around maintaining it.
 
 ## Next up
 
-- **Phase 2 P2-B.** M4K regfile swap (`regfileAsync` →
-  `regfileSync` — the `RegfileBacking` scaffolding from P2A-1 is
-  already in place). Saves ~300 LEs, consumes 2 M4K. Requires
-  ID/EX reg to carry addresses instead of data, plus a
-  regfile-output forwarding mux at X.
+- **Phase 2 P2-B.** M4K regfile swap (`regfileAsync` → `regfileSync`
+  — the `RegfileBacking` scaffolding from P2A-1 is already in place).
+  Saves ~300 LEs, consumes 2 M4K. Requires ID/EX reg to carry
+  addresses instead of data, plus a regfile-output forwarding mux
+  at X.
+
+  **2026-04-24 attempt — reverted (silicon-only regression).** Full
+  swap landed in sim (dropped `idRs1Data`/`idRs2Data` from `IdEx`,
+  removed `dForward`, added `wbHoldS` for the W-1→X forwarding tier
+  that covers `blockRamPow2`'s read-first gap, gated regfile read
+  port through `effectiveRs{1,2}AddrS` so multi-cycle stalls keep
+  the operand on the output). `cabal test`: 147 / 147 green. On
+  silicon: **MemTest bitstream ran cleanly end-to-end** (SRAM /
+  SDRAM tests all passed) but the **CoreMark bitstream produced
+  zero UART output in 45 s** of capture — firmware hung somewhere
+  before the first `ee_printf` landed a byte on the JTAG UART.
+  Fmax closed at 50.87 MHz (+5.34 ns slack at the 40 MHz target),
+  so timing is not the cause. Attempt archived as
+  [`docs/perf/phase-2b-attempt-2026-04-24.patch`](./docs/perf/phase-2b-attempt-2026-04-24.patch).
+
+  Diagnostic next steps when resumed:
+  1. Reproduce the hang in simulation by baking the CoreMark
+     firmware bytes into a new sim test (`test/SocCoremarkSim.hs`?)
+     that runs `socSim` for ~50M cycles with a sim-side JTAG UART
+     collector — catch the hang pre-silicon.
+  2. If sim doesn't reproduce, instrument the silicon bitstream
+     (e.g. GPIO-tap the pipeline stage IdEx.pc + IdEx.idRs1 + rs1FwdS)
+     to see which pc the hang stops on.
+  3. Suspects to rule out: (a) the read-address gating
+     (`effectiveRs{1,2}AddrS`) — may interact badly with the 1-cycle
+     BRAM-read stall that CoreMark hits on `.rodata` loads but
+     MemTest never exercises; (b) `wbHoldS` capturing `Nothing`
+     during sustained stalls losing a forward that would be needed
+     at stall-release (possible but regfile memory state naturally
+     has the value by that point — unless there's a subtle timing
+     window); (c) some CoreMark-specific instruction sequence
+     (mcycle CSR read plus BRAM load plus UART poll) that doesn't
+     show up in any `test/*Spec.hs` case.
+
 - **CM-5. UART back-to-back-write regression test.** The
   CM-4-era fix (polling WSPACE in `core_portme.c::uart_send_char`
   before every write to `0x1000_0000`) unblocked CoreMark's

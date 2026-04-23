@@ -1,0 +1,263 @@
+diff --git a/src/Riski5/Core.hs b/src/Riski5/Core.hs
+index ebf9d6d..f97c4c2 100644
+--- a/src/Riski5/Core.hs
++++ b/src/Riski5/Core.hs
+@@ -50,23 +50,33 @@ code — the Tiny-tier target from @docs/core-family.md@.
+      logic here.
+ 
+   5. __W (writeback)__ — consumes MEM/WB. Writes @rd@ to the
+-     regfile (through the async-read 'Riski5.Regfile.regfile'
+-     for now; swap to 'regfileSync' is a follow-up once the
+-     shape is stable).
++     regfile. The regfile is 'Riski5.Regfile.regfileSync' — a
++     BRAM-backed variant with 1-cycle read latency that maps to
++     two Cyclone II M4K blocks instead of ~1024 FFs + ~300 LEs
++     of mux logic. See the regfile section below for the
++     latency-alignment story.
+ 
+ == Forwarding
+ 
+ Every RAW (read-after-write) dependency inside the pipeline's
+-3-instruction window is resolved combinationally by the two
++3-instruction window is resolved combinationally by the three
+ forwarding paths at X's input:
+ 
+   * __EX→X__ — forward @EX/MEM.wbData@ when @EX/MEM.rd@ matches
+     the current X instruction's @rs1@ or @rs2@.
+   * __MEM→X__ — forward @MEM/WB.wbData@ when @MEM/WB.rd@ matches
+     and the EX→X path didn't already cover it.
+-
+-Older-than-3-ahead dependencies are already committed to the
+-regfile by the time they're read, so no forwarding needed.
++  * __W-1→X__ — forward the writeback committed at the __previous__
++    clock edge (held in @wbHold@) when its rd matches and neither
++    EX→X nor MEM→X fired. This tier covers the gap peculiar to
++    synchronous-read regfiles: a write applied at edge N→N+1 is
++    __not__ visible on the same read port's output at cycle N+1
++    (read-first semantics), so the just-retired producer needs
++    forwarding one cycle beyond the regfile's own latency.
++
++Older-than-W-1-ahead dependencies are already committed to the
++regfile's memory AND visible on the read port, so no forwarding
++needed.
+ 
+ Because the phase-2A dmem is async-read, __there is no load-use
+ hazard__: the load value is computed inside X (not M) and lands
+@@ -135,7 +145,7 @@ import Riski5.CSR (
+  )
+ import Riski5.Decode (decode)
+ import Riski5.ISA
+-import Riski5.Regfile (regfile)
++import Riski5.Regfile (regfileSync)
+ import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
+ 
+ -- * Pipeline registers --------------------------------------------
+@@ -158,10 +168,18 @@ defaultIfId = IfId {ifPc = 0, ifInstr = 0x0000_0013, ifValid = False}
+ bubbleIfId :: IfId
+ bubbleIfId = defaultIfId
+ 
+-{- | ID/EX pipeline register. Holds the decoded instruction + both
+-rs1 / rs2 architectural values freshly read from the regfile. The
+-X stage forwarding mux may override either rs data; the raw values
+-are kept here for RVFI's pre-forwarding observability tap.
++{- | ID/EX pipeline register. Holds the decoded instruction and the
++rs1 / rs2 __addresses__ (not values).
++
++The operand __values__ live on the regfile's synchronous read
++ports — presented at D-stage cycle N, captured on the clock edge,
++and emerging at X-stage cycle N+1 aligned with this pipe register.
++Keeping only the addresses here (and not a latched copy of the
++regfile data) is what actually cashes in the M4K swap: the IdEx
++register drops 64 FFs + the write-port fan-out that fed them at D.
++The X stage consumes the regfile output directly, with the three-
++tier forwarding mux (EX→X, MEM→X, W-1→X) selecting among it and
++the in-flight writeback sources.
+ -}
+ data IdEx = IdEx
+   { idPc :: BitVector 32
+@@ -169,8 +187,6 @@ data IdEx = IdEx
+   , idMInstr :: Maybe Instr
+   , idRs1 :: BitVector 5
+   , idRs2 :: BitVector 5
+-  , idRs1Data :: BitVector 32
+-  , idRs2Data :: BitVector 32
+   , idRd :: BitVector 5
+   , idWbEn :: Bool
+   -- ^ Will this instruction write back to rd? Static per decoded
+@@ -190,8 +206,6 @@ defaultIdEx =
+     , idMInstr = Nothing
+     , idRs1 = 0
+     , idRs2 = 0
+-    , idRs1Data = 0
+-    , idRs2Data = 0
+     , idRd = 0
+     , idWbEn = False
+     , idValid = False
+@@ -608,44 +622,47 @@ core imemData dmemRData stallS =
+   dRs1AddrS = slice d19 d15 <$> dInstrWordS
+   dRs2AddrS = slice d24 d20 <$> dInstrWordS
+ 
+-  -- Raw regfile reads (async, combinational). Reflect all writes
+-  -- committed at edges prior to this cycle.
+-  (dRs1RawS, dRs2RawS) = regfile dRs1AddrS dRs2AddrS writeBackOutS
+-
+-  -- D-stage forwarding. Mirrors the X-stage forwarding mux shape:
+-  -- EX/MEM takes priority, then MEM/WB, then the raw regfile read.
++  -- Synchronous regfile: addresses presented at cycle N, operand
++  -- values emerge at cycle N+1. This pairs naturally with the D→X
++  -- pipe edge — the same clock edge that latches IdEx from D also
++  -- latches the regfile's read ports, so at X-stage cycle N+1 the
++  -- ID/EX register and 'xRs1RawS' / 'xRs2RawS' are in lock-step.
+   --
+-  -- Why D needs forwarding at all (ex-comment was just "W→D
+-  -- bypass"): on stall cycles, @writeBackOutS@ is gated off so
+-  -- the instruction sitting in MEM/WB doesn't actually commit
+-  -- its writeback this cycle — but @memWbS@ still carries that
+-  -- pending-commit data. Same with EX/MEM during stall chains.
+-  -- If D only consulted the gated @writeBackOutS@, it would
+-  -- capture stale-regfile data into ID/EX.rs1Data / rs2Data,
+-  -- and X's forwarding mux can only see EX/MEM and MEM/WB at
+-  -- X's cycle — not at D's cycle — so the stale ID/EX data
+-  -- would reach the ALU when the original producer has long
+-  -- since moved past.
++  -- W→D forwarding (the async regfile's dForward) is gone: the
++  -- four RAW-hazard windows the async variant handled at D now
++  -- all collapse to three paths at X:
+   --
+-  -- Consulting EX/MEM + MEM/WB here covers:
+-  --   * The usual two-ahead write-then-read hazard that
+-  --     forwarding always handles.
+-  --   * Any writeback that's stuck in the back of the pipeline
+-  --     during multi-cycle memory stalls — since EX/MEM and
+-  --     MEM/WB freeze on stall (matching my stall fix), they
+-  --     hold the in-flight writeback exactly until the stall
+-  --     clears, so the D-stage sees it every cycle regardless
+-  --     of how many stall cycles the producer has been waiting
+-  --     in the back.
+-  dForward :: BitVector 5 -> BitVector 32 -> ExMem -> MemWb -> BitVector 32
+-  dForward rsAddr rsData exM mwM
+-    | rsAddr == 0 = 0
+-    | emValid exM && emWbEn exM && emRd exM == rsAddr = emWbData exM
+-    | mwValid mwM && mwWbEn mwM && mwRd mwM == rsAddr = mwWbData mwM
+-    | otherwise = rsData
+-
+-  dRs1DataS = dForward <$> dRs1AddrS <*> dRs1RawS <*> exMemS <*> memWbS
+-  dRs2DataS = dForward <$> dRs2AddrS <*> dRs2RawS <*> exMemS <*> memWbS
++  --   * producer in EX/MEM → X-stage EX→X mux,
++  --   * producer in MEM/WB → X-stage MEM→X mux,
++  --   * producer committed at the previous clock edge (stale
++  --     on the regfile's read port due to blockRamPow2 read-first
++  --     semantics) → X-stage W-1→X mux via 'wbHoldS'.
++  --
++  -- See the X-stage 'forwardRs' for the unified mux.
++  --
++  -- Read-address gating across stalls:
++  -- During a stall X freezes on the current instruction but D
++  -- doesn't necessarily; the stalling instruction's operand must
++  -- stay on the regfile's output across every stall cycle. With
++  -- an async regfile that was automatic because the operand lived
++  -- in ID/EX; here, the regfile's read-address latch has to keep
++  -- re-latching the __current X instruction's rs1 / rs2__
++  -- throughout the stall. On non-stall cycles we present D's
++  -- fresh address (normal pipeline flow); on stall cycles we
++  -- present @idRs1@ / @idRs2@ from the frozen ID/EX register.
++  -- The two paths align at the stall-onset edge by construction:
++  -- @dRs1AddrS@ at the last unstalled cycle and @idRs1@ the
++  -- following stalled cycle both hold the same value.
++  effectiveRs1AddrS, effectiveRs2AddrS :: Signal dom (BitVector 5)
++  effectiveRs1AddrS =
++    (\stall ie d -> if stall then idRs1 ie else d)
++      <$> stallInternalS <*> idExS <*> dRs1AddrS
++  effectiveRs2AddrS =
++    (\stall ie d -> if stall then idRs2 ie else d)
++      <$> stallInternalS <*> idExS <*> dRs2AddrS
++
++  (xRs1RawS, xRs2RawS) =
++    regfileSync effectiveRs1AddrS effectiveRs2AddrS writeBackOutS
+ 
+   -- ====================================================================
+   -- ID/EX pipeline register
+@@ -656,7 +673,7 @@ core imemData dmemRData stallS =
+ 
+   idExNextS :: Signal dom IdEx
+   idExNextS =
+-    ( \stall flush cur i mI r1 r2 r1v r2v ifr ->
++    ( \stall flush cur i mI r1 r2 ifr ->
+         if stall
+           then cur
+           else
+@@ -669,8 +686,6 @@ core imemData dmemRData stallS =
+                   , idMInstr = mI
+                   , idRs1 = r1
+                   , idRs2 = r2
+-                  , idRs1Data = r1v
+-                  , idRs2Data = r2v
+                   , idRd = instrRd mI
+                   , idWbEn = instrWritesRd mI
+                   , idValid = ifValid ifr
+@@ -683,29 +698,54 @@ core imemData dmemRData stallS =
+       <*> dMInstrS
+       <*> dRs1AddrS
+       <*> dRs2AddrS
+-      <*> dRs1DataS
+-      <*> dRs2DataS
+       <*> ifIdS
+ 
+   -- ====================================================================
+   -- X stage — forwarding, ALU, CSRs, trap detection
+   -- ====================================================================
+ 
+-  -- Forward-from-EX/MEM: the instruction immediately ahead of X
+-  -- is in EX/MEM now; its computed result (@emWbData@) is fresh
+-  -- and takes precedence over the stale regfile read.
+-  -- Forward-from-MEM/WB: two ahead of X; use only if EX/MEM
+-  -- didn't already provide a match.
+-  forwardRs :: BitVector 5 -> BitVector 32 -> ExMem -> MemWb -> BitVector 32
+-  forwardRs rsAddr rsData exM mwM
++  -- Three-tier forwarding, by producer age (newest wins):
++  --   EX→X   — one ahead of X, sitting in EX/MEM right now; its
++  --            computed result is fresh and hasn't hit the regfile
++  --            yet.
++  --   MEM→X  — two ahead of X, in MEM/WB; same story, one stage
++  --            further along. Only fires if EX→X didn't match.
++  --   W-1→X  — three ahead of X: committed __at the clock edge
++  --            leading into this cycle__ (one cycle ago it was in
++  --            MEM/WB, now retired). Its write landed in the
++  --            blockRam at that edge, but the read port's output
++  --            this cycle still reflects pre-edge memory
++  --            (read-first semantics), so we bypass from the held
++  --            copy in 'wbHoldS'. With async regfileAsync this
++  --            tier was unnecessary — writes were visible on the
++  --            same cycle they were applied because reads went
++  --            through a combinational mux over the 'register'
++  --            that already holds the new value. blockRamPow2's
++  --            read-first semantics force this extra bypass.
++  forwardRs ::
++    BitVector 5 ->
++    BitVector 32 ->
++    ExMem ->
++    MemWb ->
++    Maybe (BitVector 5, BitVector 32) ->
++    BitVector 32
++  forwardRs rsAddr rsData exM mwM wbH
+     | rsAddr == 0 = 0
+     | emValid exM && emWbEn exM && emRd exM == rsAddr = emWbData exM
+     | mwValid mwM && mwWbEn mwM && mwRd mwM == rsAddr = mwWbData mwM
++    | Just (r, v) <- wbH, r == rsAddr = v
+     | otherwise = rsData
+ 
++  -- One-cycle-delayed copy of the regfile write port. Captures the
++  -- (rd, wbData) that was committed at the previous clock edge so
++  -- the W-1→X forwarding tier can see it; @Nothing@ on any cycle
++  -- the previous edge was a stall / bubble.
++  wbHoldS :: Signal dom (Maybe (BitVector 5, BitVector 32))
++  wbHoldS = register Nothing writeBackOutS
++
+   rs1FwdS, rs2FwdS :: Signal dom (BitVector 32)
+-  rs1FwdS = forwardRs <$> (idRs1 <$> idExS) <*> (idRs1Data <$> idExS) <*> exMemS <*> memWbS
+-  rs2FwdS = forwardRs <$> (idRs2 <$> idExS) <*> (idRs2Data <$> idExS) <*> exMemS <*> memWbS
++  rs1FwdS = forwardRs <$> (idRs1 <$> idExS) <*> xRs1RawS <*> exMemS <*> memWbS <*> wbHoldS
++  rs2FwdS = forwardRs <$> (idRs2 <$> idExS) <*> xRs2RawS <*> exMemS <*> memWbS <*> wbHoldS
+ 
+   -- X computes the per-cycle Out bundle exactly like the old
+   -- pipelineless core — same 'handleInstr' function — but on
