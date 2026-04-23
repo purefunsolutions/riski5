@@ -249,6 +249,32 @@ explicitly names get committed.
 Small, one task ≈ one commit. Messages describe what changed and
 **why**, not a mechanical diff summary.
 
+**Every commit records a CoreMark silicon score — in the history
+file, not the commit message.** Since CM-4 landed (`1fcb6ed`,
+2026-04-23), the rule is: before each `git commit` that could
+plausibly move the score, stage all intended changes
+(`git add -A`), then run `scripts/coremark-run.sh`. The script
+builds `riski5-core-coremark`, flashes the DE2, captures the
+JTAG-UART score, and **appends one row to
+[`docs/perf/coremark-history.md`](./docs/perf/coremark-history.md)**.
+The commit itself stages that new row along with whatever else
+the commit is doing; commit messages stay about the *change*,
+not the number. Reading the history file top-to-bottom tells the
+per-commit performance story at a glance.
+
+**Skip the measurement** for commits that can't affect the
+bitstream — docs-only edits (`docs/` + README + CLAUDE.md),
+test-only edits (`test/`) that don't touch library source,
+tooling-only edits (`nix/`, `.gitignore`, `fourmolu.yaml`). The
+history file just stays at whatever the last measured row was,
+and the next bitstream-affecting commit picks it up again.
+
+**If CoreMark regresses** (CMs/MHz drops by > 1 %), add a
+one-line `Notes` explanation in that history row — was it an
+expected trade (e.g. mcycle counter added 3.2 MHz of Fmax, net
+score up), or a real throughput loss worth chasing before the
+commit lands.
+
 **Auto-commit when a task lands green.** This repo overrides the
 default Claude Code "never commit unless explicitly asked" policy.
 Once a task's tests pass (cabal + relevant formal / sim layer),
