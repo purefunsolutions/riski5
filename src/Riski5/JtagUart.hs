@@ -37,9 +37,11 @@ TX-ready + DATA, so we model that much and extend as needed.
 -}
 module Riski5.JtagUart (
   jtagUartSim,
+  jtagUartAlteraSim,
 ) where
 
 import Clash.Prelude hiding ((&&))
+import Clash.Prelude qualified as CP
 import Riski5.MemMap (jtagUartBase)
 
 {- |
@@ -106,3 +108,108 @@ jtagUartSim selS addrS wdataS beS _ =
       <$> isDataS
       <*> wdataS
       <*> beS
+
+{- |
+Altera-IP-faithful simulation model. Unlike 'jtagUartSim' (which
+treats the UART as an infinite, always-ready FIFO), this model
+reproduces the two silicon behaviours CM-4 uncovered empirically
+and fixed in the CoreMark port:
+
+  1. __Finite 64-byte TX FIFO.__ Writes to DATA accept immediately
+     as long as the FIFO has space. Once full, @av_waitrequest@ is
+     asserted (returned as @ready=False@) until the FIFO drains
+     enough for the pending write to land.
+
+  2. __Drain-gap requirement.__ Empirically, the real IP's internal
+     drain FSM advances only on cycles where the master is __not__
+     asserting a write transaction. Holding @av_write=1@
+     continuously across the FIFO-full waitrequest cycles — which
+     is exactly what happens when the riski5 core stalls on a
+     bus waitrequest — prevents the drain from advancing and the
+     IP stays stuck indefinitely.
+
+     Modelled here by gating drain on @!wr@: any cycle without an
+     active write transaction drains one byte from the FIFO; any
+     cycle with an active write transaction does not. Back-to-back
+     writes with no gap therefore fill the FIFO in 64 cycles, hit
+     waitrequest, and deadlock (matching silicon). A polling
+     pattern that reads the WSPACE register between writes — the
+     CM-2 port's @uart_send_char@ — naturally inserts
+     @!wr@ cycles on every read and avoids the deadlock.
+
+The CONTROL register's WSPACE field (bits [31:16], per Altera's
+spec) is modelled as @64 - fifoCount@ so firmware can poll it.
+
+The output contract differs slightly from 'jtagUartSim': in
+addition to @(rdata, txByte)@, 'jtagUartAlteraSim' returns the
+@ready@ signal so the sim wrapper can plumb it back into the SoC
+as @siUartReady@. Tests that wire this in watch the core stall
+naturally under the finite-FIFO back-pressure.
+-}
+jtagUartAlteraSim ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom Bool ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 4) ->
+  Signal dom Bool ->
+  ( Signal dom (BitVector 32) -- rdata
+  , Signal dom (Maybe (BitVector 8)) -- txByte (emitted at accept)
+  , Signal dom Bool -- ready = !waitrequest
+  )
+jtagUartAlteraSim selS addrS wdataS beS _reS =
+  (rdataS, txS, readyS)
+ where
+  isDataS = (\s a -> s && a == jtagUartBase + 0) <$> selS <*> addrS
+  isCtrlS = (\s a -> s && a == jtagUartBase + 4) <$> selS <*> addrS
+
+  wrS = (\isD be -> isD && be /= 0) <$> isDataS <*> beS
+
+  fifoCountS :: Signal dom (Unsigned 7)
+  fifoCountS = register 0 fifoCountNextS
+
+  fullS = (\c -> c == 64) <$> fifoCountS
+
+  waitreqS = (\wr full -> wr && full) <$> wrS <*> fullS
+  readyS = CP.not <$> waitreqS
+
+  -- Accept: bus is writing AND FIFO has space.
+  acceptS = (\wr full -> wr && CP.not full) <$> wrS <*> fullS
+
+  -- Drain: bus is NOT writing this cycle AND FIFO non-empty. One
+  -- byte per !wr cycle — see the module-header rationale.
+  drainS = (\wr cnt -> CP.not wr && cnt > 0) <$> wrS <*> fifoCountS
+
+  fifoCountNextS =
+    ( \cnt accept drain -> case (accept, drain) of
+        (True, _) -> cnt + 1
+        (False, True) -> cnt - 1
+        (False, False) -> cnt
+    )
+      <$> fifoCountS
+      <*> acceptS
+      <*> drainS
+
+  -- Byte tap: observed when a write commits into the FIFO. Tests
+  -- check this stream against the firmware's intended output.
+  txS =
+    ( \accept wdata ->
+        if accept then Just (slice d7 d0 wdata) else Nothing
+    )
+      <$> acceptS
+      <*> wdataS
+
+  -- CONTROL read: WSPACE in bits [31:16] = 64 - fifoCount.
+  -- DATA read: zero (RX FIFO always empty in sim).
+  rdataS =
+    ( \isC cnt ->
+        if isC
+          then
+            let wspace :: BitVector 32
+                wspace = resize (pack (64 - cnt :: Unsigned 7))
+             in wspace `shiftL` 16
+          else 0
+    )
+      <$> isCtrlS
+      <*> fifoCountS

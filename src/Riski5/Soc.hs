@@ -48,6 +48,7 @@ core simply executes from address 0.
 module Riski5.Soc (
   soc,
   socSim,
+  socSimAlteraUart,
   SocIn (..),
   SocInSim (..),
   SocOut (..),
@@ -61,7 +62,7 @@ import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
-import Riski5.JtagUart (jtagUartSim)
+import Riski5.JtagUart (jtagUartAlteraSim, jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
@@ -457,6 +458,67 @@ socSim progInit dataInit inSimS = outSimS
   -- sim memory; tests that only touch the lower portion of the
   -- 8 MB SDRAM address space are fine, and 'sdramIpSim' wraps
   -- modulo the vector length anyway.
+  sdramBusS = soSdramBus <$> outS
+  sdramReplyS = sdramIpSim simMem sdramBusS
+  simMem :: Vec 16384 (BitVector 16)
+  simMem = CP.repeat 0
+
+  outSimS = (\o t -> SocOutSim {sosOut = o, sosUartTx = t}) <$> outS <*> uartTxS
+
+{- |
+Sim wrapper that uses 'jtagUartAlteraSim' (the finite-FIFO +
+drain-gap-requirement model) instead of the simple 'jtagUartSim'.
+Same @SocInSim@ / @SocOutSim@ interface; the difference is that
+writes to UART DATA now stall the core via @siUartReady@ when the
+model's 64-byte FIFO is full, and back-to-back writes with no gap
+deadlock the model (matching the silicon bug that CM-4 uncovered
+and the CM-2 port's WSPACE poll fixed).
+
+Use this wrapper in regression tests that want to catch firmware
+regressions around the back-to-back-write / drain-gap contract
+(see @test/UartBackpressureSpec.hs@). Default sim tests that
+don't care about UART back-pressure keep using 'socSim'.
+-}
+socSimAlteraUart ::
+  forall dom p d.
+  ( HiddenClockResetEnable dom
+  , KnownNat p
+  , 1 <= p
+  , KnownNat d
+  , 1 <= d
+  ) =>
+  Vec p (BitVector 32) ->
+  Vec d (BitVector 32) ->
+  Signal dom SocInSim ->
+  Signal dom SocOutSim
+socSimAlteraUart progInit dataInit inSimS = outSimS
+ where
+  fullInS =
+    ( \SocInSim {..} ur urRdy sdr ->
+        SocIn
+          { siSwitches = sisSwitches
+          , siKeys = sisKeys
+          , siSramDqIn = sisSramDqIn
+          , siUartRdata = ur
+          , siUartReady = urRdy
+          , siSdramReply = sdr
+          }
+    )
+      <$> inSimS
+      <*> uartRdataS
+      <*> uartReadyS
+      <*> sdramReplyS
+  outS = soc progInit dataInit fullInS
+
+  uartBusS = soUartBus <$> outS
+  (uartRdataS, uartTxS, uartReadyS) =
+    jtagUartAlteraSim
+      (ambSel <$> uartBusS)
+      (ambAddr <$> uartBusS)
+      (ambWdata <$> uartBusS)
+      (ambBe <$> uartBusS)
+      (ambRe <$> uartBusS)
+
   sdramBusS = soSdramBus <$> outS
   sdramReplyS = sdramIpSim simMem sdramBusS
   simMem :: Vec 16384 (BitVector 16)

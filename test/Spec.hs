@@ -30,6 +30,7 @@ import SpikeDriverSpec qualified
 import SramSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
+import UartBackpressureSpec qualified
 
 main :: IO ()
 main =
@@ -53,6 +54,7 @@ main =
       , SramSpec.tests
       , SdramSpec.tests
       , HelloSpec.tests
+      , UartBackpressureSpec.tests
       , SocHwSim.tests
       , SpikeDriverSpec.tests
       , SpikeDiffSpec.tests
