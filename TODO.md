@@ -74,6 +74,37 @@ rules around maintaining it.
   already in place). Saves ~300 LEs, consumes 2 M4K. Requires
   ID/EX reg to carry addresses instead of data, plus a
   regfile-output forwarding mux at X.
+- **CM-5. UART back-to-back-write regression test.** The
+  CM-4-era fix (polling WSPACE in `core_portme.c::uart_send_char`
+  before every write to `0x1000_0000`) unblocked CoreMark's
+  silicon run, but right now nothing in the test suite catches a
+  future regression that re-introduces unchecked back-to-back
+  `sw`s. Add a sim-level test that:
+  1. Extends `jtagUartSim` (or adds a new sim model alongside
+     it) to faithfully model the Altera IP's **first-cycle-
+     waitrequest + FIFO-full-waitrequest** behaviour, including
+     the single-cycle `av_write=0` gap the real IP's drain FSM
+     needs between writes to advance reliably. The current
+     `jtagUartSim` returns `siUartReady = True` constantly, which
+     masks the bug.
+  2. Wires that improved model into `socSim` (or a dedicated
+     `SocCoreMarkLikeSpec`) and runs a small firmware image that
+     does ~100 back-to-back `sw` writes to `0x1000_0000` with
+     *no* WSPACE poll in between — the test asserts that either
+     every byte eventually lands on the sim-UART output **or**
+     the sim deadlocks within a bounded cycle budget (which is
+     the failure we want to catch pre-silicon).
+  3. Adds a second test using the CM-2-port pattern (WSPACE
+     poll before each write) and asserts the full byte stream
+     lands without deadlock — i.e. proves the fix actually
+     fixes it.
+  Lives in `test/UartBackpressureSpec.hs`, aggregated into
+  `test/Spec.hs`. Passes without Quartus / hardware — pure
+  Clash `sampleN` over `socSim` — so it catches the regression
+  in `cabal test`, long before the next silicon bring-up.
+  Document the expected contract in a module header so whoever
+  re-writes `uart_send_char` next understands why the poll is
+  load-bearing.
 - **Phase 2 P2-C.** Sync dmem + first caches (direct-mapped
   1 KB I$ + 1 KB D$, per the Tiny tier defaults in
   [`docs/core-family.md`](./docs/core-family.md) §4.3).
