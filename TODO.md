@@ -50,24 +50,22 @@ rules around maintaining it.
     `firmware/phase1/CoreMark.hs` exporting `coreMarkFirmwareWords`
     as 4096 NOPs; CM-4 replaces the body with the real
     cross-compiled bytes. 147 / 147 cabal tests green.
-  - **CM-4. ~ Bitstream + partial silicon run.** Bitstream
-    variant `riski5-core-coremark` builds cleanly (Fmax
-    57.38 MHz, +7.57 ns slack at 40 MHz, 8,130 LEs). Flashes
-    via `nix run .#flash-riski5-coremark` without errors.
-    On silicon, CoreMark's work-loop completes (we see the
-    `2K performance run parameters for coremark.` line post-
-    benchmark, implying `list` / `matrix` / `state` CRCs all
-    matched the upstream-published `known_id=3` triplet — no
-    error lines printed). But the UART output hangs at
-    exactly 64 bytes (one full JTAG UART TX-FIFO), before the
-    `Total ticks` / `CoreMark 1.0 : <score>` lines. Memtest
-    on the same Soc.hs prints its full output fine, so the
-    UART path itself works. Diagnosis points at a UART
-    stall-edge interaction specific to ee_printf's stream of
-    SRAM-LW → UART-SW pairs. Documented in
+  - **CM-4. ✓ ✦ First EEMBC-valid CoreMark score on silicon
+    (2026-04-23).** riski5 at 40 MHz = **44.57 CoreMark 1.0 /
+    1.114 CoreMarks/MHz**, validated (all three
+    `list`/`matrix`/`state` CRCs match the upstream
+    `known_id=3` triplet, 13.46 s wall-clock ≥ EEMBC 10 s
+    minimum). Two follow-up issues found + fixed in the
+    same session: (a) the Altera JTAG UART IP hung
+    reliably at every 64-byte FIFO boundary under back-to-
+    back `sw` — fixed by polling WSPACE before each write
+    in `core_portme.c::uart_send_char`; (b) `mcycle` was
+    unimplemented (`Riski5.CSR` fall-through returned 0) —
+    added `cMcycle` to the `Csrs` record with a free-running
+    every-clock increment in `Core.hs`. Full writeup in
     [`docs/perf/coremark-2026-04-23.md`](./docs/perf/coremark-2026-04-23.md)
-    with diagnosis candidates. CM-4b / CM-5 to chase the hang
-    to a complete score.
+    including the comparison table against PicoRV32, VexRiscv
+    Min/Full, and Rocket.
 
 ## Next up
 

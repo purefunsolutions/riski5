@@ -64,16 +64,35 @@ ee_u32 default_num_contexts = 1;
 
 /* --- JTAG UART output --------------------------------------- */
 
-/* Altera JTAG UART IP sits at 0x1000_0000; offset 0 is the data
-   register. A store to the data register pushes a byte into the
-   TX FIFO; the IP asserts av_waitrequest while the FIFO is full,
-   which the SoC turns into a core-stall. So a raw `sw` here is
-   blocking by construction — no WSPACE polling needed. */
-#define RISKI5_UART_BASE 0x10000000u
+/* Altera JTAG UART IP sits at 0x1000_0000:
+ *   offset 0  = DATA register   — write → push byte into TX FIFO
+ *   offset 4  = CONTROL register — bit [31:16] = WSPACE (TX FIFO slots free)
+ *
+ * Why the WSPACE poll before every write?
+ *
+ * Empirically, streaming back-to-back sw instructions to offset 0 hangs
+ * the Altera IP once the TX FIFO fills up even though our SoC honours
+ * av_waitrequest via the bus stall. The IP seems to require one cycle of
+ * av_write=0 between back-to-back transactions so its internal drain FSM
+ * advances reliably; holding av_write asserted continuously lets it get
+ * stuck. A lw from the CONTROL register between writes interleaves a
+ * read transaction (av_read=1, av_write=0), which gives the IP the gap
+ * it needs without any SoC-level Verilog changes (see CM-4 writeup at
+ * docs/perf/coremark-2026-04-23.md for the hang analysis).
+ */
+#define RISKI5_UART_BASE  0x10000000u
+#define RISKI5_UART_DATA  (RISKI5_UART_BASE + 0)
+#define RISKI5_UART_CTL   (RISKI5_UART_BASE + 4)
 
 void uart_send_char(char c) {
-    volatile unsigned int *uart = (volatile unsigned int *)RISKI5_UART_BASE;
-    *uart = (unsigned int)(unsigned char)c;
+    volatile unsigned int *data = (volatile unsigned int *)RISKI5_UART_DATA;
+    volatile unsigned int *ctl  = (volatile unsigned int *)RISKI5_UART_CTL;
+
+    /* Spin until TX FIFO has space. WSPACE = ctl[31:16]. */
+    while ((*ctl >> 16) == 0u) {
+        /* busy-wait */
+    }
+    *data = (unsigned int)(unsigned char)c;
 }
 
 /* --- Timing via mcycle --------------------------------------- */

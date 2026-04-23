@@ -45,6 +45,7 @@ module Riski5.CSR (
 import Clash.Prelude
 import Riski5.ISA (
   csrMcause,
+  csrMcycle,
   csrMepc,
   csrMscratch,
   csrMstatus,
@@ -63,6 +64,13 @@ data Csrs = Csrs
   , cMcause :: BitVector 32
   , cMtval :: BitVector 32
   , cMscratch :: BitVector 32
+  , cMcycle :: BitVector 32
+  -- ^ Lower 32 bits of the machine cycle counter (Zicntr). Increments
+  -- once per core clock in 'Riski5.Core', regardless of stall / bubble
+  -- — i.e. counts every clock edge, not just retired instructions.
+  -- Wraps at 2^32, which at the shipping 40 MHz clock is ~107 s —
+  -- large enough for CoreMark-class benchmark timing. The upper 32
+  -- bits (mcycleh) are not yet implemented; reads return 0.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -77,6 +85,7 @@ initCsrs =
     , cMcause = 0
     , cMtval = 0
     , cMscratch = 0
+    , cMcycle = 0
     }
 
 {- | Read a 32-bit CSR value. Addresses the core doesn't implement
@@ -91,6 +100,7 @@ readCsr cs addr
   | addr == unCsr csrMcause = cMcause cs
   | addr == unCsr csrMtval = cMtval cs
   | addr == unCsr csrMscratch = cMscratch cs
+  | addr == unCsr csrMcycle = cMcycle cs
   | otherwise = 0
 
 {- | Write a 32-bit CSR value. Writes to addresses the core doesn't
@@ -104,6 +114,7 @@ writeCsr addr v cs
   | addr == unCsr csrMcause = cs {cMcause = v}
   | addr == unCsr csrMtval = cs {cMtval = v}
   | addr == unCsr csrMscratch = cs {cMscratch = v}
+  | addr == unCsr csrMcycle = cs {cMcycle = v}
   | otherwise = cs
 
 {- | Latch a trap: record the cause, the instruction's @pc@ in

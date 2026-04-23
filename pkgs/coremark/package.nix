@@ -52,7 +52,12 @@
   pkgsCross,
   python3,
   gnumake,
-  iterations ? 400,
+  # Default 600: measured riski5 silicon time at 40 MHz with
+  # iterations=400 came in at 8.98 s — just under EEMBC's 10 s
+  # validity threshold (see docs/perf/coremark-2026-04-23.md). 600
+  # iterations gives ~13.5 s which is comfortably above the minimum
+  # without bloating wall-clock more than necessary.
+  iterations ? 600,
   # Platform-port directory. Created in CM-2 under
   # firmware/phase2/coremark-port/. Pass a different path from
   # callPackage to test alternative ports.

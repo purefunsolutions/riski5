@@ -920,11 +920,16 @@ core imemData dmemRData stallS =
   -- The CSR register captures xCsrsNext unless X is bubbled
   -- (idValid = False) or stalled.
 
+  -- cMcycle increments every core clock (CM-4 — needed for CoreMark's
+  -- mcycle-based timing). Everything else in Csrs follows the existing
+  -- "update-on-retire" rule: capture xCsrsNextS when the X-stage
+  -- instruction is valid and the pipeline isn't stalled, hold otherwise.
   csrsS :: Signal dom Csrs
   csrsS =
     register initCsrs $
       ( \stall valid next cur ->
-          if stall || not valid then cur else next
+          let base = if stall || not valid then cur else next
+           in base {cMcycle = cMcycle cur + 1}
       )
         <$> stallInternalS
         <*> (idValid <$> idExS)
