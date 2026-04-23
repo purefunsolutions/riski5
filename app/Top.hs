@@ -1,5 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 Mika Tammi
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
@@ -36,7 +37,11 @@ module Top (
 
 import Clash.Annotations.TH (makeTopEntityWithName)
 import Clash.Prelude
+#ifdef FIRMWARE_COREMARK
+import CoreMark (coreMarkFirmwareWords)
+#else
 import MemTest (memTestFirmwareWords)
+#endif
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
@@ -103,9 +108,17 @@ type ProgSize = 4096
 -- the imem bus-read port in "Riski5.Soc".
 type DataSize = 1
 
+-- | Selected via CPP: @-DFIRMWARE_COREMARK@ bakes the CoreMark image
+-- (produced by 'pkgs/coremark' + overlaid onto 'firmware/phase1/CoreMark.hs'
+-- by the CoreMark-variant build in 'pkgs/riski5-core/package.nix'); the
+-- default is the phase-2 BIOS memtest firmware.
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
+#ifdef FIRMWARE_COREMARK
+  $(listToVecTH (P.take 4096 (coreMarkFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
+#else
   $(listToVecTH (P.take 4096 (memTestFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
+#endif
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0

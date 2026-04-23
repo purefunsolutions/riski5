@@ -74,9 +74,29 @@
       # check that the cross toolchain + platform port still build.
       coremark = pkgs.callPackage ./coremark/package.nix {};
 
+      # CoreMark-baked bitstream (CM-4). Reuses the same
+      # pkgs/riski5-core/package.nix machinery as the MemTest
+      # default; the only difference is that @coremarkPkg@ here
+      # makes the build overlay firmware/phase1/CoreMark.hs with
+      # the real CoreMark bytes from the 'coremark' output above
+      # and pass -DFIRMWARE_COREMARK to Clash.
+      riski5-core-coremark = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        coremarkPkg = self'.packages.coremark;
+      };
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
+      };
+
+      # CoreMark-variant flasher. Same shell script as
+      # flash-riski5, but points at Riski5.sof inside the
+      # riski5-core-coremark output so `nix run .#flash-riski5-coremark`
+      # always grabs the CoreMark-baked bitstream.
+      flash-riski5-coremark = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-coremark;
       };
 
       console = pkgs.callPackage ../apps/console.nix {
@@ -90,6 +110,10 @@
       flash-riski5 = {
         type = "app";
         program = "${self'.packages.flash-riski5}/bin/flash-riski5";
+      };
+      flash-riski5-coremark = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-coremark}/bin/flash-riski5";
       };
       console = {
         type = "app";

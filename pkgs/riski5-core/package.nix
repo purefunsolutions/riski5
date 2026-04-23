@@ -16,7 +16,16 @@
   stdenv,
   lib,
   haskellPackages,
+  python3,
   quartus-ii-13,
+  # Optional: a derivation providing coremark.bin (typically
+  # self'.packages.coremark). When non-null, the build overlays
+  # a generated firmware/phase1/CoreMark.hs with the real CoreMark
+  # bytes baked in and passes -DFIRMWARE_COREMARK to Clash so
+  # Top.hs's CPP conditional picks 'coreMarkFirmwareWords' as the
+  # imem image. When null, the build is unchanged from the
+  # phase-2-P2-A memtest default.
+  coremarkPkg ? null,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -26,9 +35,10 @@
       containers
       mtl
     ]);
+  isCoremark = coremarkPkg != null;
 in
   stdenv.mkDerivation {
-    pname = "riski5-core";
+    pname = if isCoremark then "riski5-core-coremark" else "riski5-core";
     version = "0.1.0";
 
     # Reach up two levels to the repo root so we get src/, app/, and
@@ -46,7 +56,7 @@ in
         && base != "test";
     };
 
-    nativeBuildInputs = [ghcWithClash quartus-ii-13];
+    nativeBuildInputs = [ghcWithClash quartus-ii-13 python3];
 
     dontStrip = true;
     dontPatchELF = true;
@@ -57,9 +67,26 @@ in
 
             export HOME=$(mktemp -d)
 
+            ${lib.optionalString isCoremark ''
+              # CoreMark variant (CM-4): overlay firmware/phase1/CoreMark.hs
+              # with the real cross-compiled CoreMark 1.01 image from the
+              # 'coremark' flake output. The generator pads to exactly
+              # ProgSize (4096) 32-bit words with NOPs so 'listToVecTH'
+              # gets a length-correct list.
+              chmod -R u+w firmware/phase1
+              python3 ${./../coremark/gen-coremark-hs.py} \
+                ${coremarkPkg}/coremark.bin \
+                firmware/phase1/CoreMark.hs
+              echo "### CoreMark variant: generated firmware/phase1/CoreMark.hs"
+              head -20 firmware/phase1/CoreMark.hs
+              echo "..."
+              wc -l firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
-            # Top.hs imports Hello from firmware/phase1/, so include that
+            # Top.hs imports MemTest (or CoreMark under
+            # -DFIRMWARE_COREMARK) from firmware/phase1/, so include that
             # source root too. All per-feature language extensions live in
             # the .hs files themselves; Clash just needs the GHC2021
             # language standard and the two source roots.
@@ -72,6 +99,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
+              ${lib.optionalString isCoremark "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
