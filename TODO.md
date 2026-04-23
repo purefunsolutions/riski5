@@ -127,19 +127,34 @@ rules around maintaining it.
     likely.
 
   Diagnostic next steps when resumed:
-  1. Bake actual CoreMark firmware bytes into a sim test. Pull
-     the build artefact from @pkgs/coremark@, TH-read the bytes
-     into a `CoreMark.hs` the test imports, run `socSimFull` for
-     100k+ cycles. If the hang is pattern-specific, this should
-     reproduce.
-  2. If sim still doesn't reproduce, silicon instrumentation
+  1. Baked the CoreMark image into a sim test (new
+     `test/CoreMarkRealBytes.hs` + `test/CoreMarkSimSpec.hs`)
+     and ran it through `socSimFull`. __Found a sim-harness
+     bug, not the silicon bug__: even baseline (regfileAsync)
+     produces zero UART output in 50k cycles, while the real
+     bitstream prints the banner within milliseconds. Tests
+     are kept in-tree (for future debugging) but unregistered
+     from `Spec.hs`'s `defaultMain` so `cabal test` stays
+     green. Full write-up in the module header at
+     [`test/CoreMarkSimSpec.hs`](./test/CoreMarkSimSpec.hs).
+     Once the harness matches silicon baseline, re-register and
+     flip on the P2-B patch.
+  2. Likely culprits in the harness (per the module header):
+     (a) 'jtagUartAlteraSim' drain-gap model too strict for
+     CoreMark's specific poll pattern; (b) 'sramChipSim' 512 KB
+     timing nuance; (c) SoC-level init state the sim wrapper
+     doesn't reproduce. The module header lists the three
+     first experiments to run.
+  3. If, after the harness is fixed, with-P2-B produces no
+     output and without-P2-B produces the banner, we've
+     reproduced the silicon hang in sim. Debug from there.
+  4. If sim still doesn't reproduce, silicon instrumentation
      via Quartus SignalTap: tap `idExS.idPc`, `idExS.idRs1`,
      `rs1FwdS`, `stallInternalS`, `effectiveRs1AddrS` into a
      16-sample-deep buffer triggered on "pc stable for > 1000
      cycles" — tells us where the hang pc sits and what
      forwarding is giving the stalling instruction.
-  3. If SignalTap points at a forwarding-specific path, suspects
-     to rule out in order: (i) regfileSync's Verilog inference
+  5. Suspects to rule out: (i) regfileSync's Verilog inference
      mode on Cyclone II (Quartus may default to "Don't care" for
      read-during-write on simple dual-port M4K, vs Clash sim's
      read-first); (ii) the read-address gating adding a hold-time
@@ -147,9 +162,8 @@ rules around maintaining it.
      slack, but only +0.215 ns hold slack per the STA report —
      this margin is suspiciously thin and worth re-checking);
      (iii) wbHoldS capturing `Nothing` during sustained stalls
-     losing a forward that's needed at stall-release (unlikely
-     from code analysis but would show up in SignalTap).
-  4. Mitigation candidates if the bug resists isolation:
+     losing a forward that's needed at stall-release.
+  6. Mitigation candidates if the bug resists isolation:
      (i) drop the regfile-output bypass to M4K and keep the
      async regfile for one more phase — costs the 300-LE
      savings but unblocks P2-C / P2-D; (ii) add a

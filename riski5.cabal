@@ -153,6 +153,8 @@ test-suite riski5-test
     BramCoreSpec
     BramSpec
     BramStallForwardSpec
+    CoreMarkRealBytes
+    CoreMarkSimSpec
     CoreSimSpec
     CoreSpec
     DecodeSpec
