@@ -50,12 +50,24 @@ rules around maintaining it.
     `firmware/phase1/CoreMark.hs` exporting `coreMarkFirmwareWords`
     as 4096 NOPs; CM-4 replaces the body with the real
     cross-compiled bytes. 147 / 147 cabal tests green.
-  - **CM-4. Silicon run + writeup.** Flash, capture score on
-    `nios2-terminal`, document in
-    `docs/perf/coremark-2026-04-22.md` with CoreMark version,
-    GCC version, flags, iteration count, wall-clock, raw score,
-    CoreMarks/MHz, and comparison rows against the EEMBC
-    database for Cortex-M0 / PicoRV32 / VexRiscv.
+  - **CM-4. ~ Bitstream + partial silicon run.** Bitstream
+    variant `riski5-core-coremark` builds cleanly (Fmax
+    57.38 MHz, +7.57 ns slack at 40 MHz, 8,130 LEs). Flashes
+    via `nix run .#flash-riski5-coremark` without errors.
+    On silicon, CoreMark's work-loop completes (we see the
+    `2K performance run parameters for coremark.` line post-
+    benchmark, implying `list` / `matrix` / `state` CRCs all
+    matched the upstream-published `known_id=3` triplet — no
+    error lines printed). But the UART output hangs at
+    exactly 64 bytes (one full JTAG UART TX-FIFO), before the
+    `Total ticks` / `CoreMark 1.0 : <score>` lines. Memtest
+    on the same Soc.hs prints its full output fine, so the
+    UART path itself works. Diagnosis points at a UART
+    stall-edge interaction specific to ee_printf's stream of
+    SRAM-LW → UART-SW pairs. Documented in
+    [`docs/perf/coremark-2026-04-23.md`](./docs/perf/coremark-2026-04-23.md)
+    with diagnosis candidates. CM-4b / CM-5 to chase the hang
+    to a complete score.
 
 ## Next up
 
