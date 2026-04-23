@@ -102,15 +102,45 @@ rules around maintaining it.
   so timing is not the cause. Attempt archived as
   [`docs/perf/phase-2b-attempt-2026-04-24.patch`](./docs/perf/phase-2b-attempt-2026-04-24.patch).
 
+  Diagnostic progress:
+  - **Sim reproduction attempts (2026-04-24) — all pass with
+    P2-B applied.** Re-applied the phase-2B patch, ran 153 tests
+    (147 baseline + 2 new `UartBackpressureSpec` + 4 new
+    `BramStallForwardSpec`). All green. The new tests specifically
+    target the patterns plausibly implicated by CoreMark's
+    startup: 1-cycle BRAM-read stall followed by forwarding
+    (`.rodata` loads), bursts of the same, `csrr mcycle` → ALU →
+    `sw`, and BRAM-load → mcycle → UART chains. None reproduce
+    the silicon hang.
+  - What this narrows down: the silicon bug isn't the sim-modelable
+    part of the stall / forwarding / CSR-read / UART contract. It's
+    either a physical-timing / M4K-init / CDC-ish issue that Clash
+    sim doesn't model, or a pattern we haven't thought of yet.
+    SRAM-backed patterns still aren't in sim coverage
+    (`socSimAlteraUart` doesn't wire up `sramSim`); CoreMark uses
+    SRAM heavily for the stack + BSS, and MemTest does too. If
+    CoreMark hangs while MemTest doesn't, SRAM-stalls alone are
+    unlikely to be the culprit, but the combination of SRAM-stall
+    + BRAM-load + mcycle all at once hasn't been sim-tested.
+
   Diagnostic next steps when resumed:
-  1. Reproduce the hang in simulation by baking the CoreMark
-     firmware bytes into a new sim test (`test/SocCoremarkSim.hs`?)
-     that runs `socSim` for ~50M cycles with a sim-side JTAG UART
-     collector — catch the hang pre-silicon.
-  2. If sim doesn't reproduce, instrument the silicon bitstream
-     (e.g. GPIO-tap the pipeline stage IdEx.pc + IdEx.idRs1 + rs1FwdS)
-     to see which pc the hang stops on.
-  3. Suspects to rule out: (a) the read-address gating
+  1. Extend `socSimAlteraUart` (or add `socSimFull`) to wire up
+     `sramSim` so we can test SRAM stalls through the full SoC
+     in sim. Then write a synthetic firmware that chains
+     BRAM-load → SRAM-store → mcycle → UART in a loop, as close
+     to CoreMark's `.data`-init + `ee_printf` path as we can get
+     without real CoreMark bytes.
+  2. If that still passes, next step is baking real CoreMark
+     bytes into a sim test. Either generate a TH-imported
+     `CoreMark.hs` from the Nix build output (extending the
+     `gen-coremark-hs.py` script to produce a test-visible
+     artefact) or commit a frozen snapshot of the compiled
+     bytes to the repo.
+  3. If sim still doesn't reproduce, silicon instrumentation —
+     GPIO-tap `IdEx.pc + IdEx.idRs1 + rs1FwdS` — is the next
+     move. Quartus SignalTap Logic Analyzer is the tool; it
+     comes with Quartus 13.0sp1 so no extra license cost.
+  4. Suspects to rule out: (a) the read-address gating
      (`effectiveRs{1,2}AddrS`) — may interact badly with the 1-cycle
      BRAM-read stall that CoreMark hits on `.rodata` loads but
      MemTest never exercises; (b) `wbHoldS` capturing `Nothing`

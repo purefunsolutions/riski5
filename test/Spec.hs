@@ -14,6 +14,7 @@ import AsmSpec qualified
 import AvalonMmSpec qualified
 import BramCoreSpec qualified
 import BramSpec qualified
+import BramStallForwardSpec qualified
 import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
@@ -49,6 +50,7 @@ main =
       , TrapSpec.tests
       , BramSpec.tests
       , BramCoreSpec.tests
+      , BramStallForwardSpec.tests
       , LcdSpec.tests
       , SocSpec.tests
       , SramSpec.tests

@@ -152,6 +152,7 @@ test-suite riski5-test
     AvalonMmSpec
     BramCoreSpec
     BramSpec
+    BramStallForwardSpec
     CoreSimSpec
     CoreSpec
     DecodeSpec
