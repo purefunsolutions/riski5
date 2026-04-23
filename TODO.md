@@ -104,52 +104,60 @@ rules around maintaining it.
 
   Diagnostic progress:
   - **Sim reproduction attempts (2026-04-24) — all pass with
-    P2-B applied.** Re-applied the phase-2B patch, ran 153 tests
-    (147 baseline + 2 new `UartBackpressureSpec` + 4 new
-    `BramStallForwardSpec`). All green. The new tests specifically
-    target the patterns plausibly implicated by CoreMark's
-    startup: 1-cycle BRAM-read stall followed by forwarding
-    (`.rodata` loads), bursts of the same, `csrr mcycle` → ALU →
-    `sw`, and BRAM-load → mcycle → UART chains. None reproduce
-    the silicon hang.
-  - What this narrows down: the silicon bug isn't the sim-modelable
-    part of the stall / forwarding / CSR-read / UART contract. It's
-    either a physical-timing / M4K-init / CDC-ish issue that Clash
-    sim doesn't model, or a pattern we haven't thought of yet.
-    SRAM-backed patterns still aren't in sim coverage
-    (`socSimAlteraUart` doesn't wire up `sramSim`); CoreMark uses
-    SRAM heavily for the stack + BSS, and MemTest does too. If
-    CoreMark hangs while MemTest doesn't, SRAM-stalls alone are
-    unlikely to be the culprit, but the combination of SRAM-stall
-    + BRAM-load + mcycle all at once hasn't been sim-tested.
+    P2-B applied.** Re-applied the phase-2B patch and ran 156
+    tests across three coverage increments: 149 baseline +
+    `UartBackpressureSpec` (Altera-UART-faithful FIFO / drain-gap
+    contract) + `BramStallForwardSpec` (BRAM-stall + forwarding,
+    mcycle CSR read, BRAM → mcycle → UART chain) +
+    `SramStallForwardSpec` (multi-cycle SRAM SW / LW,
+    BRAM-load → SRAM-store .data-init pattern, BSS-zero-init
+    loop with taken-branch + SRAM store). All green with P2-B
+    applied. Bug still does not manifest in sim.
+  - Coverage-gap rationale: after this sweep the sim exercises
+    every pattern from CoreMark's startup I can enumerate — the
+    BSS zero-init loop, the .data-init loop, mcycle-read paths,
+    UART polling — through both the stall (single-cycle BRAM,
+    multi-cycle SRAM, UART back-pressure) and forwarding
+    (EX→X, MEM→X, W-1→X, stall-held address gate) plumbing.
+  - What this narrows down: the silicon bug is either (a) a
+    physical-timing / M4K-synthesis / reset-timing issue that
+    Clash-level sim cannot model, or (b) a pattern in the
+    real CoreMark firmware we haven't synthesised in sim yet.
+    Given how many synthetic patterns pass, (a) is increasingly
+    likely.
 
   Diagnostic next steps when resumed:
-  1. Extend `socSimAlteraUart` (or add `socSimFull`) to wire up
-     `sramSim` so we can test SRAM stalls through the full SoC
-     in sim. Then write a synthetic firmware that chains
-     BRAM-load → SRAM-store → mcycle → UART in a loop, as close
-     to CoreMark's `.data`-init + `ee_printf` path as we can get
-     without real CoreMark bytes.
-  2. If that still passes, next step is baking real CoreMark
-     bytes into a sim test. Either generate a TH-imported
-     `CoreMark.hs` from the Nix build output (extending the
-     `gen-coremark-hs.py` script to produce a test-visible
-     artefact) or commit a frozen snapshot of the compiled
-     bytes to the repo.
-  3. If sim still doesn't reproduce, silicon instrumentation —
-     GPIO-tap `IdEx.pc + IdEx.idRs1 + rs1FwdS` — is the next
-     move. Quartus SignalTap Logic Analyzer is the tool; it
-     comes with Quartus 13.0sp1 so no extra license cost.
-  4. Suspects to rule out: (a) the read-address gating
-     (`effectiveRs{1,2}AddrS`) — may interact badly with the 1-cycle
-     BRAM-read stall that CoreMark hits on `.rodata` loads but
-     MemTest never exercises; (b) `wbHoldS` capturing `Nothing`
-     during sustained stalls losing a forward that would be needed
-     at stall-release (possible but regfile memory state naturally
-     has the value by that point — unless there's a subtle timing
-     window); (c) some CoreMark-specific instruction sequence
-     (mcycle CSR read plus BRAM load plus UART poll) that doesn't
-     show up in any `test/*Spec.hs` case.
+  1. Bake actual CoreMark firmware bytes into a sim test. Pull
+     the build artefact from @pkgs/coremark@, TH-read the bytes
+     into a `CoreMark.hs` the test imports, run `socSimFull` for
+     100k+ cycles. If the hang is pattern-specific, this should
+     reproduce.
+  2. If sim still doesn't reproduce, silicon instrumentation
+     via Quartus SignalTap: tap `idExS.idPc`, `idExS.idRs1`,
+     `rs1FwdS`, `stallInternalS`, `effectiveRs1AddrS` into a
+     16-sample-deep buffer triggered on "pc stable for > 1000
+     cycles" — tells us where the hang pc sits and what
+     forwarding is giving the stalling instruction.
+  3. If SignalTap points at a forwarding-specific path, suspects
+     to rule out in order: (i) regfileSync's Verilog inference
+     mode on Cyclone II (Quartus may default to "Don't care" for
+     read-during-write on simple dual-port M4K, vs Clash sim's
+     read-first); (ii) the read-address gating adding a hold-time
+     issue on the effective-rs pins (slow-corner +5 ns setup
+     slack, but only +0.215 ns hold slack per the STA report —
+     this margin is suspiciously thin and worth re-checking);
+     (iii) wbHoldS capturing `Nothing` during sustained stalls
+     losing a forward that's needed at stall-release (unlikely
+     from code analysis but would show up in SignalTap).
+  4. Mitigation candidates if the bug resists isolation:
+     (i) drop the regfile-output bypass to M4K and keep the
+     async regfile for one more phase — costs the 300-LE
+     savings but unblocks P2-C / P2-D; (ii) add a
+     synthesis-attribute on the regfile write-mode to force
+     "NEW_DATA" or "OLD_DATA" explicitly on Cyclone II;
+     (iii) rewrite the regfile as a distributed-LUT-RAM
+     variant (synchronous write, asynchronous read) — costs
+     more LEs but removes the M4K-inference uncertainty.
 
 - **Phase 2 P2-C.** Sync dmem + first caches (direct-mapped
   1 KB I$ + 1 KB D$, per the Tiny tier defaults in

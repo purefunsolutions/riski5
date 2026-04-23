@@ -29,6 +29,7 @@ import SocSpec qualified
 import SpikeDiffSpec qualified
 import SpikeDriverSpec qualified
 import SramSpec qualified
+import SramStallForwardSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
 import UartBackpressureSpec qualified
@@ -54,6 +55,7 @@ main =
       , LcdSpec.tests
       , SocSpec.tests
       , SramSpec.tests
+      , SramStallForwardSpec.tests
       , SdramSpec.tests
       , HelloSpec.tests
       , UartBackpressureSpec.tests

@@ -121,6 +121,7 @@ module Riski5.Sram (
 
   -- * Behavioural model (simulation only)
   sramSim,
+  sramChipSim,
 ) where
 
 import Clash.Prelude hiding (not, (&&), (||))
@@ -477,26 +478,46 @@ sramSim ::
   )
 sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS, readyS)
  where
-  -- Storage: register over Vec n (BitVector 16). Updates at each
-  -- WE_N rising edge when CE_N is asserted.
+  (rdataS, pinsS, readyS) = sram selS addrS wdataS beS renS dqInS
+  (dqInS, storeS) = sramChipSim initial pinsS
+
+{- |
+Chip-side SRAM model — observes the 'SramPins' a controller is
+driving and produces the DQ-in signal the controller reads back,
+plus the current backing store.
+
+Lifted out of 'sramSim' so whole-SoC simulations ('socSimFull' in
+@Riski5.Soc@, and tests downstream) can place this model in
+parallel with the existing 'sram' controller instance inside
+'soc' — by feeding its DQ-in into 'SocIn.siSramDqIn' we get
+functional SRAM semantics in sim without rewiring the SoC's
+internals.
+
+Semantics match 'sramSim': writes latch on the rising edge of
+@WE_N@ (matching the real IS61LV25616-class chip's write timing),
+with per-byte gating by @UB_N@ / @LB_N@.
+-}
+sramChipSim ::
+  forall dom n.
+  ( HiddenClockResetEnable dom
+  , KnownNat n
+  , 1 <= n
+  ) =>
+  Vec n (BitVector 16) ->
+  Signal dom SramPins ->
+  (Signal dom (BitVector 16), Signal dom (Vec n (BitVector 16)))
+sramChipSim initial pinsS = (dqInS, storeS)
+ where
   storeS = register initial nextStoreS
 
   toIndex :: BitVector 18 -> Index n
   toIndex bv = fromInteger (toInteger bv `mod` toInteger (maxBound :: Index n) + 1)
 
-  -- Combinational read of the addressed half-word from the store —
-  -- using whatever chip address the controller is currently driving
-  -- (not the CPU address directly), so word reads' second half
-  -- returns the right value.
   dqInS =
     (\store p -> store V.!! toIndex (sramAddr p))
       <$> storeS
       <*> pinsS
 
-  (rdataS, pinsS, readyS) = sram selS addrS wdataS beS renS dqInS
-
-  -- Track WE_N across cycles so we can detect rising edges (which
-  -- is when the real chip latches the write).
   prevWeNS = register high (sramWeN <$> pinsS)
   weRisingS =
     (\prev curr -> prev == low && curr == high)

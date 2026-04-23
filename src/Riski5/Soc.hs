@@ -49,8 +49,10 @@ module Riski5.Soc (
   soc,
   socSim,
   socSimAlteraUart,
+  socSimFull,
   SocIn (..),
   SocInSim (..),
+  SocInFull (..),
   SocOut (..),
   SocOutSim (..),
 ) where
@@ -66,7 +68,7 @@ import Riski5.JtagUart (jtagUartAlteraSim, jtagUartSim)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
-import Riski5.Sram (SramPins (..), sram)
+import Riski5.Sram (SramPins (..), sram, sramChipSim)
 
 {- |
 Inputs the SoC reads from the board.
@@ -458,6 +460,88 @@ socSim progInit dataInit inSimS = outSimS
   -- sim memory; tests that only touch the lower portion of the
   -- 8 MB SDRAM address space are fine, and 'sdramIpSim' wraps
   -- modulo the vector length anyway.
+  sdramBusS = soSdramBus <$> outS
+  sdramReplyS = sdramIpSim simMem sdramBusS
+  simMem :: Vec 16384 (BitVector 16)
+  simMem = CP.repeat 0
+
+  outSimS = (\o t -> SocOutSim {sosOut = o, sosUartTx = t}) <$> outS <*> uartTxS
+
+{- |
+Sim-wrapper input for 'socSimFull': like 'SocInSim' but without
+@sisSramDqIn@, because the full-sim wrapper drives that signal
+itself via 'sramChipSim' based on the SoC's own SRAM-pin output.
+-}
+data SocInFull = SocInFull
+  { sifSwitches :: BitVector 18
+  , sifKeys :: BitVector 4
+  }
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Fullest sim wrapper currently available: Altera-IP-faithful UART
+('jtagUartAlteraSim') __and__ a closed-loop SRAM chip-model
+('sramChipSim') wired together with 'soc'. Lets tests exercise
+multi-cycle SRAM stalls through the full pipeline, back-to-back
+with BRAM loads and UART writes — the combination CoreMark's
+startup code hits in its .data-init loop plus early @ee_printf@.
+
+The SRAM backing is a @Vec n (BitVector 16)@ (half-words, matching
+the real IS61LV25616 chip's DQ width). Size 'n' is set by the test
+harness; tests that only touch the low portion of the SRAM address
+space are fine with modest 'n' — 'sramChipSim' wraps the address
+modulo the vector length.
+-}
+socSimFull ::
+  forall dom p d n.
+  ( HiddenClockResetEnable dom
+  , KnownNat p
+  , 1 <= p
+  , KnownNat d
+  , 1 <= d
+  , KnownNat n
+  , 1 <= n
+  ) =>
+  Vec p (BitVector 32) ->
+  Vec d (BitVector 32) ->
+  Vec n (BitVector 16) ->
+  Signal dom SocInFull ->
+  Signal dom SocOutSim
+socSimFull progInit dataInit sramInit inFullS = outSimS
+ where
+  fullInS =
+    ( \SocInFull {..} dq ur urRdy sdr ->
+        SocIn
+          { siSwitches = sifSwitches
+          , siKeys = sifKeys
+          , siSramDqIn = dq
+          , siUartRdata = ur
+          , siUartReady = urRdy
+          , siSdramReply = sdr
+          }
+    )
+      <$> inFullS
+      <*> sramDqInS
+      <*> uartRdataS
+      <*> uartReadyS
+      <*> sdramReplyS
+  outS = soc progInit dataInit fullInS
+
+  -- SRAM chip model — watches the pins the SoC's internal sram
+  -- controller drives, feeds DQ-in back combinationally.
+  sramPinsS = soSramPins <$> outS
+  (sramDqInS, _sramStoreS) = sramChipSim sramInit sramPinsS
+
+  uartBusS = soUartBus <$> outS
+  (uartRdataS, uartTxS, uartReadyS) =
+    jtagUartAlteraSim
+      (ambSel <$> uartBusS)
+      (ambAddr <$> uartBusS)
+      (ambWdata <$> uartBusS)
+      (ambBe <$> uartBusS)
+      (ambRe <$> uartBusS)
+
   sdramBusS = soSdramBus <$> outS
   sdramReplyS = sdramIpSim simMem sdramBusS
   simMem :: Vec 16384 (BitVector 16)

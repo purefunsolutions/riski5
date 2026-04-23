@@ -167,6 +167,7 @@ test-suite riski5-test
     SpikeDiffSpec
     SpikeDriverSpec
     SramSpec
+    SramStallForwardSpec
     TrapSpec
     UartBackpressureSpec
 
