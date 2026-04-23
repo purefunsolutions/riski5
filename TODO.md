@@ -34,12 +34,22 @@ rules around maintaining it.
     `stop_time` / `get_time` / `time_in_secs` against `mcycle`
     (read via `rdcycle` CSR), `portable_init` / `portable_fini`
     nop, `uart_putchar` → JTAG UART MMIO at `0x1000_0000`.
-  - **CM-3. Wire into the flake + firmware image.** Add
-    `coremark = pkgs.callPackage ./coremark/package.nix {};` to
-    `pkgs/default.nix`. New `firmware/phase1/CoreMark.hs` wrapper
-    + `app/Top.hs` edit loads the ELF's `.mif`. Bump `ProgSize`
-    to fit CoreMark's ~20–40 KB .text (to 4096 or 8192 words;
-    M4K budget has ~40 free).
+  - **CM-3. ✓ Wire flake + imem-bus-port + ProgSize bump.**
+    Wired `coremark = pkgs.callPackage ./coremark/package.nix {}`
+    into `pkgs/default.nix`. `Riski5.Soc` now instantiates a
+    second `blockRam progInit` addressed by `dAddrS` so loads in
+    the SlaveBram region (`0x0000_0000..`) return the imem
+    contents (.text + .rodata of CoreMark, when the CoreMark
+    bytes are eventually baked in). The 1-cycle sync-read
+    latency costs one stall per SlaveBram load, gated by a
+    small state register `bramWaitingS`. Old Vec-based 64-word
+    writable dmem dropped — writes to SlaveBram silently drop
+    now, but no existing firmware / test relied on it. `ProgSize`
+    bumped 2048 → 4096 in `app/Top.hs` (16 KB imem, ~32 M4K in
+    the dual-port-shared case or ~64 M4K if duplicated). Stub
+    `firmware/phase1/CoreMark.hs` exporting `coreMarkFirmwareWords`
+    as 4096 NOPs; CM-4 replaces the body with the real
+    cross-compiled bytes. 147 / 147 cabal tests green.
   - **CM-4. Silicon run + writeup.** Flash, capture score on
     `nios2-terminal`, document in
     `docs/perf/coremark-2026-04-22.md` with CoreMark version,

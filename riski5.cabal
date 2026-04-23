@@ -120,6 +120,7 @@ library riski5-firmware
   import:          warnings, language
   hs-source-dirs:  firmware/phase1
   exposed-modules:
+    CoreMark
     Hello
     MemTest
 

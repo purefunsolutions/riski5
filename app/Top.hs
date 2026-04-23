@@ -76,24 +76,36 @@ createDomain
 
 -- * Firmware --------------------------------------------------------
 
-{- | 2048-word (8 KB) instruction memory — grown from 1024 to fit the
-phase-2-P2-A BIOS-style memtest firmware (~2048 words after the
-UART + LCD progress strings land). The previous Hello firmware
-fit easily in 1024; @MemTest@'s four patterns × two passes ×
-two regions push it exactly over the 1024 boundary. Unused tail
-words are NOPs so pc-overflow wraps to NOP rather than producing
-undefined behaviour. M4K cost is 16 blocks (4608 bits each at
-128 × 36); ~15 % of the EP2C35's 105-block pool, still well under
-the 58-block reserve we keep for phase-2C caches.
--}
-type ProgSize = 2048
+{- | 4096-word (16 KB) instruction memory — grown from 2048 in CM-3
+to fit an eventual CoreMark firmware image (.text + .rodata ≈
+14.6 KB at -O2, measured with the phase-2 port at
+@firmware/phase2/coremark-port/@). The current bitstream still
+bakes the phase-2-P2-A BIOS memtest firmware at the head; the
+unused tail words are NOPs, so pc-overflow wraps to NOP rather
+than producing undefined behaviour.
 
--- | 64-word data memory. Phase-1B Hello firmware doesn't touch it.
-type DataSize = 64
+M4K cost: each @blockRam@ over a 4096 × 32-bit image is ~32 M4K
+(at the 128 × 36 aspect). The SoC now instantiates two of them
+— one fetch port plus one bus-read port for loads at
+@0x0000_0000+@ — that share 'progInit'. Quartus's fitter will
+either (a) map both onto a single true-dual-port M4K tile
+(~32 M4K total) when the identical-init hint is picked up, or
+(b) duplicate (~64 M4K). Either sits inside the EP2C35's 105-
+block pool; we're still under the ~58-block reserve for
+phase-2C caches in case (a), just slightly into it in case (b)
+— follow-up commits will narrow the reserve as needed.
+-}
+type ProgSize = 4096
+
+-- | Unused since CM-3. Kept as a non-zero dummy so the SoC's
+-- @1 <= d@ constraint on the dataInit parameter remains satisfied;
+-- the actual data-memory role at @0x0000_0000@ is now served by
+-- the imem bus-read port in "Riski5.Soc".
+type DataSize = 1
 
 firmwareImage :: Vec ProgSize (BitVector 32)
 firmwareImage =
-  $(listToVecTH (P.take 2048 (memTestFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
+  $(listToVecTH (P.take 4096 (memTestFirmwareWords P.++ P.repeat (0x0000_0013 :: BitVector 32))))
 
 dataImage :: Vec DataSize (BitVector 32)
 dataImage = repeat 0

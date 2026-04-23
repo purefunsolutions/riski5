@@ -66,6 +66,14 @@
         inherit riscv-formal;
       };
 
+      # EEMBC CoreMark 1.01 cross-compiled for the riski5 silicon
+      # target. Produces $out/coremark.{elf,bin,mif,dis,size} — the
+      # MIF is the artefact a future riski5-core-coremark bitstream
+      # variant (CM-4) loads into the imem M4K block. Kept as its
+      # own flake output so `nix build .#coremark` is a standalone
+      # check that the cross toolchain + platform port still build.
+      coremark = pkgs.callPackage ./coremark/package.nix {};
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;

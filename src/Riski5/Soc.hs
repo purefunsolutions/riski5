@@ -58,7 +58,6 @@ import Clash.Prelude hiding (And, Xor, not)
 import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
 import Riski5.AvalonMm (AvalonMmBus (..))
-import Riski5.Bram (bram)
 import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
@@ -184,12 +183,16 @@ soc ::
   ) =>
   -- | initial imem contents (RV32I machine-code words)
   Vec p (BitVector 32) ->
-  -- | initial dmem contents (typically all zero)
+  -- | initial dmem contents — unused since CM-3 replaced the 64-word
+  -- writable Vec-based dmem with the imem bus-port (a second blockRam
+  -- mirroring 'progInit'). Kept in the signature so existing test
+  -- callers don't break; drop the parameter in a later phase once
+  -- the test harnesses are updated in the same commit.
   Vec d (BitVector 32) ->
   -- | board-level inputs (switches, keys)
   Signal dom SocIn ->
   Signal dom SocOut
-soc progInit dataInit inS = outS
+soc progInit _dataInit inS = outS
  where
   -- ----- Core instance -----------------------------------------
   -- The stall signal comes from the bus mux: any slave that needs
@@ -204,38 +207,78 @@ soc progInit dataInit inS = outS
     coreWith tiny32M imemDataS dmemRdataS stallS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
-  -- imem driven from the core's F-stage pcFetchS via Clash
-  -- blockRam. Quartus maps this to true M4K blocks, which (a)
-  -- recovers several thousand LEs that the distributed-LUT-RAM
-  -- imem consumed, and (b) breaks the giant N:1 read-mux out of
-  -- the critical path. The 1-cycle read latency matches the
-  -- pipelined core's F → X hand-off (see 'Riski5.Core').
+  -- Two read ports over the same @progInit@:
+  --
+  --   * 'imemDataS' — fetch port, addressed by 'pcFetchS'.
+  --     Read-only. The 1-cycle sync-read latency matches the
+  --     pipelined core's F → D hand-off (see 'Riski5.Core').
+  --   * 'bramRdataS' — bus port, addressed by 'dAddrS'. Served
+  --     to the core via the 'SlaveBram' case of the bus read
+  --     mux. The 1-cycle sync-read latency costs one stall cycle
+  --     per load (see 'bramReadyS' below); in return, CoreMark
+  --     and other firmware can resolve @.rodata@ loads at
+  --     @0x0000_0000+@ against the imem contents (CM-3).
+  --
+  -- Both blockRam calls share 'progInit', so Quartus maps them to
+  -- the same M4K tile in true-dual-port mode (one initial-contents
+  -- image, two independent read ports) when the fitter spots the
+  -- identical init. Two 32 × 4096-word instances would otherwise
+  -- cost 64 M4K; dual-port mapping brings it down to 32.
   imemDataS :: Signal dom (BitVector 32)
   imemDataS =
-    blockRam progInit (pcFetchIdxS pcFetchS) (CP.pure Nothing)
-   where
-    nMax :: Unsigned 32
-    nMax = fromInteger (natVal (Proxy :: Proxy p))
-    pcFetchIdxS :: Signal dom (BitVector 32) -> Signal dom (Index p)
-    pcFetchIdxS = fmap pcToIdx
-    pcToIdx :: BitVector 32 -> Index p
-    pcToIdx b =
-      let w :: Unsigned 32
-          w = unpack (b `shiftR` 2)
-       in fromIntegral (w `mod` nMax)
+    blockRam progInit (addrToImemIdx <$> pcFetchS) (CP.pure Nothing)
 
-  -- ----- Data memory (slave at 0x0000_0000 — shares addr space
-  -- with imem for simplicity; programs pick a base above the code) --
   bramRdataS :: Signal dom (BitVector 32)
-  bramRdataS = bram dataInit dAddrS dWdataSForBram dBeSForBram
+  bramRdataS =
+    blockRam progInit (addrToImemIdx <$> dAddrS) (CP.pure Nothing)
 
-  -- Gate the data-memory write signal so it only fires when the
-  -- bus decoder has selected the BRAM slave. Same trick for the
-  -- other slaves below.
+  -- Byte-address → word-index into the @p@-sized imem. The low two
+  -- bits are ignored (word-aligned reads only — SB/SH/LB/LH paths
+  -- in the core mask/shift before getting here). 'mod' gives a
+  -- defined wrap for out-of-range addresses; the bus decoder's
+  -- 'slaveOf' already filters, so wrap happens only on deliberate
+  -- modular access.
+  addrToImemIdx :: BitVector 32 -> Index p
+  addrToImemIdx b =
+    let w :: Unsigned 32
+        w = unpack (b `shiftR` 2)
+        nMax :: Unsigned 32
+        nMax = fromInteger (natVal (Proxy :: Proxy p))
+     in fromIntegral (w `mod` nMax)
+
   bramSelS = (\a -> slaveOf a == SlaveBram) <$> dAddrS
-  dWdataSForBram = dWdataS
-  dBeSForBram =
-    (\sel be -> if sel then be else 0) <$> bramSelS <*> dBeS
+
+  -- 1-cycle stall per SlaveBram read: the sync-read blockRam
+  -- returns data one cycle after the address is latched, so the
+  -- core needs to hold the M-stage request in place for exactly
+  -- one extra cycle before capturing. 'bramWaitingS' is True on
+  -- the cycle when data is ready (i.e., we've already stalled
+  -- once for the current request); 'bramReadyS' lets the bus
+  -- stall mux unstall the core.
+  --
+  -- Writes to SlaveBram silently drop — the bus port is read-only
+  -- so firmware treating the @0x0000_0000+@ range as a scratch
+  -- region won't see its stores persist. CoreMark's .text +
+  -- .rodata live here and never write; other firmware uses SRAM
+  -- (0x2000_0000) or SDRAM (0x8000_0000) for writable data, so
+  -- dropping writes here is a non-regression.
+  bramReadReqS :: Signal dom Bool
+  bramReadReqS =
+    (\sel re -> if sel then re else False) <$> bramSelS <*> dRenS
+
+  bramWaitingS :: Signal dom Bool
+  bramWaitingS =
+    register False
+      ( (\waiting req -> if waiting then False else req)
+          <$> bramWaitingS
+          <*> bramReadReqS
+      )
+
+  bramReadyS :: Signal dom Bool
+  bramReadyS =
+    (\waiting req -> if waiting then True else CP.not req)
+      <$> bramWaitingS
+      <*> bramReadReqS
 
   -- ----- JTAG UART (bus externalised) --------------------------
   -- The UART slave lives outside the SoC boundary: we expose the
@@ -298,24 +341,30 @@ soc progInit dataInit inS = outS
   (sdramRdataS, sdramBusS, sdramReadyS) =
     sdram sdramSelS dAddrS dWdataS dBeS dRenS sdramReplyS
 
-  -- Bus-level stall: any selected slave can deassert ready. Today
-  -- SRAM + SDRAM stall on read-latency and UART stalls for the
-  -- 1-cycle-registered @av_waitrequest@ the Altera
-  -- @altera_avalon_jtag_uart@ IP asserts on the first cycle of every
-  -- Avalon-MM transaction. BRAM / GPIO / LCD are single-cycle.
+  -- Bus-level stall: any selected slave can deassert ready.
+  --   * SRAM + SDRAM stall on read-latency.
+  --   * UART stalls for the 1-cycle-registered @av_waitrequest@
+  --     the Altera @altera_avalon_jtag_uart@ IP asserts on the
+  --     first cycle of every Avalon-MM transaction.
+  --   * BRAM (imem-bus-port) stalls for exactly one cycle per
+  --     read so the sync-read blockRam output lines up with the
+  --     M-stage capture (CM-3).
+  --   * GPIO / LCD remain single-cycle.
   uartReadyS = siUartReady <$> inS
   stallS =
-    ( \s sramRdy sdramRdy uartRdy ->
+    ( \s sramRdy sdramRdy uartRdy bramRdy ->
         case s of
           SlaveSram -> not sramRdy
           SlaveSdram -> not sdramRdy
           SlaveJtagUart -> not uartRdy
+          SlaveBram -> not bramRdy
           _ -> False
     )
       <$> (slaveOf <$> dAddrS)
       <*> sramReadyS
       <*> sdramReadyS
       <*> uartReadyS
+      <*> bramReadyS
 
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
