@@ -207,7 +207,16 @@ soc progInit _dataInit inS = outS
   -- identical; phase-2 pipelining will make them differ by one
   -- cycle (fetch leads execute).
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
-    coreWith tiny32M imemDataS dmemRdataS stallS
+    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS
+
+  -- Fetch-side ready signal. BRAM fetches are always 1-cycle
+  -- sync-read, so 'imemReadyS' is 'pure True' — the core's
+  -- imem-capture logic treats that as the "BRAM-always-ready"
+  -- contract. Multi-cycle fetch paths (SRAM / SDRAM code) will
+  -- re-route this through an arbiter + transaction-ready pulse
+  -- when they land. For now, no SRAM-fetch support.
+  imemReadyS :: Signal dom Bool
+  imemReadyS = CP.pure True
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- Two read ports over the same @progInit@:

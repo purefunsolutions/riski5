@@ -68,6 +68,12 @@ coreWith ::
   CoreConfig ->
   -- | instruction word at the current PC (same-cycle read)
   Signal dom (BitVector 32) ->
+  -- | True whenever @imemData@ is the valid instruction for
+  -- @pcFetch@. BRAM fetches strap this 'pure True'; multi-cycle
+  -- fetches pulse it on the transaction-complete cycle. See the
+  -- header of 'Riski5.Core.core' for the multi-cycle fetch
+  -- contract.
+  Signal dom Bool ->
   -- | data-memory read response (same-cycle read)
   Signal dom (BitVector 32) ->
   -- | back-pressure: freezes all sequential state when 'True'
@@ -84,7 +90,7 @@ coreWith ::
   , Signal dom (Maybe (BitVector 5, BitVector 32))
   , Signal dom Rvfi
   )
-coreWith cfg imemData dmemRData stallS
+coreWith cfg imemData imemReadyS dmemRData stallS
   -- Phase 2A/2B: the current 'Riski5.Core.core' kernel covers both
   -- the RV32I 'tiny32' preset and its RV32M sibling 'tiny32M' —
   -- the MulDiv functional unit in "Riski5.Core.FU.MulDiv" is
@@ -93,8 +99,8 @@ coreWith cfg imemData dmemRData stallS
   -- without any shape change. Phase 2C's @Mem/Cache.hs@ + C-ext
   -- realigner + Zba/Zbb is the first preset boundary that needs
   -- a different kernel.
-  | cfg == tiny32 = core imemData dmemRData stallS
-  | cfg == tiny32M = core imemData dmemRData stallS
+  | cfg == tiny32 = core imemData imemReadyS dmemRData stallS
+  | cfg == tiny32M = core imemData imemReadyS dmemRData stallS
   | otherwise =
       errorX $
         "Riski5.Core.Assembly.coreWith: preset not yet "

@@ -432,8 +432,23 @@ previous 2-stage core — callers ('Riski5.Core.Assembly.coreWith',
 core ::
   forall dom.
   (HiddenClockResetEnable dom) =>
+  -- | instruction word on imem read port
   Signal dom (BitVector 32) ->
+  -- | True whenever @imemData@ is the valid instruction for
+  -- @pcFetch@. Single-cycle BRAM fetches strap this constant
+  -- 'True'; multi-cycle paths (SRAM / SDRAM fetches routed
+  -- through the SoC's bus decoder) pulse it only on the
+  -- transaction-complete cycle. The core uses this together
+  -- with 'stallS' to decide when to capture a (pc, instr)
+  -- pair into IF/ID: it preserves the correct pair across
+  -- both 1-cycle data stalls and multi-cycle fetch stalls.
+  -- See the "multi-cycle fetch" section in the module header.
+  Signal dom Bool ->
+  -- | data-memory read response (1-cycle path today)
   Signal dom (BitVector 32) ->
+  -- | back-pressure: freezes pipeline state when 'True'. Data
+  -- stalls (SRAM / SDRAM / UART waits) and fetch-in-flight
+  -- stalls both fold into this.
   Signal dom Bool ->
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
@@ -444,7 +459,7 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   , Signal dom Rvfi -- RVFI observability bundle
   )
-core imemData dmemRData stallS =
+core imemData imemReadyS dmemRData stallS =
   ( pcFetchS
   , mwPcOutS
   , dmemAddrOutS
@@ -493,35 +508,125 @@ core imemData dmemRData stallS =
   flushIfIdS :: Signal dom Bool
   flushIfIdS = (||) <$> flushS <*> flushPrevS
 
-  -- Previous cycle's stall. Used by 'imemHeldS' below and by the
-  -- imem-capture logic so a stall doesn't drop the imem output
-  -- that was about to be latched at the stall-onset edge.
+  -- Previous cycle's stall — kept for the RVFI-observability
+  -- tracking further down. Not used for imem-capture logic
+  -- anymore: the new multi-cycle-fetch-aware scheme below pairs
+  -- imem-capture with 'pendingS' instead.
   stallPrevS :: Signal dom Bool
   stallPrevS = register False stallInternalS
 
-  -- When a stall asserts, the current imem output would normally
-  -- be captured into IF/ID at that edge — but @stallInternalS@
-  -- holds IF/ID instead, losing that value. Meanwhile @pcFetch@
-  -- has already advanced one step ahead, so by the time the stall
-  -- releases imem has moved on and the about-to-be-captured word
-  -- is gone.
+  -- ====================================================================
+  -- Multi-cycle-fetch-aware imem capture
+  -- ====================================================================
   --
-  -- Fix: latch imem into @imemHeldS@ every non-stalled cycle.
-  -- On the first cycle after stall releases, IF/ID captures from
-  -- the held value instead of the live @imemData@. This is the
-  -- same trick the 2-stage core used — ported here so back-
-  -- pressure from SRAM / SDRAM doesn't drop instructions.
-  imemHeldS :: Signal dom (BitVector 32)
-  imemHeldS = regEn 0x0000_0013 (not <$> stallPrevS) imemData
+  -- The IF stage has to handle two sources of back-pressure with
+  -- very different semantics:
+  --
+  --   * __Data stall__ (existing): the current instruction in X is
+  --     waiting on a slow slave (SRAM / SDRAM / UART on the data
+  --     path). 'stallInternalS' goes high for 1-4 cycles while the
+  --     pipeline freezes. On the stall-onset cycle, @imemData@
+  --     already holds the next-to-capture instruction
+  --     (@memory[pcFetchPrev]@ via the blockRam's 1-cycle
+  --     sync-read), but IF/ID can't capture it because the pipe
+  --     register is frozen. When the stall eventually releases,
+  --     @pcFetch@ has advanced ahead so @imemData@ has moved on to
+  --     the __next__ instruction, and the "about-to-be-captured"
+  --     one has to be preserved.
+  --
+  --   * __Fetch stall__ (new, SRAM / SDRAM code execution): the
+  --     current @pcFetch@ lands in a multi-cycle slave's range.
+  --     'imemReadyS' stays 'False' while the fetch FSM cycles,
+  --     then pulses 'True' on the completion cycle.
+  --     @pcFetchPrev@ should track the __held__ @pcFetch@ (not the
+  --     pre-jalr value) so the (pc, instr) pair committed to IF/ID
+  --     names the right source address.
+  --
+  -- Unified scheme:
+  --
+  --   * 'pendingS' latches True on any cycle where @stall@ && @imemReady@
+  --     is true (an inst was valid but couldn't be captured), and
+  --     clears on the first non-stalled cycle (the delayed
+  --     capture has now happened). Exactly the "1-cycle data stall"
+  --     shape.
+  --   * 'imemHeldS' and 'pcFetchHoldS' latch the (instr, pc) pair
+  --     __once__ at the start of the pending window (enable =
+  --     stall && imemReady && not pending).
+  --   * 'effectiveImemS' / 'effectivePcPrevS' pick 'imemHeldS' /
+  --     'pcFetchHoldS' when 'pendingS' is set, otherwise fall back
+  --     to the fresh @imemData@ / 'pcFetchPrevS'.
+  --   * 'pcFetchPrevS' is a plain 'register' over @pcFetch@ (no
+  --     stall gating). For multi-cycle fetches @pcFetch@ is held
+  --     by the stall, so @pcFetchPrevS@ settles on the fetch
+  --     address within one cycle. For data stalls the held (old)
+  --     value lives in 'pcFetchHoldS' and is recovered via
+  --     'pendingS'.
+  --
+  -- Net effect: single-cycle BRAM fetches, 1-cycle data stalls,
+  -- and multi-cycle SRAM / SDRAM fetches all route (pc, instr)
+  -- pairs to IF/ID correctly and consistently.
 
-  -- Effective imem for IF/ID capture: live @imemData@ normally,
-  -- held value on the cycle after a stall.
+  -- Latches True when stall+imemReady fires with nothing pending;
+  -- clears on the first non-stalled cycle (the delayed capture
+  -- consumes it). Holds across sustained stalls with a single
+  -- pending instruction.
+  pendingNextS :: Signal dom Bool
+  pendingNextS =
+    ( \pending stall rdy -> case (pending, stall, rdy) of
+        (True, True, _) -> True -- sustain: still stalled, already pending
+        (True, False, _) -> False -- clear: stall released, capture consumes
+        (False, True, True) -> True -- set: fresh valid-but-stalled
+        _ -> False
+    )
+      <$> pendingS
+      <*> stallInternalS
+      <*> imemReadyS
+
+  pendingS :: Signal dom Bool
+  pendingS = register False pendingNextS
+
+  -- Capture the (pc, instr) pair exactly once at the start of a
+  -- pending window (stall + imemReady with nothing pending yet).
+  -- Subsequent cycles of the same stall don't overwrite —
+  -- preserving what IF/ID still owes itself.
+  holdEnS :: Signal dom Bool
+  holdEnS =
+    ( \stall rdy pending -> case (stall, rdy, pending) of
+        (True, True, False) -> True
+        _ -> False
+    )
+      <$> stallInternalS
+      <*> imemReadyS
+      <*> pendingS
+
+  imemHeldS :: Signal dom (BitVector 32)
+  imemHeldS = regEn 0x0000_0013 holdEnS imemData
+
+  pcFetchHoldS :: Signal dom (BitVector 32)
+  pcFetchHoldS = regEn 0 holdEnS pcFetchPrevS
+
+  -- Effective imem / pc-prev for IF/ID capture. 'pendingS' picks
+  -- the latched pair; otherwise the fresh live pair. When neither
+  -- is valid (stall=False but imemReady=False, which shouldn't
+  -- happen under correct SoC plumbing — every fetch-in-flight
+  -- cycle carries stall=True), we emit a NOP so the decode logic
+  -- still sees a defined word.
   effectiveImemS :: Signal dom (BitVector 32)
   effectiveImemS =
-    (\useHeld held live -> if useHeld then held else live)
-      <$> stallPrevS
+    ( \pending rdy held live ->
+        if pending then held else if rdy then live else 0x0000_0013
+    )
+      <$> pendingS
+      <*> imemReadyS
       <*> imemHeldS
       <*> imemData
+
+  effectivePcPrevS :: Signal dom (BitVector 32)
+  effectivePcPrevS =
+    (\pending hold prev -> if pending then hold else prev)
+      <$> pendingS
+      <*> pcFetchHoldS
+      <*> pcFetchPrevS
 
   -- ====================================================================
   -- F stage
@@ -544,12 +649,14 @@ core imemData dmemRData stallS =
       <*> xPcNextS
       <*> pcFetchS
 
-  -- PC of the instruction currently in IF/ID (one cycle behind
-  -- @pcFetch@ in steady state — last cycle's fetch).
+  -- PC of the instruction currently on @imemData@ (one cycle
+  -- behind @pcFetch@ in steady state — last cycle's fetch). For
+  -- multi-cycle fetches @pcFetch@ is held by the stall, so
+  -- 'pcFetchPrevS' settles on the fetch address within one cycle.
+  -- For 1-cycle data stalls the __pre-stall__ value is preserved
+  -- via 'pcFetchHoldS' + 'pendingS' upstream.
   pcFetchPrevS :: Signal dom (BitVector 32)
-  pcFetchPrevS =
-    register 0 $
-      mux stallInternalS pcFetchPrevS pcFetchS
+  pcFetchPrevS = register 0 pcFetchS
 
   -- ====================================================================
   -- IF/ID pipeline register
@@ -586,7 +693,7 @@ core imemData dmemRData stallS =
       <$> stallInternalS
       <*> flushIfIdS
       <*> ifIdS
-      <*> pcFetchPrevS
+      <*> effectivePcPrevS
       <*> effectiveImemS
       <*> fValidTrackS
 

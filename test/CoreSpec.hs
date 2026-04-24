@@ -100,7 +100,8 @@ simulateProgram n program =
         -- pipelined core expects (pcFetch at cycle N-1 →
         -- instruction at cycle N).
         imemSig = CP.register 0x0000_0013 (fmap imemOf pcFetch)
-        (pcFetch, outPc, dAddr, dWdata, dBe, dRen, _wb, _rvfi) = core imemSig dmem (CP.pure P.False)
+        (pcFetch, outPc, dAddr, dWdata, dBe, dRen, _wb, _rvfi) =
+          core imemSig (CP.pure P.True) dmem (CP.pure P.False)
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
     samples =

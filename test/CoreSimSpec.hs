@@ -406,7 +406,8 @@ simHarness program =
       -- paired with pcExec.
       imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
       dmem = CP.pure 0
-      (pcFetchS, _pcExecS, _, _, _, _, wbS, rvfiS) = core imem dmem (CP.pure P.False)
+      (pcFetchS, _pcExecS, _, _, _, _, wbS, rvfiS) =
+        core imem (CP.pure P.True) dmem (CP.pure P.False)
       -- Retire flag from the RVFI tap: distinguishes "valid
       -- retirement" from "no writeback this cycle" (which happens
       -- both on bubble cycles and on real store / branch retires).

@@ -103,7 +103,8 @@ runProgram program nCycles =
           -- trace paired with pcExec.
           imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
           dmem = CP.pure 0
-          (pcFetchS, pcExecS, _, _, _, _, wbS, _) = core imem dmem (CP.pure P.False)
+          (pcFetchS, pcExecS, _, _, _, _, wbS, _) =
+            core imem (CP.pure P.True) dmem (CP.pure P.False)
          in
           bundle (pcExecS, wbS)
    in sampleN @CP.System (2 P.* nCycles P.+ 20) $
