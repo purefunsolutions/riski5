@@ -82,6 +82,20 @@ rules around maintaining it.
 
 ## Next up
 
+- **SRAM-execution architectural gap (2026-04-24).** The core's
+  fetch port hardwires `imemDataS` to `blockRam progInit` with
+  `pcFetch mod ProgSize`, so any jump to @0x2000_0000+@ wraps
+  back into BRAM. Confirmed on silicon via new debug firmware
+  `firmware/phase1/HelloSramExec.hs` + `.#flash-riski5-sramexec`
+  variant — captures an infinite `BBBBB...` stream (15 s of
+  firmware restart loops) instead of the expected `BS`. Full
+  writeup with the fix plan (fetch-side bus decoder, multi-cycle
+  fetch stall protocol, SRAM fetch/data arbitration) at
+  [`docs/perf/sram-exec-probe-2026-04-24.md`](./docs/perf/sram-exec-probe-2026-04-24.md).
+  Separate from the phase-2B silicon hang (CoreMark's `.text`
+  lives in BRAM too), but worth closing: long-term any firmware
+  larger than the 16 KB ProgSize will need SRAM execution.
+
 - **Phase 2 P2-B.** M4K regfile swap (`regfileAsync` → `regfileSync`
   — the `RegfileBacking` scaffolding from P2A-1 is already in place).
   Saves ~300 LEs, consumes 2 M4K. Requires ID/EX reg to carry

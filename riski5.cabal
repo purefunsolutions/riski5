@@ -122,6 +122,7 @@ library riski5-firmware
   exposed-modules:
     CoreMark
     Hello
+    HelloSramExec
     MemTest
 
   build-depends:

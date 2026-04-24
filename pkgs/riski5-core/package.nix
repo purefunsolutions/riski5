@@ -26,6 +26,18 @@
   # imem image. When null, the build is unchanged from the
   # phase-2-P2-A memtest default.
   coremarkPkg ? null,
+  # Build the SRAM-execution debug variant: overlays
+  # @firmware/phase1/CoreMark.hs@ with a one-file re-export of
+  # @HelloSramExec.helloSramExecFirmwareWords@ and reuses the
+  # existing @-DFIRMWARE_COREMARK@ build path. Keeping Top.hs
+  # __bit-identical__ across variants is load-bearing: even
+  # comment-only line-number shifts in Top.hs were producing
+  # functionally-different Quartus placements and non-deterministic
+  # bitstream regressions during the 2026-04-24 SRAM-exec probe —
+  # see @docs/perf/sram-exec-probe-2026-04-24.md@.
+  # Only one of @coremarkPkg != null@ and @sramExec@ should be set
+  # at a time.
+  sramExec ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -36,9 +48,13 @@
       mtl
     ]);
   isCoremark = coremarkPkg != null;
+  isSramExec = sramExec && !isCoremark;
 in
   stdenv.mkDerivation {
-    pname = if isCoremark then "riski5-core-coremark" else "riski5-core";
+    pname =
+      if isCoremark then "riski5-core-coremark"
+      else if isSramExec then "riski5-core-sramexec"
+      else "riski5-core";
     version = "0.1.0";
 
     # Reach up two levels to the repo root so we get src/, app/, and
@@ -83,6 +99,41 @@ in
               wc -l firmware/phase1/CoreMark.hs
             ''}
 
+            ${lib.optionalString isSramExec ''
+              # SRAM-execution debug variant: overlay CoreMark.hs with a
+              # re-export of HelloSramExec.helloSramExecFirmwareWords.
+              # The -DFIRMWARE_COREMARK path in Top.hs then picks this
+              # up through the existing CoreMark import — no Top.hs
+              # edits, no Quartus placement shift.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sramExec Nix build: re-exports
+              -- HelloSramExec's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the SRAM-exec probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSramExec (helloSramExecFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSramExecFirmwareWords
+              EOF
+              # Strip the leading whitespace Nix's heredoc introduces;
+              # the re-wrap uses 14 leading spaces per line above.
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sramExec variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -99,7 +150,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString isCoremark "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

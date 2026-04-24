@@ -85,6 +85,19 @@
         coremarkPkg = self'.packages.coremark;
       };
 
+      # Debug bitstream that bakes firmware/phase1/HelloSramExec.hs
+      # into the imem. Probes whether the core can execute
+      # instructions fetched from SRAM — the current SoC hardwires
+      # @imemDataS@ to BRAM with @pcFetch `mod` ProgSize@, so the
+      # expected on-silicon behaviour is an infinite 'B' stream
+      # (fetch at 0x2000_0000 wraps to BRAM[0] = firmware restart).
+      # If the fetch path ever grows an SRAM route, this bitstream
+      # is the regression probe.
+      riski5-core-sramexec = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sramExec = true;
+      };
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
@@ -97,6 +110,12 @@
       flash-riski5-coremark = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-coremark;
+      };
+
+      # Flasher for the SRAM-execution debug bitstream.
+      flash-riski5-sramexec = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sramexec;
       };
 
       console = pkgs.callPackage ../apps/console.nix {
@@ -114,6 +133,10 @@
       flash-riski5-coremark = {
         type = "app";
         program = "${self'.packages.flash-riski5-coremark}/bin/flash-riski5";
+      };
+      flash-riski5-sramexec = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sramexec}/bin/flash-riski5";
       };
       console = {
         type = "app";
