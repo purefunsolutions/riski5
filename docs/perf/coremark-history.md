@@ -28,3 +28,4 @@ Methodology:
 | 2026-04-23T20:30:00Z | `1fcb6ed` | 538,520,721 | 13.463 s | 44.57 | 1.114 | **Baseline.** CM-4 complete — 5-stage F\|D\|X\|M\|W, no caches, async LE regfile, sync-read imem bus-port (1-cycle stall per .rodata load), SRAM/SDRAM stalls on stack access. |
 | 2026-04-23T22:41:26Z | `6431a14` | 538520721 | 13.463 s | 44.57 | 1.114 |  |
 | 2026-04-23T23:49:57Z | `92cfbb5` | 538520721 | 13.463 s | 44.57 | 1.114 |  |
+| 2026-04-24T00:36:43Z | `7995dc8` | 538520721 | 13.463 s | 44.57 | 1.114 | Sanity re-measurement. Confirms clock reverted from 30 MHz experiment back to 40 MHz, Core.hs back to regfileAsync — baseline intact. |
