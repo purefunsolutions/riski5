@@ -129,49 +129,117 @@ it's a separate architectural gap worth closing regardless.
 
 Route the fetch port through a bus decoder — the same
 `slaveOf` table `Riski5.Bus` already has for the data side.
-Concretely:
+An SoC-only attempt was made on 2026-04-24 and reverted; see
+"Failed SoC-only attempt" below. The remaining proper fix
+requires a companion core refactor.
 
-1. **Fetch-side decoder in `Soc.hs`.** Switch `imemDataS` from
-   "always BRAM" to a mux keyed on `pcFetch`'s region:
-   - BRAM range (`0x0..0xFFF`): existing `blockRam progInit`
-     path, 1-cycle latency.
-   - SRAM range (`0x2000_0000..0x2007_FFFF`): route through
-     the `sram` controller, 3-cycle latency per read.
-   - SDRAM range (`0x8000_0000..0x807F_FFFF`): route through
-     the `sdram` IP wrapper, multi-cycle + refresh.
-   - Out of range: return `0x0000_0013` (NOP) or raise a
-     fetch-side trap — pick one.
+### Core-side IF-stage refactor (required)
 
-2. **Fetch stall protocol.** The core currently assumes imem
-   returns in 1 cycle. Add an explicit `imemReady` signal
-   alongside `imemData` so the SoC can stall the core when
-   a multi-cycle fetch is in flight. This is a shape change
-   on `Riski5.Core.core` and `Riski5.Core.Assembly.coreWith`.
+The existing `Riski5.Core` IF stage assumes `imemData` arrives
+one cycle after `pcFetch` and handles 1-cycle data stalls via
+`imemHeldS` (hold the about-to-be-captured instruction across
+the stall) + `pcFetchPrevS` (stall-gated, so `pcFetchPrev`
+stays put while pcFetch is frozen).
 
-3. **SRAM controller arbitration.** There's one physical SRAM
-   chip. Fetch and data accesses need to serialize. Two
-   options:
-   - **Fetch-priority.** Fetch always wins; data stalls when
-     fetch is running. Simple, correct, but stalls every data
-     access during SRAM code execution. Probably good enough
-     for a debugging / phase-1-plus feature.
-   - **Round-robin / fair.** More throughput but more logic.
-     Overkill for now.
+Neither survives a multi-cycle __fetch__ stall:
 
-4. **A separate `bramFetchS`-style fetch port for BRAM.**
-   BRAM is a Clash-inferred dual-port M4K already; the fetch
-   port can keep using it directly without going through the
-   bus decoder. Only SRAM / SDRAM fetches need arbitration.
-   This keeps the common case (BRAM code) at 1-cycle fetch.
+  * `pcFetchPrevS` is updated at the edge __before__ stall
+    asserts, which for a fetch-stall captures the pre-jalr pc
+    (BRAM) rather than the post-jalr pc (SRAM). When the stall
+    eventually releases the IF/ID register captures the wrong
+    pc / instruction pair.
+  * `imemHeldS` captures `imemData` during the first stall
+    cycle (when `stallPrev` is False). For a fetch-stall the
+    first stall cycle is exactly the cycle the multi-cycle
+    fetch started — `imemData` at that moment is junk / 0,
+    so `imemHeldS` latches garbage and hands it back to IF/ID
+    when the stall releases.
+
+Proposed core changes:
+
+  1. Add `imemReady :: Signal dom Bool` as a new input on
+     `core` / `coreWith`. BRAM fetches strap this True always;
+     SRAM fetches pulse True only on the cycle the fetched
+     instruction is present on `imemData`.
+  2. Redefine `pcFetchPrev` to advance when `imemReady` AND not
+     stall (i.e., "a fresh fetch is completing"). Drop the
+     stall-only gating.
+  3. Redefine `imemHeldS` capture to fire on `imemReady` (the
+     instruction-valid moment), not on the inverse of
+     `stallPrev` (the pre-stall moment).
+  4. Gate IF/ID capture on `imemReady && !stall`. Today IF/ID
+     capture is only `!stall`.
+
+None of this is invasive — ~15 lines of core changes — but it
+is an interface break on `coreWith` / `core` that flows
+through every test.
+
+### SoC-side (after core is updated)
+
+  1. __Fetch-side decoder in `Soc.hs`.__ Mux `imemDataS` by
+     `pcFetch`'s region: BRAM (existing path), SRAM (arbitrated
+     controller), SDRAM (future).
+  2. __SRAM controller arbitration.__ One physical chip; fetch
+     and data requests need a mini state machine. Data-priority
+     seems cleanest (data at X is "further along" than fetch
+     at F), with fetch blocking a data-requesting cycle only
+     when a fetch transaction is mid-flight.
+  3. __Wire `imemReady` back.__ True on the cycle the fetched
+     instruction lands on `imemData`. Also True always for
+     BRAM (existing sync-read gives a valid word every cycle).
+  4. Keep the BRAM fetch port __direct__ (no bus decoder
+     indirection): Clash-inferred dual-port M4K, 1-cycle latency,
+     no arbitration overhead. Only SRAM / SDRAM fetches take
+     the arbitrated slower path.
+
+## Failed SoC-only attempt (2026-04-24)
+
+Tried to implement the fix by editing `Riski5.Soc` alone:
+added an `SramOwner` state register, muxed the SRAM controller
+inputs between fetch and data, captured fetch results into a
+`fetchSramRegS` holding register, and asserted a `fetchStallS`
+so the existing core's stall infrastructure would freeze
+during multi-cycle fetches.
+
+All 159 `cabal tests` stayed green (sim doesn't exercise the
+broken pcFetchPrev / imemHeldS semantics on this path), but
+on silicon:
+
+  * __`riski5-core-sramexec` bitstream__: same infinite
+    `BBBBB...` stream as before. Confirmed the root cause is
+    `imemHeldS` latching `0` at the first fetch-stall cycle
+    (because `cachedSram = fetchSramReg` starts at 0), so
+    even when the SRAM transaction completes, the core reads
+    stale 0 out of `imemHeldS` and traps on the illegal
+    instruction.
+  * __`riski5-core-coremark` bitstream__: silicon hung too,
+    despite CoreMark never targeting SRAM for fetch. Fmax
+    still closed (54.5 MHz with +7 ns slack at 40 MHz target)
+    but the Quartus placement shift from restructuring the
+    `imemDataS` mux and split-then-recombined `stallS` was
+    enough to produce a functionally broken bitstream.
+    Another Cyclone II / Quartus 13.0sp1 placement-stability
+    gotcha on top of the earlier CPP-line-number one.
+
+Reverted. `git show <revert-sha>:src/Riski5/Soc.hs` for the
+attempt code if resuming from this point. Lesson: SoC-only
+fixes for multi-cycle fetch paper over a core-level issue
+that has to be fixed at the source. Don't do it again.
 
 ## Next steps when resumed
 
-- Decide whether SRAM execution is phase-2-scope or
-  phase-1-plus debugging. Current firmware (CoreMark, Hello,
-  MemTest) all live in BRAM and fit in 16 KB; no immediate
-  need for SRAM code. But long-term, anything bigger than
-  16 KB *will* need it.
-- If proceeding: start with the minimal "BRAM + SRAM fetch
-  decoder" slice, leave SDRAM fetches for later. The firmware
-  above is the regression probe; add a `cabal test` variant
-  in `test/SramExecSpec.hs` that sim-tests the same pattern.
+- __Do the core refactor first.__ Add `imemReady`, redefine
+  `pcFetchPrev` / `imemHeldS` semantics, run the 159 tests
+  to confirm nothing regresses on BRAM-only code paths.
+  Build both `riski5-core` and `riski5-core-coremark`, flash,
+  confirm silicon stays at 44.57 CoreMarks. That's the safety
+  net.
+- __Then do the SoC arbiter.__ Same structure as the failed
+  attempt but now pointing at the new `imemReady` signal.
+  Flash `riski5-core-sramexec`; expect `BS` or better.
+- __Sim coverage.__ Add `test/SramExecSpec.hs` with a
+  `socSimFull`-driven run of `helloSramExecFirmwareWords`
+  that asserts the UART stream is exactly `BS` followed by
+  an ebreak trap. This would have caught the silicon hang
+  in `cabal test` had it existed — and would let us iterate
+  on the fix without a Quartus round-trip per attempt.

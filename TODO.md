@@ -88,10 +88,49 @@ rules around maintaining it.
   back into BRAM. Confirmed on silicon via new debug firmware
   `firmware/phase1/HelloSramExec.hs` + `.#flash-riski5-sramexec`
   variant — captures an infinite `BBBBB...` stream (15 s of
-  firmware restart loops) instead of the expected `BS`. Full
-  writeup with the fix plan (fetch-side bus decoder, multi-cycle
-  fetch stall protocol, SRAM fetch/data arbitration) at
+  firmware restart loops) instead of the expected `BS`.
+
+  **2026-04-24 fix attempt — reverted.** Tried to implement
+  fetch-side arbitration in `Riski5.Soc` alone (`SramOwner`
+  state register, muxed controller inputs, `fetchSramRegS`
+  holding register, combined `fetchStallS` into the existing
+  `stallS`). All 159 cabal tests stayed green but __neither__
+  the sramexec nor the CoreMark bitstreams ran on silicon:
+
+    * sramexec still produced `BBBB...` because
+      `Riski5.Core`'s `imemHeldS` latches 0 on the first
+      fetch-stall cycle (where `cachedSram = 0`), handing
+      that 0 back as the "captured" instruction when the
+      fetch actually completes. Stale data → illegal-inst
+      trap → restart → loop.
+    * CoreMark hung too, despite never fetching from SRAM:
+      restructuring the `imemDataS` mux + split-then-recombined
+      `stallS` was enough to produce a Quartus placement
+      Quartus couldn't drive correctly on Cyclone II. Same
+      class of silicon gotcha as the earlier CPP-line-shift
+      one.
+
+  Root cause of the non-fix: the core's IF stage assumes 1-cycle
+  fetch latency end-to-end. `pcFetchPrevS` is stall-gated
+  (freezes before fetch-stall updates it to the new SRAM pc)
+  and `imemHeldS` captures on the wrong cycle (pre-stall, not
+  fetch-complete). Neither works for multi-cycle fetch.
+
+  Full writeup + refactor plan at
   [`docs/perf/sram-exec-probe-2026-04-24.md`](./docs/perf/sram-exec-probe-2026-04-24.md).
+  Next session needs to:
+    1. Core-side: add `imemReady` input, redefine
+       `pcFetchPrevS` / `imemHeldS` / IF-capture gating.
+       ~15 lines of `Riski5.Core`; interface break that flows
+       through every test.
+    2. Sim coverage: `test/SramExecSpec.hs` against
+       `socSimFull` so the next attempt can iterate without a
+       Quartus round-trip.
+    3. SoC-side: re-do the arbiter / mux pointing at the new
+       `imemReady`.
+    4. CoreMark baseline verify on silicon before declaring
+       the refactor done.
+
   Separate from the phase-2B silicon hang (CoreMark's `.text`
   lives in BRAM too), but worth closing: long-term any firmware
   larger than the 16 KB ProgSize will need SRAM execution.

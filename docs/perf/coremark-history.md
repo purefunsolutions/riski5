@@ -30,3 +30,4 @@ Methodology:
 | 2026-04-23T23:49:57Z | `92cfbb5` | 538520721 | 13.463 s | 44.57 | 1.114 |  |
 | 2026-04-24T00:36:43Z | `7995dc8` | 538520721 | 13.463 s | 44.57 | 1.114 | Sanity re-measurement. Confirms clock reverted from 30 MHz experiment back to 40 MHz, Core.hs back to regfileAsync — baseline intact. |
 | 2026-04-24T01:19:52Z | `8baa674` | 538520721 | 13.463 s | 44.57 | 1.114 | Verification re-measurement after SRAM-exec probe work (new `HelloSramExec` firmware + `riski5-core-sramexec` bitstream variant). CoreMark path unchanged because the SRAMEXEC variant overlays `CoreMark.hs` rather than modifying `Top.hs` — keeps Quartus placement stable. |
+| 2026-04-24T02:08:06Z | `7d2284a` | 538520721 | 13.463 s | 44.57 | 1.114 | Verification after SRAM-fetch SoC-only arbiter attempt (reverted) — baseline restored, CoreMark intact. |
