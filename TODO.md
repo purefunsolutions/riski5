@@ -82,13 +82,39 @@ rules around maintaining it.
 
 ## Next up
 
-- **SRAM-execution architectural gap (2026-04-24).** The core's
-  fetch port hardwires `imemDataS` to `blockRam progInit` with
-  `pcFetch mod ProgSize`, so any jump to @0x2000_0000+@ wraps
-  back into BRAM. Confirmed on silicon via new debug firmware
-  `firmware/phase1/HelloSramExec.hs` + `.#flash-riski5-sramexec`
-  variant — captures an infinite `BBBBB...` stream (15 s of
-  firmware restart loops) instead of the expected `BS`.
+- **SRAM-execution architectural gap — FIXED (2026-04-24).**
+  Core's IF stage previously hardwired to a 1-cycle BRAM sync-read;
+  jumps into SRAM range wrapped back into BRAM. Now:
+
+  - Core-side IF-stage refactor (commit `c29b776`): new
+    `imemReady` input + `pendingS`/`pcFetchHoldS`/`effective*S`
+    scheme. Preserves 1-cycle BRAM semantics (CoreMark silicon
+    stayed at 44.57 / 1.114 after the refactor alone) while
+    unblocking multi-cycle fetch.
+  - SoC-side arbiter + fetch-side bus decoder (commit
+    `2ba45ac`): stateless data-priority arbiter muxes the
+    shared SRAM controller between fetch and data; fetch-side
+    bus decoder routes based on pcFetch region.
+
+  __Silicon observed__: `riski5-core-sramexec` now runs SRAM-
+  resident code. Firmware's `sw` at SRAM[0x2000_0000] prints
+  'S' through the UART. __Known regression__:
+  `riski5-core-coremark` silicon hung after the arbiter wiring
+  landed. All `cabal test`s green (159/159). Fmax +7 ns slack;
+  not a timing miss. Same class of Cyclone II / Quartus 13.0sp1
+  placement-sensitivity as the earlier CPP-line-shift gotcha —
+  full writeup in
+  [`docs/perf/sram-exec-probe-2026-04-24.md`](./docs/perf/sram-exec-probe-2026-04-24.md).
+
+  __Next session__: (1) parameterise `soc` so the CoreMark
+  variant can disable the arbiter wiring entirely (bypass the
+  Quartus placement issue); (2) investigate Quartus SEED /
+  placement constraints to stabilise the CoreMark bitstream
+  with the arbiter in place; (3) debug the 1:3 B:S ratio in
+  `sramexec` — each firmware restart should be 1:1 but observed
+  is 1:3, suggesting a secondary ebreak/mtvec trap-flow issue.
+
+  (Original probe writeup below, kept as the historical trail.)
 
   **2026-04-24 fix attempt — reverted.** Tried to implement
   fetch-side arbitration in `Riski5.Soc` alone (`SramOwner`
