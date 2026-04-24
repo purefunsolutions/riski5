@@ -650,13 +650,30 @@ core imemData imemReadyS dmemRData stallS =
       <*> pcFetchS
 
   -- PC of the instruction currently on @imemData@ (one cycle
-  -- behind @pcFetch@ in steady state — last cycle's fetch). For
-  -- multi-cycle fetches @pcFetch@ is held by the stall, so
-  -- 'pcFetchPrevS' settles on the fetch address within one cycle.
-  -- For 1-cycle data stalls the __pre-stall__ value is preserved
-  -- via 'pcFetchHoldS' + 'pendingS' upstream.
+  -- behind @pcFetch@ in steady state — last cycle's fetch).
+  -- Hold / advance rule depends on stall flavour:
+  --
+  --   * Data stall (@stall && imemReady@): BRAM gave us a valid
+  --     instruction but IF/ID can't capture. Hold pcFetchPrev
+  --     at the pre-stall value so 'pcFetchHoldS' + 'pendingS'
+  --     can preserve the (pc, instr) pair for the stall-release
+  --     capture cycle.
+  --   * Fetch stall (@stall && not imemReady@): multi-cycle
+  --     fetch in flight. @pcFetch@ is held by the stall; advance
+  --     pcFetchPrev so it tracks pcFetch (they converge on the
+  --     fetch address within one cycle). IF/ID captures directly
+  --     off pcFetchPrev on the ready cycle.
+  --   * No stall: advance normally.
   pcFetchPrevS :: Signal dom (BitVector 32)
-  pcFetchPrevS = register 0 pcFetchS
+  pcFetchPrevS =
+    register 0 $
+      ( \prev stall rdy pf ->
+          if stall && rdy then prev else pf
+      )
+        <$> pcFetchPrevS
+        <*> stallInternalS
+        <*> imemReadyS
+        <*> pcFetchS
 
   -- ====================================================================
   -- IF/ID pipeline register

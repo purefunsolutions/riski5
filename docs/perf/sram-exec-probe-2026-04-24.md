@@ -243,3 +243,84 @@ that has to be fixed at the source. Don't do it again.
   an ebreak trap. This would have caught the silicon hang
   in `cabal test` had it existed — and would let us iterate
   on the fix without a Quartus round-trip per attempt.
+
+## 2026-04-24 (evening) — Core refactor + arbiter: SRAM exec works, CoreMark silicon regresses
+
+Finished the plan above. Two commits landed:
+
+  * Core-side IF-stage refactor (commit `c29b776`): new
+    `imemReady` input, `pendingS` + `pcFetchHoldS` +
+    `effectiveImemS` + `effectivePcPrevS` scheme that
+    preserves 1-cycle BRAM semantics (CoreMark stays at
+    44.57 / 1.114 with the refactor in place) while
+    unblocking multi-cycle fetch. `pcFetchPrevS` is gated
+    on `stall && imemReady` — data stall holds (existing
+    behaviour), fetch stall advances so pcFetchPrev tracks
+    the held pcFetch.
+  * SoC-side arbiter + fetch-side bus decoder
+    (this commit): stateless data-priority arbiter
+    (`OwnData` > `OwnFetch` > `OwnNone`) muxes the SRAM
+    controller's inputs. `imemReadyS` straps 'True' for
+    BRAM fetches and pulses on SRAM transaction-complete.
+    `fetchStallS` folded into the combined `stallS`.
+
+__Incremental verification__: adding the arbiter with
+`sramFetchReqS = pure False` (arbiter dormant) kept CoreMark
+silicon green across every intermediate step — fetch-side
+decoder, imemReady logic, imemDataS mux, fetchStall into
+stallS. All 44.57 / 1.114 validated after each silicon round.
+
+__Regression when `sramFetchReqS = fetchInSramS`__: the
+final step — wiring the arbiter up to actually service
+fetch requests — breaks CoreMark on silicon. Symptom: the
+bitstream flashes cleanly but produces zero UART output
+within 25 s of `nios2-terminal`. Fmax closes at 56.52 MHz
+with +7.31 ns setup slack at the 40 MHz target, so this is
+not a timing violation. `cabal test` 159 / 159 green.
+
+For CoreMark, `fetchInSramS` evaluates to 'False' every
+cycle (pcFetch stays in the BRAM range). So the net
+difference between `sramFetchReqS = pure False` (working)
+and `sramFetchReqS = fetchInSramS` (broken) is __zero at
+the signal level__ — the arbiter's `effectiveOwnerS`
+computes identically, the muxes produce the same inputs to
+the SRAM controller. The only change is in the Verilog
+structure (one more wire).
+
+This matches the earlier 2026-04-24 gotcha where a
+CPP-induced line-number shift in `app/Top.hs` produced a
+Quartus placement that hung silicon despite functionally-
+identical Verilog. Cyclone II / Quartus 13.0sp1 is
+unusually sensitive to netlist perturbations around this
+area. Real fix probably requires a SignalTap probe and
+placement constraints (`set_location_assignment` pins for
+the SRAM pins + `synthesis_keep` on the arbiter outputs)
+to pin the placement Quartus found for the working variant.
+
+__What silicon observes with the arbiter fully wired__:
+
+  * `riski5-core-sramexec` (SRAM exec target): __works__.
+    UART stream interleaves `B`s (each firmware restart
+    prints one) with `S`s (each SRAM-resident `sw` prints
+    one). Observed byte distribution in a 3 s capture:
+    506,394 `S` and 198,374 `B`, pattern `BSSS BSSS BSSS
+    ...`. The 1:3 ratio (rather than 1:1) means the
+    SRAM-resident `sw` is being re-executed multiple times
+    per firmware restart — likely because either the
+    `ebreak` at `SRAM[4]` isn't being fetched correctly or
+    the trap-target `mtvec = 0` path doesn't cleanly
+    restart; either way __SRAM execution is fundamentally
+    working__, which is the architectural claim this probe
+    was built to validate.
+  * `riski5-core-coremark`: hangs. Zero CoreMark banner
+    bytes in 25 s.
+
+The commit lands the code as-is, with CoreMark silicon as
+a known regression. Next session's fix options: (1)
+investigate placement constraints / synthesis attributes
+to recover CoreMark; (2) parameterise `soc` to allow
+variant-specific disabling of the arbiter (CoreMark
+variant bypasses entirely, sramexec variant enables);
+(3) split `soc` into two modules, one per variant. Option
+(2) is the cleanest if parameterisation works with Clash's
+synthesis.

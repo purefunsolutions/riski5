@@ -55,6 +55,7 @@ module Riski5.Soc (
   SocInFull (..),
   SocOut (..),
   SocOutSim (..),
+  SramOwner (..),
 ) where
 
 import Clash.Prelude hiding (And, Xor, not)
@@ -69,6 +70,15 @@ import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
 import Riski5.Sram (SramPins (..), sram, sramChipSim)
+
+{- |
+Which source currently owns the shared SRAM controller —
+data-side bus transactions vs fetch-side pcFetch lookups.
+Exposed for tests and downstream assertions.
+-}
+data SramOwner = OwnNone | OwnData | OwnFetch
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
 
 {- |
 Inputs the SoC reads from the board.
@@ -209,14 +219,29 @@ soc progInit _dataInit inS = outS
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
     coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS
 
-  -- Fetch-side ready signal. BRAM fetches are always 1-cycle
-  -- sync-read, so 'imemReadyS' is 'pure True' — the core's
-  -- imem-capture logic treats that as the "BRAM-always-ready"
-  -- contract. Multi-cycle fetch paths (SRAM / SDRAM code) will
-  -- re-route this through an arbiter + transaction-ready pulse
-  -- when they land. For now, no SRAM-fetch support.
+  -- Fetch-side bus decoder + readiness.
+  --
+  -- @pcFetch@ in BRAM range → 'imemDataBramS' / direct blockRam
+  -- (unchanged). @pcFetch@ in SRAM range → the shared SRAM
+  -- controller via the arbiter (below). 'imemReadyS' pulses
+  -- 'True' for BRAM cycles and for the transaction-complete
+  -- cycle of an SRAM fetch.
+  fetchSlaveS :: Signal dom SlaveId
+  fetchSlaveS = slaveOf <$> pcFetchS
+
+  fetchInSramS :: Signal dom Bool
+  fetchInSramS = (== SlaveSram) <$> fetchSlaveS
+
   imemReadyS :: Signal dom Bool
-  imemReadyS = CP.pure True
+  imemReadyS =
+    ( \isSram o rdy -> case (isSram, o, rdy) of
+        (False, _, _) -> True -- BRAM fetch: always ready
+        (True, OwnFetch, True) -> True -- SRAM fetch complete
+        (True, _, _) -> False -- SRAM fetch in flight
+    )
+      <$> fetchInSramS
+      <*> effectiveOwnerS
+      <*> sramReadyS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- Two read ports over the same @progInit@:
@@ -236,9 +261,18 @@ soc progInit _dataInit inS = outS
   -- image, two independent read ports) when the fitter spots the
   -- identical init. Two 32 × 4096-word instances would otherwise
   -- cost 64 M4K; dual-port mapping brings it down to 32.
+  imemDataBramS :: Signal dom (BitVector 32)
+  imemDataBramS =
+    blockRam progInit (addrToImemIdx <$> pcFetchS) (CP.pure Nothing)
+
+  -- Mux the fetch output: BRAM cycles see the blockRam result,
+  -- SRAM cycles see 'sramRdataS' on the cycle imemReadyS pulses.
   imemDataS :: Signal dom (BitVector 32)
   imemDataS =
-    blockRam progInit (addrToImemIdx <$> pcFetchS) (CP.pure Nothing)
+    (\isSram bramD sramD -> if isSram then sramD else bramD)
+      <$> fetchInSramS
+      <*> imemDataBramS
+      <*> sramRdataS
 
   bramRdataS :: Signal dom (BitVector 32)
   bramRdataS =
@@ -335,12 +369,90 @@ soc progInit _dataInit inS = outS
   -- ----- SRAM (off-chip 512 KB IS61LV25616-class) --------------
   -- Pure half-word controller — see 'Riski5.Sram' for the
   -- pipelineless 16-bit-only contract (T31a tracks 32-bit access).
-  -- 'sramReadyS' is False on the first cycle of a freshly-issued
-  -- read; the core stalls via 'stallS' until it goes True.
-  sramSelS = (\a -> slaveOf a == SlaveSram) <$> dAddrS
+  --
+  -- __Arbitration between data and fetch (2026-04-24).__ The one
+  -- physical SRAM chip has to serve two bus masters now: the
+  -- data side and the fetch side (@pcFetch@ in SRAM range).
+  -- Stateless "data-priority" arbitration: because the core-side
+  -- stall protocol keeps data and fetch from simultaneously
+  -- wanting SRAM in the same cycle (a data-stall freezes
+  -- pcFetch; a fetch-stall leaves X on a bubble that doesn't
+  -- issue data accesses), we can compute the effective owner
+  -- combinationally from the two request signals and avoid a
+  -- state register — which keeps the BRAM-only-firmware SRAM
+  -- controller inputs __bit-identical__ to the pre-arbiter
+  -- wiring, preserving Quartus placement.
+  sramDataReqS = (\a -> slaveOf a == SlaveSram) <$> dAddrS
+  sramFetchReqS = fetchInSramS
   sramDqInS = siSramDqIn <$> inS
+
+  effectiveOwnerS :: Signal dom SramOwner
+  effectiveOwnerS =
+    ( \dReq fReq ->
+        if dReq
+          then OwnData
+          else if fReq then OwnFetch else OwnNone
+    )
+      <$> sramDataReqS
+      <*> sramFetchReqS
+
+  -- When fetch owns the controller, swap in pcFetch / read-only
+  -- signals. Otherwise pass the data-side inputs straight
+  -- through — identical to the pre-arbiter wiring, so Quartus
+  -- re-uses the same placement for the BRAM-only firmware path.
+  sramSelArbS =
+    ( \o dReq -> case o of
+        OwnFetch -> True
+        _ -> dReq
+    )
+      <$> effectiveOwnerS
+      <*> sramDataReqS
+  sramAddrArbS =
+    ( \o dA pcF -> case o of
+        OwnFetch -> pcF
+        _ -> dA
+    )
+      <$> effectiveOwnerS
+      <*> dAddrS
+      <*> pcFetchS
+  sramWdataArbS =
+    ( \o dW -> case o of
+        OwnFetch -> 0
+        _ -> dW
+    )
+      <$> effectiveOwnerS
+      <*> dWdataS
+  sramBeArbS =
+    ( \o dB -> case o of
+        OwnFetch -> 0 -- read-only
+        _ -> dB
+    )
+      <$> effectiveOwnerS
+      <*> dBeS
+  sramRenArbS =
+    ( \o dR -> case o of
+        OwnFetch -> True
+        _ -> dR
+    )
+      <$> effectiveOwnerS
+      <*> dRenS
+
   (sramRdataS, sramPinsS, sramReadyS) =
-    sram sramSelS dAddrS dWdataS dBeS dRenS sramDqInS
+    sram sramSelArbS sramAddrArbS sramWdataArbS sramBeArbS sramRenArbS sramDqInS
+
+  -- Scoped "ready" for the data side: 'sramReadyS' pulses when
+  -- whoever owns the controller completes, but the data-stall
+  -- mux only wants to hear about data-side completions.
+  sramDataReadyS =
+    ( \o rdy -> case o of
+        OwnData -> rdy
+        _ -> False
+    )
+      <$> effectiveOwnerS
+      <*> sramReadyS
+
+  -- Preserved alias for the dmem read-data mux downstream.
+  sramSelS = sramDataReqS
 
   -- ----- SDRAM (off-chip 8 MB IS42S16400-class via Altera IP) --
   -- 'Riski5.Sdram.sdram' is the 32 ↔ 16 adapter FSM; the actual
@@ -363,20 +475,37 @@ soc progInit _dataInit inS = outS
   --     M-stage capture (CM-3).
   --   * GPIO / LCD remain single-cycle.
   uartReadyS = siUartReady <$> inS
-  stallS =
-    ( \s sramRdy sdramRdy uartRdy bramRdy ->
+
+  dataStallS =
+    ( \s sramDataRdy sdramRdy uartRdy bramRdy ->
         case s of
-          SlaveSram -> not sramRdy
+          SlaveSram -> not sramDataRdy
           SlaveSdram -> not sdramRdy
           SlaveJtagUart -> not uartRdy
           SlaveBram -> not bramRdy
           _ -> False
     )
       <$> (slaveOf <$> dAddrS)
-      <*> sramReadyS
+      <*> sramDataReadyS
       <*> sdramReadyS
       <*> uartReadyS
       <*> bramReadyS
+
+  -- Fetch stall: hold the core's pcFetch / pipeline while a
+  -- multi-cycle fetch is in flight. For BRAM fetches
+  -- 'imemReadyS' is always True, so fetchStall = False.
+  fetchStallS :: Signal dom Bool
+  fetchStallS =
+    (\rdy -> case rdy of True -> False; False -> True) <$> imemReadyS
+
+  stallS :: Signal dom Bool
+  stallS =
+    ( \d f -> case (d, f) of
+        (False, False) -> False
+        _ -> True
+    )
+      <$> dataStallS
+      <*> fetchStallS
 
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
