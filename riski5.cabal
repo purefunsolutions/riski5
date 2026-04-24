@@ -121,6 +121,7 @@ library riski5-firmware
   hs-source-dirs:  firmware/phase1
   exposed-modules:
     CoreMark
+    FetchPolicy
     Hello
     HelloSramExec
     MemTest

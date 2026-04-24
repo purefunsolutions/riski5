@@ -132,6 +132,31 @@ in
               sed -i 's/^              //' firmware/phase1/CoreMark.hs
               echo "### sramExec variant: overlaid firmware/phase1/CoreMark.hs"
               cat firmware/phase1/CoreMark.hs
+
+              # Flip FetchPolicy.enableSramFetch = True so Riski5.Soc.soc
+              # actually routes @pcFetch in SRAM range@ to the shared SRAM
+              # controller. The committed default is False (keeps the
+              # CoreMark bitstream bit-identical to the pre-arbiter build
+              # — see docs/perf/sram-exec-probe-2026-04-24.md).
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sramExec Nix build: turns on the
+              -- fetch-side SRAM routing inside Riski5.Soc.soc so the
+              -- probe firmware can execute from 0x2000_0000+.
+              module FetchPolicy (
+                enableSramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### sramExec variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
             ''}
 
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on

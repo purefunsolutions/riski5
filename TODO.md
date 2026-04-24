@@ -96,21 +96,30 @@ rules around maintaining it.
     shared SRAM controller between fetch and data; fetch-side
     bus decoder routes based on pcFetch region.
 
-  __Silicon observed__: `riski5-core-sramexec` now runs SRAM-
-  resident code. Firmware's `sw` at SRAM[0x2000_0000] prints
-  'S' through the UART. __Known regression__:
-  `riski5-core-coremark` silicon hung after the arbiter wiring
-  landed. All `cabal test`s green (159/159). Fmax +7 ns slack;
-  not a timing miss. Same class of Cyclone II / Quartus 13.0sp1
-  placement-sensitivity as the earlier CPP-line-shift gotcha —
-  full writeup in
-  [`docs/perf/sram-exec-probe-2026-04-24.md`](./docs/perf/sram-exec-probe-2026-04-24.md).
+  __Silicon observed__: `riski5-core-sramexec` runs SRAM-
+  resident code; firmware's `sw` at SRAM[0x2000_0000] prints
+  'S' through the UART. `riski5-core-coremark` restored to the
+  pre-arbiter baseline (44.57 / 1.114 @ 40 MHz) via the
+  parameterisation below.
 
-  __Next session__: (1) parameterise `soc` so the CoreMark
-  variant can disable the arbiter wiring entirely (bypass the
-  Quartus placement issue); (2) investigate Quartus SEED /
-  placement constraints to stabilise the CoreMark bitstream
-  with the arbiter in place; (3) debug the 1:3 B:S ratio in
+  - Core-side IF-stage refactor (commit `c29b776`, see above).
+  - SoC-side arbiter + fetch-side bus decoder (commit `2ba45ac`).
+  - **Per-bitstream fetch-policy toggle (commit pending).** New
+    `firmware/phase1/FetchPolicy.hs` module exports
+    `enableSramFetch :: Bool` (default `False`). `Riski5.Soc.soc`
+    now takes it as its first parameter; the SRAM + fetch wiring
+    sits inside a compile-time `if enableSramFetch` so the CoreMark
+    branch (flag `False`) structurally reduces to the pre-arbiter
+    data-only controller inputs — Clash emits identical Verilog
+    and Quartus reproduces the CoreMark-validated placement
+    exactly. The sramexec bitstream's Nix overlay flips
+    `enableSramFetch = True` to turn the arbiter on. CoreMark
+    LE count drops from 8,217 → 8,130 (the arbiter muxes are
+    truly gone in the disabled branch). Silicon verified:
+    CoreMark 44.57 / 1.114 restored; sramexec UART still shows
+    `B`+`S` byte interleave confirming SRAM execution.
+
+  __Follow-ups__ (not blocking): debug the 1:3 B:S ratio in
   `sramexec` — each firmware restart should be 1:1 but observed
   is 1:3, suggesting a secondary ebreak/mtvec trap-flow issue.
 
