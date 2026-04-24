@@ -128,6 +128,28 @@ rules around maintaining it.
     0.215 fast). This finding flips part of P2-B's original
     motivation: the only remaining win is ~300 LEs saved, with
     no Fmax gain.
+  - **Dropping the clock to 30 MHz doesn't help (2026-04-24).**
+    Hypothesis: maybe the silicon hang is a physical-timing
+    issue the STA slow-85 °C corner doesn't model accurately.
+    Test: re-applied P2-B + changed PLL from 50×4/5=40 MHz to
+    50×3/5=30 MHz. Fmax closed at 46.76 MHz with +11.9 ns
+    slack (huge margin). Silicon result: __CoreMark still
+    hangs, zero UART output in 45 s__. MemTest at the same
+    P2-B + 30 MHz config runs cleanly end-to-end. Rules out
+    all timing-related explanations. The bug is purely
+    functional — there's something P2-B changes that CoreMark
+    triggers and MemTest doesn't, at any clock frequency.
+  - **JAL / JALR + stack push-pop pattern sim-test passes
+    (2026-04-24).** Big MemTest ↔ CoreMark asymmetry: MemTest
+    has __zero__ JAL uses (all inline), while CoreMark is GCC-
+    compiled C and uses JAL + JALR for every function call.
+    The standard RISC-V function epilogue — @lw ra, 0(sp);
+    jalr x0, ra, 0@ — has an RAW dependency through a
+    multi-cycle SRAM stall that seemed a plausible P2-B
+    failure mode. New `JalrStackSpec` covers this pattern
+    with three cases (simple JAL/JALR; one call with stack
+    push/pop + JALR-return; two back-to-back calls). All pass
+    with P2-B applied. Pattern is not the culprit in sim.
   - Coverage-gap rationale: after this sweep the sim exercises
     every pattern from CoreMark's startup I can enumerate — the
     BSS zero-init loop, the .data-init loop, mcycle-read paths,

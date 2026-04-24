@@ -20,6 +20,7 @@ import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
 import HelloSpec qualified
+import JalrStackSpec qualified
 import LcdSpec qualified
 import PipelineSpec qualified
 import ReferenceSpec qualified
@@ -60,6 +61,7 @@ main =
       , SramStallForwardSpec.tests
       , SdramSpec.tests
       , HelloSpec.tests
+      , JalrStackSpec.tests
       , UartBackpressureSpec.tests
       , SocHwSim.tests
       , SpikeDriverSpec.tests

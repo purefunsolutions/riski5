@@ -159,6 +159,7 @@ test-suite riski5-test
     CoreSpec
     DecodeSpec
     HelloSpec
+    JalrStackSpec
     LcdSpec
     PipelineSpec
     ReferenceSpec
