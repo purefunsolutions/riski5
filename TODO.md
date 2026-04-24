@@ -113,6 +113,21 @@ rules around maintaining it.
     BRAM-load → SRAM-store .data-init pattern, BSS-zero-init
     loop with taken-branch + SRAM store). All green with P2-B
     applied. Bug still does not manifest in sim.
+  - **Fmax regresses 10 % with P2-B applied (2026-04-24).**
+    Baseline regfileAsync CoreMark bitstream closes at Fmax
+    **56.31 MHz**. Applying P2-B's regfileSync drops it to
+    **50.87 MHz** — still closes the 40 MHz target with +5 ns
+    slack, but going the __wrong direction__ for a change meant
+    to shorten the X cone. Critical path: from the M4K's
+    `portb_address_reg` through the regfile output + 4-tier
+    forwardRs + handleInstr dispatch + exMemS setup, 19.962 ns
+    total data delay (vs baseline's ~14 ns at the regfileAsync
+    + forwardRs + handleInstr path). The Cyclone II M4K's read
+    access time is apparently slower here than a 32:1 LUT-mux
+    over 1024 FFs. Hold slack identical on both (0.391 slow /
+    0.215 fast). This finding flips part of P2-B's original
+    motivation: the only remaining win is ~300 LEs saved, with
+    no Fmax gain.
   - Coverage-gap rationale: after this sweep the sim exercises
     every pattern from CoreMark's startup I can enumerate — the
     BSS zero-init loop, the .data-init loop, mcycle-read paths,
@@ -165,13 +180,26 @@ rules around maintaining it.
      losing a forward that's needed at stall-release.
   6. Mitigation candidates if the bug resists isolation:
      (i) drop the regfile-output bypass to M4K and keep the
-     async regfile for one more phase — costs the 300-LE
-     savings but unblocks P2-C / P2-D; (ii) add a
-     synthesis-attribute on the regfile write-mode to force
-     "NEW_DATA" or "OLD_DATA" explicitly on Cyclone II;
-     (iii) rewrite the regfile as a distributed-LUT-RAM
-     variant (synchronous write, asynchronous read) — costs
-     more LEs but removes the M4K-inference uncertainty.
+     async regfile for one more phase — given the Fmax
+     regression finding above, this may be the right call
+     regardless of the silicon bug outcome; the 300-LE
+     savings aren't worth the 10 % Fmax penalty on a
+     Cyclone-II-class part where M4K read access competes
+     poorly with LUT-mux-over-FFs.
+     (ii) add a synthesis-attribute on the regfile write-mode
+     to force "NEW_DATA" or "OLD_DATA" explicitly on Cyclone II.
+     (iii) rewrite the regfile as a __distributed-LUT-RAM__
+     variant via `asyncRam` (sync write + async read, ~200 LEs
+     per port) — keeps the async-read timing of regfileAsync
+     without the 1024 FFs. Same sim/silicon risk as M4K but
+     shifts the inference target from M4K primitives to LUT
+     RAM (which has saner same-cycle read/write semantics on
+     Cyclone II per Altera docs).
+     (iv) rework the pipeline to ACCEPT regfileSync's 1-cycle
+     latency as a proper D-stage read and retire the need for
+     same-cycle forwarding of "just-wrote-this-cycle"
+     producers — but this is a phase-2 pipelining redesign,
+     not a P2-B variant.
 
 - **Phase 2 P2-C.** Sync dmem + first caches (direct-mapped
   1 KB I$ + 1 KB D$, per the Tiny tier defaults in
