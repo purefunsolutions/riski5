@@ -50,6 +50,7 @@ module Riski5.Soc (
   socSim,
   socSimAlteraUart,
   socSimFull,
+  socSimFullWith,
   SocIn (..),
   SocInSim (..),
   SocInFull (..),
@@ -151,6 +152,31 @@ data SocOut = SocOut
   wrapper to the Altera SDRAM Controller IP; in simulation,
   'socSim' pipes it into 'sdramIpSim' and feeds the resulting
   reply back into 'siSdramReply'.
+  -}
+  , soDbgPcFetch :: BitVector 32
+  {- ^ The core's @pcFetchS@ — exposed unconditionally for
+  on-chip debug. On hardware @app\/Top.hs@ exposes this as the
+  @DEBUG_PCFETCH@ output, which the @riski5_top.v@ wrapper
+  feeds into an Altera @altsource_probe@ megafunction so
+  @quartus_stp@'s @read_probe_data@ can sample the program
+  counter at any time over JTAG. Used to root-cause silicon
+  hangs (the @sramexec@ iter-2 issue specifically) without
+  needing SignalTap II's full waveform capture flow.
+  -}
+  , soDbgFlags :: BitVector 8
+  {- ^ Packed diagnostic flags for the second @altsource_probe@.
+  Bit layout:
+
+  @
+    [0] stallS
+    [1] dataStallS
+    [2] fetchStallS    ( = !imemReadyS )
+    [3] uartAcceptedS
+    [4] sramDataReadyS ( = sramReadyS gated by OwnData )
+    [5] uartReadyS
+    [6] bramReadyS
+    [7] reserved (0)
+  @
   -}
   }
   deriving stock (Eq, Show, Generic)
@@ -318,15 +344,64 @@ soc enableSramFetch progInit _dataInit inS = outS
   -- 'jtagUartSim'; for hardware, 'app/Top.hs' wires it to the
   -- Altera @altera_avalon_jtag_uart@ IP instantiated in
   -- @pkgs/riski5-core@'s Verilog wrapper.
+  --
+  -- __Master-side post-acceptance gating.__ The Altera JTAG-UART IP
+  -- commits a byte every clock edge where its @av_waitrequest@ is
+  -- False with @av_write@ asserted, so once the riski5 core's SW
+  -- has retired the strobe but the X-stage stalls for an unrelated
+  -- reason (typically a multi-cycle imem fetch from off-chip SRAM
+  -- during the @sramexec@ bitstream's loop), the IP would otherwise
+  -- see one fresh transaction per held cycle — the @BSSS×N@
+  -- silicon symptom. 'uartAcceptedS' is a tiny one-bit latch local
+  -- to the UART tap that flips True the cycle after the IP accepts
+  -- (= @uartReadyS=True@ with the master writing) and gates the
+  -- write strobe to 0 for subsequent cycles in the same X tenure,
+  -- with reset when the master itself deasserts. Localising the
+  -- gating to just the UART bus tap (rather than the global
+  -- dBeS / dRenS path used by every slave) keeps the rest of the
+  -- bus structurally identical to the pre-fix baseline so Quartus
+  -- reproduces its placement.
   jtagSelS = (\a -> slaveOf a == SlaveJtagUart) <$> dAddrS
   uartRdataS = siUartRdata <$> inS
+
+  uartWrMasterS :: Signal dom Bool
+  uartWrMasterS =
+    (\sel be -> case (sel, be /= 0) of (True, True) -> True; _ -> False)
+      <$> jtagSelS
+      <*> dBeS
+
+  uartAcceptedS :: Signal dom Bool
+  uartAcceptedS = register False uartAcceptedNextS
+
+  uartAcceptedNextS :: Signal dom Bool
+  uartAcceptedNextS =
+    ( \stall accepted wrMaster ipReady ->
+        case (stall, accepted, wrMaster, ipReady) of
+          (False, _, _, _) -> False
+          (True, True, _, _) -> True
+          (True, False, True, True) -> True
+          _ -> False
+    )
+      <$> stallS
+      <*> uartAcceptedS
+      <*> uartWrMasterS
+      <*> uartReadyS
+
+  -- Gate __both__ ambSel and ambBe once accepted. Probing the
+  -- @sramexec@ silicon at the iter-2 halt with BE-only gating
+  -- showed @uartReadyS=False@ stuck (IP's @av_waitrequest@
+  -- pinned high) — apparently the Altera JTAG-UART IP treats
+  -- sustained @av_chipselect=1@ with no read/write strobe as
+  -- "transaction still pending" and never deasserts waitrequest.
+  -- Forcing chipselect=0 along with be=0 once accepted leaves
+  -- the IP in a clean idle state.
   uartBusS =
-    ( \sel a wd be re ->
+    ( \sel a wd be re acc ->
         AvalonMmBus
-          { ambSel = sel
+          { ambSel = if acc then False else sel
           , ambAddr = a
           , ambWdata = wd
-          , ambBe = be
+          , ambBe = if acc then 0 else be
           , ambRe = re
           }
     )
@@ -335,6 +410,7 @@ soc enableSramFetch progInit _dataInit inS = outS
       <*> dWdataS
       <*> dBeS
       <*> dRenS
+      <*> uartAcceptedS
 
   -- ----- LCD ---------------------------------------------------
   -- The LCD controller runs its own HD44780 wake + init sequence
@@ -509,12 +585,25 @@ soc enableSramFetch progInit _dataInit inS = outS
   --   * GPIO / LCD remain single-cycle.
   uartReadyS = siUartReady <$> inS
 
+  -- The UART tap is masked by 'uartAcceptedS' (the IP saw the
+  -- transaction; we hold the master deasserted until X advances).
+  -- While masked, the IP's @av_chipselect@ goes 0 and its
+  -- @av_waitrequest@ output isn't meaningful — it can sit high
+  -- by default. Gate the UART stall by the same accepted latch
+  -- so the SoC ignores @!uartReadyS@ in that window. Without
+  -- this, on silicon the IP holds waitrequest high after my
+  -- accepted-gating engages and 'dataStallS' would stay True
+  -- forever, freezing the pipeline (the iter-2 halt symptom
+  -- pinpointed via altsource_probe on 2026-04-26).
   dataStallS =
-    ( \s sramDataRdy sdramRdy uartRdy bramRdy ->
+    ( \s sramDataRdy sdramRdy uartRdy bramRdy uartAcc ->
         case s of
           SlaveSram -> not sramDataRdy
           SlaveSdram -> not sdramRdy
-          SlaveJtagUart -> not uartRdy
+          SlaveJtagUart -> case (uartRdy, uartAcc) of
+            (True, _) -> False
+            (False, True) -> False
+            (False, False) -> True
           SlaveBram -> not bramRdy
           _ -> False
     )
@@ -523,6 +612,7 @@ soc enableSramFetch progInit _dataInit inS = outS
       <*> sdramReadyS
       <*> uartReadyS
       <*> bramReadyS
+      <*> uartAcceptedS
 
   stallS :: Signal dom Bool
   stallS =
@@ -554,9 +644,34 @@ soc enableSramFetch progInit _dataInit inS = outS
       <*> sramRdataS
       <*> sdramRdataS
 
+  -- ----- Diagnostic flags --------------------------------------
+  -- Pack the SoC's stall/ready signals into one 8-bit probe so a
+  -- second altsource_probe can sample them via JTAG and tell us
+  -- which signal is asserted at the moment of a silicon hang.
+  -- See @soDbgFlags@ for the bit layout.
+  dbgFlagsS :: Signal dom (BitVector 8)
+  dbgFlagsS =
+    ( \stall dataStall fetchStall uartAcc sramDataRdy uartRdy bramRdy ->
+        let bit0 = if stall then 1 else 0 :: BitVector 8
+            bit1 = if dataStall then 2 else 0
+            bit2 = if fetchStall then 4 else 0
+            bit3 = if uartAcc then 8 else 0
+            bit4 = if sramDataRdy then 16 else 0
+            bit5 = if uartRdy then 32 else 0
+            bit6 = if bramRdy then 64 else 0
+         in bit0 .|. bit1 .|. bit2 .|. bit3 .|. bit4 .|. bit5 .|. bit6
+    )
+      <$> stallS
+      <*> dataStallS
+      <*> fetchStallS
+      <*> uartAcceptedS
+      <*> sramDataReadyS
+      <*> uartReadyS
+      <*> bramReadyS
+
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins lcdIrq sramPins uartBus sdramBus ->
+    ( \gpo lcdPins lcdIrq sramPins uartBus sdramBus pcFetch flags ->
         SocOut
           { soLedR = gpoLedR gpo
           , soLedG = gpoLedG gpo
@@ -565,6 +680,8 @@ soc enableSramFetch progInit _dataInit inS = outS
           , soSramPins = sramPins
           , soUartBus = uartBus
           , soSdramBus = sdramBus
+          , soDbgPcFetch = pcFetch
+          , soDbgFlags = flags
           }
     )
       <$> gpOutS
@@ -573,6 +690,8 @@ soc enableSramFetch progInit _dataInit inS = outS
       <*> sramPinsS
       <*> uartBusS
       <*> sdramBusS
+      <*> pcFetchS
+      <*> dbgFlagsS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
@@ -676,7 +795,31 @@ socSimFull ::
   Vec n (BitVector 16) ->
   Signal dom SocInFull ->
   Signal dom SocOutSim
-socSimFull progInit dataInit sramInit inFullS = outSimS
+socSimFull = socSimFullWith False
+
+{- |
+'socSimFull' with explicit @enableSramFetch@ — lets a test exercise
+the fetch-side SRAM routing in the same closed-loop wrapper as
+'socSimFull'. Passes the flag straight into 'soc' so the @sramexec@
+bitstream's pipeline can be reproduced in Verilator.
+-}
+socSimFullWith ::
+  forall dom p d n.
+  ( HiddenClockResetEnable dom
+  , KnownNat p
+  , 1 <= p
+  , KnownNat d
+  , 1 <= d
+  , KnownNat n
+  , 1 <= n
+  ) =>
+  Bool ->
+  Vec p (BitVector 32) ->
+  Vec d (BitVector 32) ->
+  Vec n (BitVector 16) ->
+  Signal dom SocInFull ->
+  Signal dom SocOutSim
+socSimFullWith enableSramFetch progInit dataInit sramInit inFullS = outSimS
  where
   fullInS =
     ( \SocInFull {..} dq ur urRdy sdr ->
@@ -694,8 +837,7 @@ socSimFull progInit dataInit sramInit inFullS = outSimS
       <*> uartRdataS
       <*> uartReadyS
       <*> sdramReplyS
-  -- See note on 'socSim' re: hardcoded fetch-policy.
-  outS = soc False progInit dataInit fullInS
+  outS = soc enableSramFetch progInit dataInit fullInS
 
   -- SRAM chip model — watches the pins the SoC's internal sram
   -- controller drives, feeds DQ-in back combinationally.

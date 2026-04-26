@@ -498,6 +498,9 @@ in
         wire sdram_ready = ~sdram_ip_waitrequest;
 
         // ----- Clash riski5 core --------------------------------------
+        wire [31:0] debug_pcfetch;
+        wire [7:0]  debug_flags;
+
         riski5 u_riski5 (
             .CLOCK_30    (clk30),
             .RESET_30_N  (rst30_n),
@@ -535,7 +538,60 @@ in
             .SDRAM_WDATA (sdram_wdata),
             .SDRAM_BE    (sdram_be),
             .SDRAM_RD    (sdram_rd),
-            .SDRAM_WR    (sdram_wr)
+            .SDRAM_WR    (sdram_wr),
+            .DEBUG_PCFETCH (debug_pcfetch),
+            .DEBUG_FLAGS   (debug_flags)
+        );
+
+        // ----- altsource_probe — read pcFetchS via JTAG --------------
+        // 32-bit probe carrying the core's pcFetchS. Sample with
+        // @quartus_stp@'s @read_probe_data@ over JTAG. No physical
+        // pin — the JTAG hub on the FPGA reads the latched value
+        // directly. Useful for diagnosing the @sramexec@ silicon
+        // halt: read pcFetch after the firmware halts to learn
+        // which step in the SRAM-to-BRAM redirect path got stuck.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("PCFE"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (0),
+            .enable_metastability     ("NO")
+        ) u_pcfetch_probe (
+            .probe        (debug_pcfetch),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — read packed diagnostic flags --------
+        // 8-bit probe carrying SoC-level stall / ready / accepted
+        // flags. See `Riski5.Soc.SocOut.soDbgFlags` for the bit
+        // layout. Read via @quartus_stp@'s @read_probe_data@ on
+        // instance index 1. Together with the pcFetch probe, this
+        // tells us whether the pipeline is stalled, why, and which
+        // slave's ready signal is lagging at the moment of a
+        // silicon hang.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (8),
+            .instance_id              ("DBGF"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (1),
+            .enable_metastability     ("NO")
+        ) u_flags_probe (
+            .probe        (debug_flags),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
         );
 
       endmodule

@@ -47,6 +47,9 @@ import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
+-- soDbgPcFetch is exported as part of SocOut (..) above; the
+-- field selector is in scope thanks to RecordDotSyntax / the
+-- record-import wildcard. Listed here for grep visibility.
 import Riski5.Sram (SramPins (..))
 import Prelude qualified as P
 
@@ -206,6 +209,16 @@ topEntity ::
         , "SDRAM_BE" ::: Signal Dom30 (BitVector 2)
         , "SDRAM_RD" ::: Signal Dom30 Bool
         , "SDRAM_WR" ::: Signal Dom30 Bool
+        , -- Debug tap. Carries 'soDbgPcFetch' = the core's pcFetchS.
+          -- @riski5_top.v@ feeds this into an @altsource_probe@
+          -- megafunction so @quartus_stp@'s @read_probe_data@ can
+          -- sample the program counter at runtime over JTAG. Never
+          -- assigned to a physical pin.
+          "DEBUG_PCFETCH" ::: Signal Dom30 (BitVector 32)
+        , -- Second debug tap: 8 packed flags
+          -- (stall / dataStall / fetchStall / uartAccepted /
+          -- sramDataReady / uartReady / bramReady / reserved).
+          "DEBUG_FLAGS" ::: Signal Dom30 (BitVector 8)
         )
 topEntity
   clk30
@@ -267,6 +280,8 @@ topEntity
           sdramBeS = sibBe <$> sdramBusS
           sdramRdS = sibRd <$> sdramBusS
           sdramWrS = sibWr <$> sdramBusS
+          dbgPcFetchS = soDbgPcFetch <$> outS
+          dbgFlagsS' = soDbgFlags <$> outS
        in ( ledrS
           , ledgS
           , lcdDataS
@@ -294,6 +309,8 @@ topEntity
           , sdramBeS
           , sdramRdS
           , sdramWrS
+          , dbgPcFetchS
+          , dbgFlagsS'
           )
 
 {- | Exported Clash-usable top-entity annotation so

@@ -119,9 +119,122 @@ rules around maintaining it.
     CoreMark 44.57 / 1.114 restored; sramexec UART still shows
     `B`+`S` byte interleave confirming SRAM execution.
 
-  __Follow-ups__ (not blocking): debug the 1:3 B:S ratio in
-  `sramexec` — each firmware restart should be 1:1 but observed
-  is 1:3, suggesting a secondary ebreak/mtvec trap-flow issue.
+  __Follow-ups__:
+
+  - **1:3 B:S ratio in `sramexec` — root cause confirmed, fix
+    architecturally validated in sim, silicon halt remains
+    open.** Investigated 2026-04-25. The extra `S` bytes are
+    __not__ a trap-flow issue — they're spurious UART transactions
+    caused by the Avalon-MM master holding `dBeOutS` asserted while
+    the SW at `SRAM[0]` is stuck in X-stage during the multi-cycle
+    SRAM ebreak fetch at `SRAM[4]`. The existing `jtagUartAlteraSim`
+    model already commits a byte per cycle the master holds
+    `wr=True` with FIFO not full — and once a sim test
+    ([`test/SramExecSpec.hs`](./test/SramExecSpec.hs)) loaded
+    `HelloSramExec` into `socSimFullWith True`, the bug
+    reproduced exactly: 114 iterations of `(1B, 3S)` over 4000
+    cycles, mirroring silicon.
+
+    Fix: `dmemAcceptedS` latch in `Riski5.Soc` that flips True
+    the cycle after the data slave accepts (=
+    `stallS=True && dataStallS=False && memReq=True`) and gates
+    `dBeS` / `dRenS` to 0 for the rest of the X-stage tenure,
+    with reset on `stallS=False`. Sim test passes (1:1 across
+    all iterations). All 160 cabal tests green. CoreMark silicon
+    44.57 / 1.114 unchanged.
+
+    **Silicon halt remains, despite three independent fix
+    variants on 2026-04-25.** With either the global `dBeS` /
+    `dRenS` gating, a wrapper-side mirror in
+    `pkgs/riski5-core/package.nix`'s `riski5_top.v`, or the
+    surgical UART-only `uartAcceptedS` latch at the bus tap
+    (current commit), sramexec silicon prints exactly `BS` and
+    halts. Sim loops forever in all three cases. The pattern
+    isolates the trigger to "master deasserts wr promptly after
+    acceptance" — without any gating the master holds wr through
+    the fetch-stall window and the firmware loops with the
+    cosmetic 3-S bug.
+
+    **Hang location pinpointed (2026-04-25, late session).** The
+    firmware was instrumented with five UART checkpoints:
+    @B@ (BRAM-startup byte), @a@ (after the BRAM SW for B),
+    @b@ (after the SRAM[0] write), @c@ (after the SRAM[4] write),
+    @d@ (just before the JALR-to-SRAM), then @S@ (from SRAM[0]'s
+    SW), then ebreak.
+
+    * __Without the fix__ silicon prints `BabcdSSSBabcdSSS…`
+      cleanly looping through ~8 iterations before noise sets in.
+    * __With the fix__ silicon prints exactly `BabcdS` once and
+      halts.
+
+    So **iter 1 completes fully** with the gating in place — every
+    BRAM checkpoint commits, the JALR to SRAM works, the
+    SRAM-resident SW commits its single `'S'`. The hang is
+    strictly in the window __between iter 1's `ebreak` (or
+    JALR-to-0; same halt) at SRAM[4] and iter 2's first
+    BRAM-resident SW for `'B'`__. Specifically one of:
+
+      1. Trap CSR update (mepc / mcause / mtvec base) in
+         response to ebreak.
+      2. PC redirect from SRAM[8] (last in-flight fetch) to
+         `mtvec.base = 0`.
+      3. SRAM controller transitioning back to idle while pcFetch
+         leaves the SRAM range.
+      4. BRAM blockRam read at idx 0 after the SRAM-to-BRAM fetch
+         transition.
+      5. IF/ID picking up the captured BRAM[0] instruction.
+      6. Pipeline progressing through iter 2's `lui` / `addi` to
+         the SW for `'B'`.
+
+    **Resolved 2026-04-26** via ALTSOURCE_PROBE on-chip
+    diagnostics. Two `altsource_probe` megafunctions added to
+    `riski5_top.v` (32-bit `pcFetchS` + 8-bit packed flags),
+    sampled via `quartus_stp`'s `read_probe_data` over JTAG.
+    With the BE-only gating still active, the probe showed:
+
+    * `pcFetch = 0x20000008` (= SRAM[8]) **stuck**.
+    * `dataStallS = 1`, `fetchStallS` toggling normally.
+    * `uartReadyS = 0` — JTAG-UART IP's `av_waitrequest`
+      pinned high, even with `chipselect=0` after gating.
+
+    Root cause: when `uartAcceptedS=True` gates `ambSel=0` /
+    `ambBe=0`, the Altera IP's `av_waitrequest` defaults to high
+    (the output isn't meaningful when chipselect=0), but the
+    SoC's `dataStallS` checks `not uartReadyS` regardless of
+    whether the master is even requesting → infinite stall on
+    a non-existent transaction. The pipeline stays stuck with
+    `pcFetch` registered at SRAM[8] forever because the SW for
+    `'S'` never retires (stall=True forever), so iter 1's
+    ebreak never gets to X-stage.
+
+    Fix: also gate `dataStallS` on `uartAcceptedS` — the SoC
+    ignores `!uartReadyS` while the gate is engaged. Two-line
+    change to `dataStallS` plus the existing CS+BE gating in
+    `uartBusS`.
+
+    Silicon now loops: `BSBSBSBS×N` clean. CoreMark unchanged
+    at 44.57 / 1.114. 160 sim tests still green. Both
+    altsource_probe instances (`PCFE` for pcFetch, `DBGF` for
+    flags) ship in every variant for future diagnostic use.
+
+    Slack at sramexec is +5.587 ns at 40 MHz on the global
+    variant and +7.842 ns on the wrapper variant — not a
+    setup-timing miss. CoreMark stays clean across all variants
+    because the `enableSramFetch=False` branch dead-code-
+    eliminates the gating logic entirely on the production
+    bitstream.
+
+    Investigation paused. Next attempt requires SignalTap (or
+    equivalent on-chip observability) to capture the actual
+    cycle-by-cycle behaviour of the second iteration: in
+    particular, whether `pcFetch` redirects to `0` after the
+    ebreak / JALR-to-0 (we tested both — same halt), and whether
+    the BRAM `'B'` SW in iteration 2 issues at all, or issues
+    but its byte is suppressed somewhere along the bus → IP
+    path. The architectural fix is real and sim-validated
+    end-to-end. Only the silicon iteration-loop continuation is
+    unsolved. Cosmetic only — the production CoreMark bitstream
+    is unaffected.
 
   (Original probe writeup below, kept as the historical trail.)
 

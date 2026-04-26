@@ -30,6 +30,7 @@ import SocHwSim qualified
 import SocSpec qualified
 import SpikeDiffSpec qualified
 import SpikeDriverSpec qualified
+import SramExecSpec qualified
 import SramSpec qualified
 import SramStallForwardSpec qualified
 import Test.Tasty (defaultMain, testGroup)
@@ -58,6 +59,7 @@ main =
       , LcdSpec.tests
       , SocSpec.tests
       , SramSpec.tests
+      , SramExecSpec.tests
       , SramStallForwardSpec.tests
       , SdramSpec.tests
       , HelloSpec.tests
