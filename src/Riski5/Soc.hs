@@ -223,12 +223,14 @@ soc ::
   -- | Enable fetch-side SRAM routing.
   --
   -- When 'False' (the committed default for the main CoreMark
-  -- bitstream), 'fetchInSramS' is forced to 'False' and the
-  -- fetch-side arbiter wiring is inert: the data-priority arbiter
-  -- sees only the data-side request, its outputs match pure
-  -- data-side pass-through, and Quartus re-uses the placement
-  -- produced before the arbiter landed. CoreMark silicon scores
-  -- stay at the pre-arbiter level (44.57 / 1.114 @ 40 MHz).
+  -- bitstream), the SRAM-fetch arbiter wiring is inert: the
+  -- pass-through branch wires the data-side bus directly into
+  -- 'sram', the SRAM block's fetch-data and fetch-ready outputs
+  -- collapse to constant @0@/@False@, and the final fetch mux's
+  -- @(False, False)@ arm bypasses the SRAM/SDRAM sources entirely.
+  -- Quartus re-uses the placement produced before the arbiter
+  -- landed; CoreMark silicon scores stay at the pre-arbiter level
+  -- (44.57 / 1.114 @ 40 MHz).
   --
   -- When 'True' (the sramexec bitstream variant), the fetch-side
   -- decoder routes @pcFetch in SRAM range@ to the shared SRAM
@@ -237,6 +239,23 @@ soc ::
   --
   -- See @docs/perf/sram-exec-probe-2026-04-24.md@ for the
   -- placement-regression rationale.
+  Bool ->
+  -- | Enable fetch-side SDRAM routing.
+  --
+  -- Parallel toggle to 'enableSramFetch' for the off-chip 8 MB SDR
+  -- SDRAM. When 'True' (the sdramexec bitstream variant), the
+  -- fetch-side decoder routes @pcFetch in SDRAM range@ through
+  -- the 'Riski5.Sdram' adapter (which already does the 32 ↔ 16
+  -- width split for data accesses — fetches inherit the same
+  -- machinery) so firmware can execute directly from the off-chip
+  -- 8 MB at @0x8000_0000+@. This is the last architectural piece
+  -- before the core can run a Linux kernel image (kernels live in
+  -- SDRAM).
+  --
+  -- When 'False' (the committed default), the SDRAM block reduces
+  -- to the data-only @sdram@ call — bit-identical to the
+  -- pre-SDRAM-fetch SoC. The fetch mux's @(False, _)@ arms ignore
+  -- the SDRAM fetch-data / fetch-ready outputs entirely.
   Bool ->
   -- | initial imem contents (RV32I machine-code words)
   Vec p (BitVector 32) ->
@@ -249,7 +268,7 @@ soc ::
   -- | board-level inputs (switches, keys)
   Signal dom SocIn ->
   Signal dom SocOut
-soc enableSramFetch progInit _dataInit inS = outS
+soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
  where
   -- ----- Core instance -----------------------------------------
   -- The stall signal comes from the bus mux: any slave that needs
@@ -444,46 +463,58 @@ soc enableSramFetch progInit _dataInit inS = outS
   -- compile-time 'if' (rather than a signal-level one) guarantees
   -- GHC Core + Clash strip the unused branch before the synth
   -- backend sees it.
+  --
+  -- The block returns five signals:
+  --
+  --   * @sramRdataS@      — controller read-data presented to the
+  --     data-side bus mux.
+  --   * @sramPinsS@       — driven onto the SRAM_* board pins.
+  --   * @sramDataReadyS@  — feeds 'dataStallS' for the data side.
+  --     Equals the controller's raw @readyS@ in the pass-through
+  --     branch; gated by the arbiter's owner in the enabled branch.
+  --   * @sramFetchDataS@  — read-data routed to the fetch mux when
+  --     the SRAM-fetch path is enabled. Pinned to constant @0@ in
+  --     the disabled branch (dead-coded by the fetch mux's
+  --     @(False, _)@ arms).
+  --   * @sramFetchReadyS@ — fetch-side ready. @False@ in the
+  --     disabled branch, gated by owner @==@ 'OwnFetch' in the
+  --     enabled branch.
   sramDataReqS = (\a -> slaveOf a == SlaveSram) <$> dAddrS
   sramDqInS = siSramDqIn <$> inS
 
-  ( imemDataS
-    , imemReadyS
-    , fetchStallS
-    , sramRdataS
+  ( sramRdataS
     , sramPinsS
     , sramDataReadyS
+    , sramFetchDataS
+    , sramFetchReadyS
     ) =
       if enableSramFetch
         then
           let
-            fetchSlaveS :: Signal dom SlaveId
-            fetchSlaveS = slaveOf <$> pcFetchS
-            fetchInSramS :: Signal dom Bool
-            fetchInSramS = (== SlaveSram) <$> fetchSlaveS
-            sramFetchReqS = fetchInSramS
-            effectiveOwnerS :: Signal dom SramOwner
-            effectiveOwnerS =
+            sramFetchInS :: Signal dom Bool
+            sramFetchInS = (\fs -> fs == SlaveSram) <$> (slaveOf <$> pcFetchS)
+            sramOwnerS :: Signal dom SramOwner
+            sramOwnerS =
               ( \dReq fReq ->
                   if dReq
                     then OwnData
                     else if fReq then OwnFetch else OwnNone
               )
                 <$> sramDataReqS
-                <*> sramFetchReqS
+                <*> sramFetchInS
             sramSelArbS =
               ( \o dReq -> case o of
                   OwnFetch -> True
                   _ -> dReq
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> sramDataReqS
             sramAddrArbS =
               ( \o dA pcF -> case o of
                   OwnFetch -> pcF
                   _ -> dA
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> dAddrS
                 <*> pcFetchS
             sramWdataArbS =
@@ -491,21 +522,21 @@ soc enableSramFetch progInit _dataInit inS = outS
                   OwnFetch -> 0
                   _ -> dW
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> dWdataS
             sramBeArbS =
               ( \o dB -> case o of
                   OwnFetch -> 0 -- read-only
                   _ -> dB
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> dBeS
             sramRenArbS =
               ( \o dR -> case o of
                   OwnFetch -> True
                   _ -> dR
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> dRenS
             (sramRdataS', sramPinsS', sramReadyS') =
               sram sramSelArbS sramAddrArbS sramWdataArbS sramBeArbS sramRenArbS sramDqInS
@@ -514,34 +545,21 @@ soc enableSramFetch progInit _dataInit inS = outS
                   OwnData -> rdy
                   _ -> False
               )
-                <$> effectiveOwnerS
+                <$> sramOwnerS
                 <*> sramReadyS'
-            imemReadyS' :: Signal dom Bool
-            imemReadyS' =
-              ( \isSram o rdy -> case (isSram, o, rdy) of
-                  (False, _, _) -> True -- BRAM fetch: always ready
-                  (True, OwnFetch, True) -> True -- SRAM fetch complete
-                  (True, _, _) -> False -- SRAM fetch in flight
+            sramFetchReadyS' =
+              ( \o rdy -> case o of
+                  OwnFetch -> rdy
+                  _ -> False
               )
-                <$> fetchInSramS
-                <*> effectiveOwnerS
+                <$> sramOwnerS
                 <*> sramReadyS'
-            imemDataS' :: Signal dom (BitVector 32)
-            imemDataS' =
-              (\isSram bramD sramD -> if isSram then sramD else bramD)
-                <$> fetchInSramS
-                <*> imemDataBramS
-                <*> sramRdataS'
-            fetchStallS' :: Signal dom Bool
-            fetchStallS' =
-              (\rdy -> case rdy of True -> False; False -> True) <$> imemReadyS'
            in
-            ( imemDataS'
-            , imemReadyS'
-            , fetchStallS'
-            , sramRdataS'
+            ( sramRdataS'
             , sramPinsS'
             , sramDataReadyS'
+            , sramRdataS' -- fetch data shares the controller output
+            , sramFetchReadyS'
             )
         else
           -- Pass-through: the SRAM controller is driven by the
@@ -552,27 +570,227 @@ soc enableSramFetch progInit _dataInit inS = outS
             (sramRdataS', sramPinsS', sramReadyS') =
               sram sramDataReqS dAddrS dWdataS dBeS dRenS sramDqInS
            in
-            ( imemDataBramS
-            , CP.pure True -- BRAM fetches always ready
-            , CP.pure False -- no multi-cycle fetch stall
-            , sramRdataS'
+            ( sramRdataS'
             , sramPinsS'
             , sramReadyS' -- data is the only requester
+            , CP.pure 0 -- fetch path inert
+            , CP.pure False -- fetch never ready
             )
-
-  -- Preserved alias for the dmem read-data mux downstream.
-  sramSelS = sramDataReqS
 
   -- ----- SDRAM (off-chip 8 MB IS42S16400-class via Altera IP) --
   -- 'Riski5.Sdram.sdram' is the 32 ↔ 16 adapter FSM; the actual
   -- SDRAM controller is the Altera IP instantiated in the Verilog
-  -- wrapper outside the Clash boundary. Like SRAM, 'sdramReadyS'
-  -- is False while a transaction is in flight; the core stalls
-  -- via 'stallS' until it goes True.
-  sdramSelS = (\a -> slaveOf a == SlaveSdram) <$> dAddrS
+  -- wrapper outside the Clash boundary. Like SRAM, the adapter's
+  -- @readyS@ is False while a transaction is in flight; the core
+  -- stalls via 'stallS' until it goes True.
+  --
+  -- __Two structural variants, selected at synthesis time by the
+  -- 'enableSdramFetch' flag.__ Mirrors the SRAM block's
+  -- arbiter-or-pass-through pattern: when the flag is 'False' the
+  -- SDRAM block is bit-identical to the pre-SDRAM-fetch SoC; when
+  -- 'True' a stateless data-priority arbiter routes
+  -- @pcFetch in SDRAM range@ through the controller. Same
+  -- compile-time-@if@ rationale as the SRAM block — the arbiter
+  -- muxes change Quartus's placement and regress CoreMark on
+  -- silicon if not gated structurally.
+  --
+  -- __Caveat — stateless arbiter on a multi-cycle FSM.__ The SDRAM
+  -- adapter holds state across cycles (SReadLoReq → SReadLoWait →
+  -- SReadHiReq → SReadHiWait); its @addrS@ input is sampled per
+  -- cycle in @busFor@. If the arbiter switched ownership
+  -- mid-transaction (e.g. data raced in while fetch was in
+  -- SReadLoWait), the FSM would present mismatched address bits
+  -- on the IP-facing leg. The probe firmware
+  -- 'firmware\/phase1\/HelloSdramExec.hs' avoids the race by
+  -- construction (data accesses go to the UART; SDRAM is
+  -- fetch-only inside the SDRAM-resident routine). A registered
+  -- "owner-locked" arbiter is the right next step when a future
+  -- firmware overlaps data + fetch on SDRAM — track in the
+  -- SX-follow-up section of @TODO.md@.
+  sdramSelDataS = (\a -> slaveOf a == SlaveSdram) <$> dAddrS
   sdramReplyS = siSdramReply <$> inS
-  (sdramRdataS, sdramBusS, sdramReadyS) =
-    sdram sdramSelS dAddrS dWdataS dBeS dRenS sdramReplyS
+
+  ( sdramRdataS
+    , sdramBusS
+    , sdramDataReadyS
+    , sdramFetchDataS
+    , sdramFetchReadyS
+    ) =
+      if enableSdramFetch
+        then
+          let
+            sdramFetchInS :: Signal dom Bool
+            sdramFetchInS = (\fs -> fs == SlaveSdram) <$> (slaveOf <$> pcFetchS)
+            sdramOwnerS :: Signal dom SramOwner
+            sdramOwnerS =
+              ( \dReq fReq ->
+                  if dReq
+                    then OwnData
+                    else if fReq then OwnFetch else OwnNone
+              )
+                <$> sdramSelDataS
+                <*> sdramFetchInS
+            sdramSelArbS =
+              ( \o dReq -> case o of
+                  OwnFetch -> True
+                  _ -> dReq
+              )
+                <$> sdramOwnerS
+                <*> sdramSelDataS
+            sdramAddrArbS =
+              ( \o dA pcF -> case o of
+                  OwnFetch -> pcF
+                  _ -> dA
+              )
+                <$> sdramOwnerS
+                <*> dAddrS
+                <*> pcFetchS
+            sdramWdataArbS =
+              ( \o dW -> case o of
+                  OwnFetch -> 0
+                  _ -> dW
+              )
+                <$> sdramOwnerS
+                <*> dWdataS
+            sdramBeArbS =
+              ( \o dB -> case o of
+                  -- For fetches: be == 0 means "this is a read"
+                  -- in the 'Riski5.Sdram' adapter's decode
+                  -- (@isWriteS = (be /= 0)@), so 0 is exactly
+                  -- right.
+                  OwnFetch -> 0
+                  _ -> dB
+              )
+                <$> sdramOwnerS
+                <*> dBeS
+            sdramRenArbS =
+              ( \o dR -> case o of
+                  OwnFetch -> True
+                  _ -> dR
+              )
+                <$> sdramOwnerS
+                <*> dRenS
+            (sdramRdataS', sdramBusS', sdramReadyS') =
+              sdram sdramSelArbS sdramAddrArbS sdramWdataArbS sdramBeArbS sdramRenArbS sdramReplyS
+            sdramDataReadyS' =
+              ( \o rdy -> case o of
+                  OwnData -> rdy
+                  _ -> False
+              )
+                <$> sdramOwnerS
+                <*> sdramReadyS'
+            sdramFetchReadyS' =
+              ( \o rdy -> case o of
+                  OwnFetch -> rdy
+                  _ -> False
+              )
+                <$> sdramOwnerS
+                <*> sdramReadyS'
+           in
+            ( sdramRdataS'
+            , sdramBusS'
+            , sdramDataReadyS'
+            , sdramRdataS' -- fetch reuses the 32-bit adapter output
+            , sdramFetchReadyS'
+            )
+        else
+          let
+            (sdramRdataS', sdramBusS', sdramReadyS') =
+              sdram sdramSelDataS dAddrS dWdataS dBeS dRenS sdramReplyS
+           in
+            ( sdramRdataS'
+            , sdramBusS'
+            , sdramReadyS'
+            , CP.pure 0
+            , CP.pure False
+            )
+
+  -- ----- Fetch mux ---------------------------------------------
+  -- Combines the BRAM, SRAM, and SDRAM fetch sources into a single
+  -- @(imemDataS, imemReadyS, fetchStallS)@ triple driven into the
+  -- core's IF-stage. The case-of on @(enableSramFetch,
+  -- enableSdramFetch)@ ensures GHC + Clash compile-time-reduce to
+  -- exactly the structural wiring needed by each variant — the
+  -- @(False, False)@ arm is a literal pass-through to BRAM with no
+  -- mux logic emitted, preserving the pre-arbiter Quartus
+  -- placement for the CoreMark bitstream.
+  fetchSlaveS :: Signal dom SlaveId
+  fetchSlaveS = slaveOf <$> pcFetchS
+
+  (imemDataS, imemReadyS, fetchStallS) =
+    case (enableSramFetch, enableSdramFetch) of
+      (False, False) ->
+        ( imemDataBramS
+        , CP.pure True
+        , CP.pure False
+        )
+      (True, False) ->
+        let
+          imemDataS' =
+            ( \fs br sr -> case fs of
+                SlaveSram -> sr
+                _ -> br
+            )
+              <$> fetchSlaveS
+              <*> imemDataBramS
+              <*> sramFetchDataS
+          imemReadyS' =
+            ( \fs sr -> case fs of
+                SlaveSram -> sr
+                _ -> True
+            )
+              <$> fetchSlaveS
+              <*> sramFetchReadyS
+          fetchStallS' =
+            (\rdy -> case rdy of True -> False; False -> True) <$> imemReadyS'
+         in
+          (imemDataS', imemReadyS', fetchStallS')
+      (False, True) ->
+        let
+          imemDataS' =
+            ( \fs br dr -> case fs of
+                SlaveSdram -> dr
+                _ -> br
+            )
+              <$> fetchSlaveS
+              <*> imemDataBramS
+              <*> sdramFetchDataS
+          imemReadyS' =
+            ( \fs dr -> case fs of
+                SlaveSdram -> dr
+                _ -> True
+            )
+              <$> fetchSlaveS
+              <*> sdramFetchReadyS
+          fetchStallS' =
+            (\rdy -> case rdy of True -> False; False -> True) <$> imemReadyS'
+         in
+          (imemDataS', imemReadyS', fetchStallS')
+      (True, True) ->
+        let
+          imemDataS' =
+            ( \fs br sr dr -> case fs of
+                SlaveSram -> sr
+                SlaveSdram -> dr
+                _ -> br
+            )
+              <$> fetchSlaveS
+              <*> imemDataBramS
+              <*> sramFetchDataS
+              <*> sdramFetchDataS
+          imemReadyS' =
+            ( \fs sr dr -> case fs of
+                SlaveSram -> sr
+                SlaveSdram -> dr
+                _ -> True
+            )
+              <$> fetchSlaveS
+              <*> sramFetchReadyS
+              <*> sdramFetchReadyS
+          fetchStallS' =
+            (\rdy -> case rdy of True -> False; False -> True) <$> imemReadyS'
+         in
+          (imemDataS', imemReadyS', fetchStallS')
 
   -- Bus-level stall: any selected slave can deassert ready.
   --   * SRAM + SDRAM stall on read-latency.
@@ -596,10 +814,10 @@ soc enableSramFetch progInit _dataInit inS = outS
   -- forever, freezing the pipeline (the iter-2 halt symptom
   -- pinpointed via altsource_probe on 2026-04-26).
   dataStallS =
-    ( \s sramDataRdy sdramRdy uartRdy bramRdy uartAcc ->
+    ( \s sramDataRdy sdramDataRdy uartRdy bramRdy uartAcc ->
         case s of
           SlaveSram -> not sramDataRdy
-          SlaveSdram -> not sdramRdy
+          SlaveSdram -> not sdramDataRdy
           SlaveJtagUart -> case (uartRdy, uartAcc) of
             (True, _) -> False
             (False, True) -> False
@@ -609,7 +827,7 @@ soc enableSramFetch progInit _dataInit inS = outS
     )
       <$> (slaveOf <$> dAddrS)
       <*> sramDataReadyS
-      <*> sdramReadyS
+      <*> sdramDataReadyS
       <*> uartReadyS
       <*> bramReadyS
       <*> uartAcceptedS
@@ -727,11 +945,12 @@ socSim progInit dataInit inSimS = outSimS
       <$> inSimS
       <*> uartRdataS
       <*> sdramReplyS
-  -- Sim wrappers hardcode 'enableSramFetch = False'. All existing
-  -- sim tests run BRAM-resident firmware, so exercising the fetch-
-  -- side arbiter would be off-path; a future SRAM-exec sim harness
-  -- can thread a flag through explicitly.
-  outS = soc False progInit dataInit fullInS
+  -- Sim wrappers hardcode both fetch flags 'False'. All existing
+  -- sim tests run BRAM-resident firmware, so exercising the
+  -- fetch-side arbiters would be off-path; tests that need them
+  -- (SramExecSpec / SdramExecSpec) call 'socSimFullWith' instead
+  -- and thread the flags through explicitly.
+  outS = soc False False progInit dataInit fullInS
 
   -- JTAG UART sim-model tap.
   uartBusS = soUartBus <$> outS
@@ -795,13 +1014,17 @@ socSimFull ::
   Vec n (BitVector 16) ->
   Signal dom SocInFull ->
   Signal dom SocOutSim
-socSimFull = socSimFullWith False
+socSimFull = socSimFullWith False False
 
 {- |
-'socSimFull' with explicit @enableSramFetch@ — lets a test exercise
-the fetch-side SRAM routing in the same closed-loop wrapper as
-'socSimFull'. Passes the flag straight into 'soc' so the @sramexec@
-bitstream's pipeline can be reproduced in Verilator.
+'socSimFull' with explicit fetch-policy flags — lets a test
+exercise the fetch-side SRAM and/or SDRAM routing in the same
+closed-loop wrapper as 'socSimFull'. Passes both flags straight
+into 'soc' so either bitstream variant's pipeline can be
+reproduced in Verilator.
+
+Argument order: @socSimFullWith enableSramFetch enableSdramFetch
+progInit dataInit sramInit inFullS@.
 -}
 socSimFullWith ::
   forall dom p d n.
@@ -814,12 +1037,13 @@ socSimFullWith ::
   , 1 <= n
   ) =>
   Bool ->
+  Bool ->
   Vec p (BitVector 32) ->
   Vec d (BitVector 32) ->
   Vec n (BitVector 16) ->
   Signal dom SocInFull ->
   Signal dom SocOutSim
-socSimFullWith enableSramFetch progInit dataInit sramInit inFullS = outSimS
+socSimFullWith enableSramFetch enableSdramFetch progInit dataInit sramInit inFullS = outSimS
  where
   fullInS =
     ( \SocInFull {..} dq ur urRdy sdr ->
@@ -837,7 +1061,7 @@ socSimFullWith enableSramFetch progInit dataInit sramInit inFullS = outSimS
       <*> uartRdataS
       <*> uartReadyS
       <*> sdramReplyS
-  outS = soc enableSramFetch progInit dataInit fullInS
+  outS = soc enableSramFetch enableSdramFetch progInit dataInit fullInS
 
   -- SRAM chip model — watches the pins the SoC's internal sram
   -- controller drives, feeds DQ-in back combinationally.
@@ -904,7 +1128,7 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
       <*> uartReadyS
       <*> sdramReplyS
   -- See note on 'socSim' re: hardcoded fetch-policy.
-  outS = soc False progInit dataInit fullInS
+  outS = soc False False progInit dataInit fullInS
 
   uartBusS = soUartBus <$> outS
   (uartRdataS, uartTxS, uartReadyS) =

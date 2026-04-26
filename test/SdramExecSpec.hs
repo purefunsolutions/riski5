@@ -6,33 +6,30 @@
 {-# LANGUAGE NoStarIsType #-}
 
 {- |
-Module      : SramExecSpec
-Description : Reproduces the 1:3 B:S sramexec UART-multi-write bug in sim.
+Module      : SdramExecSpec
+Description : SDRAM-execution architectural contract — 1 B + 1 S per iteration.
 
-The @riski5-core-sramexec@ bitstream produces a @BSSS@ (1 B, 3 S)
-byte stream on silicon every iteration of @HelloSramExec@:
+The SDRAM-execution counterpart to 'SramExecSpec'. The
+@riski5-core-sdramexec@ bitstream's @HelloSdramExec@ firmware is
+expected to produce a strictly @BSBSBS…@ byte stream — one @B@
+written from BRAM-resident bring-up, one @S@ written by the
+SDRAM-resident @sw@. Anything else (extra @S@ bytes per
+iteration, infinite @B@ stream, mid-iteration garbage) is a
+regression in the SDRAM-fetch path.
 
-  * 'B' is written once by the BRAM-resident bring-up code.
-  * Then a JALR redirects to SRAM[0].
-  * SRAM[0] = @sw x14, 0(x10)@ writes 'S' to the UART.
-  * SRAM[4] = @ebreak@ — traps to @mtvec=0@, restart firmware.
+The test exercises the architectural contract in Verilator-free
+Clash sim by running @HelloSdramExec@ through 'socSimFullWith'
+with @enableSdramFetch=True@ (the @sdramexec@ bitstream's flag).
+Since the @sdramIpSim@ model has 1-cycle valid latency and the
+'Riski5.Sdram' adapter does two 16-bit Avalon transactions per
+32-bit word, each SDRAM op takes ~4-5 cycles — comfortably below
+the 6000-cycle bound used here for ~80 iterations of headroom.
 
-Architectural retire pattern: 1B + 1S per iteration. Silicon shows
-1B + 3S. Root cause: the SW at SRAM[0] sits in X-stage with
-@dBeOutS@ asserted while the IF stage is mid-multi-cycle SRAM
-fetch on @ebreak@ at SRAM[4]. The Altera JTAG-UART IP (and our
-'jtagUartAlteraSim' model) commits a byte every cycle the master
-holds @wr=True@ with FIFO not full — so each fetch-stall cycle past
-the first is another spurious UART transaction.
-
-This spec runs HelloSramExec through 'socSimFullWith' with
-@enableSramFetch=True@ (the sramexec bitstream's flag) and asserts
-the architectural 1:1 ratio. Without a master-side gating fix in
-'Riski5.Soc', the test fails with byte-counts > 1 per S-block,
-mirroring the 'BSSS' silicon symptom; with the fix, the test
-passes 1:1.
+Same byte-slicing approach as 'SramExecSpec' so the assertion
+shape is "every complete iteration has exactly one @B@ and one
+@S@". The last (potentially partial) iteration is dropped.
 -}
-module SramExecSpec (
+module SdramExecSpec (
   tests,
 ) where
 
@@ -51,7 +48,7 @@ import Clash.Prelude (
  )
 import Clash.Prelude qualified as CP
 import Clash.Sized.Vector qualified as V
-import HelloSramExec (helloSramExecFirmwareWords)
+import HelloSdramExec (helloSdramExecFirmwareWords)
 import Riski5.Soc (SocInFull (..), SocOutSim (..), socSimFullWith)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, testCase)
@@ -61,28 +58,22 @@ import Prelude qualified as P
 tests :: TestTree
 tests =
   testGroup
-    "SRAM-exec UART multi-write (1:3 B:S diagnostic)"
-    [ testCase "HelloSramExec — each iteration prints exactly 1 B and 1 S" case_oneSperBperIteration
+    "SDRAM-exec architectural contract (HelloSdramExec)"
+    [ testCase "HelloSdramExec — each iteration prints exactly 1 B and 1 S" case_oneSperBperIteration
     ]
 
 -- * Test --------------------------------------------------------------
 
-{- | Run the @HelloSramExec@ firmware through 'socSimFullWith' with
-@enableSramFetch=True@. Slice the captured TX byte stream into
+{- | Run the @HelloSdramExec@ firmware through 'socSimFullWith' with
+@enableSdramFetch=True@. Slice the captured TX byte stream into
 "iterations" (each starting at a 'B' byte = 0x42) and assert that
 each iteration has exactly one 'S' byte (= 0x53) before the next
 'B'.
-
-Why the slicing instead of a fixed expected list: the sim runs for
-a bounded cycle count and may end mid-iteration; iteration count
-varies with sim length and any future pipeline tuning. The
-__architectural__ contract is "1 B per iteration, 1 S per
-iteration" and that's exactly what the slicing tests.
 -}
 case_oneSperBperIteration :: Assertion
 case_oneSperBperIteration = do
   let bytes :: [BitVector 8]
-      bytes = runSoc helloSramExecFirmwareWords 4000
+      bytes = runSoc helloSdramExecFirmwareWords 6000
 
       iters :: [(Int, Int)] -- (numB, numS)
       iters = sliceByB bytes
@@ -118,19 +109,14 @@ case_oneSperBperIteration = do
 sliceByB :: [BitVector 8] -> [(Int, Int)]
 sliceByB = goPre
  where
-  -- Drop bytes before the first B. Anything before isn't part of an
-  -- iteration we can score — the firmware might emit warm-up bytes
-  -- (in practice it doesn't, but defensively skip).
   goPre [] = []
   goPre (b : rest)
     | b == 0x42 = goIter (1 :: Int) (0 :: Int) rest
     | otherwise = goPre rest
 
-  -- Inside an iteration: count B's (always 1 expected) and S's, then
-  -- close the iteration when we see the next B.
   goIter !nB !nS [] = [(nB, nS)]
   goIter !nB !nS (b : rest)
-    | b == 0x42 = (nB, nS) : goIter 1 0 rest -- next iteration starts
+    | b == 0x42 = (nB, nS) : goIter 1 0 rest
     | b == 0x53 = goIter nB (nS + 1) rest
     | otherwise = goIter nB nS rest
 
@@ -144,7 +130,9 @@ runSoc codeWords nCycles =
       dataVec :: Vec 1 (BitVector 32)
       dataVec = CP.repeat 0
 
-      -- 256 K half-words = 512 KB — full DE2 SRAM.
+      -- 256 K half-words = 512 KB. Unused by HelloSdramExec
+      -- (firmware only touches BRAM + UART + SDRAM) but
+      -- 'socSimFullWith' wires an SRAM model anyway.
       sramInit :: Vec 262144 (BitVector 16)
       sramInit = CP.repeat 0
 
@@ -153,7 +141,7 @@ runSoc codeWords nCycles =
         fromList (P.repeat SocInFull {sifSwitches = 0, sifKeys = 0xF})
 
       go :: (HiddenClockResetEnable System) => Signal System SocOutSim
-      go = socSimFullWith True False progVec dataVec sramInit inputSig
+      go = socSimFullWith False True progVec dataVec sramInit inputSig
 
       trace =
         sampleN @System nCycles $

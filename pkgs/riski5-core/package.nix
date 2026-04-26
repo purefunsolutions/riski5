@@ -35,9 +35,21 @@
   # functionally-different Quartus placements and non-deterministic
   # bitstream regressions during the 2026-04-24 SRAM-exec probe —
   # see @docs/perf/sram-exec-probe-2026-04-24.md@.
-  # Only one of @coremarkPkg != null@ and @sramExec@ should be set
-  # at a time.
+  # At most one of @coremarkPkg != null@, @sramExec@, and
+  # @sdramExec@ should be set at a time.
   sramExec ? false,
+  # Build the SDRAM-execution debug variant. Same overlay
+  # mechanism as @sramExec@: re-exports
+  # @HelloSdramExec.helloSdramExecFirmwareWords@ as
+  # @CoreMark.coreMarkFirmwareWords@, and flips
+  # @FetchPolicy.enableSdramFetch@ to @True@ so the SoC routes
+  # @pcFetch in SDRAM range@ through the 'Riski5.Sdram' adapter.
+  # The probe firmware writes two encoded instructions into
+  # SDRAM[0x80000000+], JALRs there, the SDRAM-resident @sw@
+  # prints @S@ to the UART, the @ebreak@ traps back to BRAM[0],
+  # and the firmware loops — yielding @BSBSBS…@ on the JTAG-UART
+  # iff SDRAM execution works end-to-end.
+  sdramExec ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -49,11 +61,13 @@
     ]);
   isCoremark = coremarkPkg != null;
   isSramExec = sramExec && !isCoremark;
+  isSdramExec = sdramExec && !isCoremark && !isSramExec;
 in
   stdenv.mkDerivation {
     pname =
       if isCoremark then "riski5-core-coremark"
       else if isSramExec then "riski5-core-sramexec"
+      else if isSdramExec then "riski5-core-sdramexec"
       else "riski5-core";
     version = "0.1.0";
 
@@ -138,6 +152,9 @@ in
               # controller. The committed default is False (keeps the
               # CoreMark bitstream bit-identical to the pre-arbiter build
               # — see docs/perf/sram-exec-probe-2026-04-24.md).
+              # @enableSdramFetch = False@ keeps the SDRAM block on the
+              # data-only pass-through path so the only structural change
+              # vs the CoreMark variant is the SRAM-fetch arbiter.
               cat > firmware/phase1/FetchPolicy.hs <<'EOF'
               -- SPDX-FileCopyrightText: 2026 Mika Tammi
               -- SPDX-License-Identifier: MIT OR BSD-3-Clause
@@ -147,15 +164,82 @@ in
               -- probe firmware can execute from 0x2000_0000+.
               module FetchPolicy (
                 enableSramFetch,
+                enableSdramFetch,
               ) where
 
               import Prelude (Bool (..))
 
               enableSramFetch :: Bool
               enableSramFetch = True
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = False
               EOF
               sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
               echo "### sramExec variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
+            ''}
+
+            ${lib.optionalString isSdramExec ''
+              # SDRAM-execution debug variant: overlay CoreMark.hs with a
+              # re-export of HelloSdramExec.helloSdramExecFirmwareWords,
+              # and flip FetchPolicy.enableSdramFetch = True so
+              # Riski5.Soc.soc routes @pcFetch in SDRAM range@ to the
+              # 32 ↔ 16 'Riski5.Sdram' adapter (which fronts the Altera
+              # @altera_avalon_new_sdram_controller@ IP, the same IP
+              # that already serves SDRAM data accesses today).
+              # Same overlay mechanism as sramExec — keeps Top.hs
+              # bit-identical across variants for Quartus-placement
+              # stability (see docs/perf/sram-exec-probe-2026-04-24.md
+              # for the original rationale).
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramExec Nix build: re-exports
+              -- HelloSdramExec's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the SDRAM-exec probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSdramExec (helloSdramExecFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSdramExecFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sdramExec variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramExec Nix build: turns on the
+              -- fetch-side SDRAM routing inside Riski5.Soc.soc so the
+              -- probe firmware can execute from 0x8000_0000+.
+              module FetchPolicy (
+                enableSramFetch,
+                enableSdramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = False
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### sdramExec variant: overlaid firmware/phase1/FetchPolicy.hs"
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
@@ -175,7 +259,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

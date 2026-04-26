@@ -25,6 +25,7 @@ import LcdSpec qualified
 import PipelineSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SdramExecSpec qualified
 import SdramSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
@@ -62,6 +63,7 @@ main =
       , SramExecSpec.tests
       , SramStallForwardSpec.tests
       , SdramSpec.tests
+      , SdramExecSpec.tests
       , HelloSpec.tests
       , JalrStackSpec.tests
       , UartBackpressureSpec.tests

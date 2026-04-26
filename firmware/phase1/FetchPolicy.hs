@@ -3,21 +3,26 @@
 
 {- |
 Module      : FetchPolicy
-Description : Per-bitstream toggle for fetch-side SRAM routing.
+Description : Per-bitstream toggles for fetch-side off-chip-memory routing.
 
 Controls whether 'Riski5.Soc.soc' instantiates the fetch-side
-bus decoder + SRAM arbiter wiring. Top.hs imports this module
-unconditionally and passes 'enableSramFetch' into 'soc'; the
-SoC gates its @fetchInSramS@ on the flag, so when it's 'False'
-the arbiter reduces to the baseline data-only SRAM path and
-Quartus produces a bitstream bit-identical to the pre-arbiter
-CoreMark one.
+arbiter wiring on the SRAM and SDRAM controllers. Top.hs imports
+this module unconditionally and passes both flags into 'soc'; the
+SoC gates each fetch-side path behind its own compile-time @if@,
+so when a flag is 'False' the corresponding arbiter reduces to the
+baseline data-only path and Quartus produces a bitstream
+bit-identical to the pre-arbiter CoreMark one.
 
-The default committed in git is 'False' — safest for the main
-production bitstream (@riski5-core@ / @riski5-core-coremark@)
-and leaves Quartus's placement unchanged for the common case.
-The sramexec bitstream variant overlays this file at Nix build
-time with 'enableSramFetch = True' to turn the arbiter on.
+The defaults committed in git are both 'False' — safest for the
+main production bitstream (@riski5-core@ / @riski5-core-coremark@)
+and leaves Quartus's placement unchanged for the common case. The
+debug bitstream variants overlay this file at Nix build time:
+
+  * @riski5-core-sramexec@ flips 'enableSramFetch' to 'True'.
+  * @riski5-core-sdramexec@ flips 'enableSdramFetch' to 'True'.
+
+Both flags can be 'True' simultaneously (a future "Linux-style"
+build) but no shipped variant uses that combination yet.
 
 This is the minimal-surface way to toggle a synthesis parameter
 per bitstream variant without introducing CPP into 'app/Top.hs'
@@ -26,6 +31,7 @@ per bitstream variant without introducing CPP into 'app/Top.hs'
 -}
 module FetchPolicy (
   enableSramFetch,
+  enableSdramFetch,
 ) where
 
 import Prelude (Bool (..))
@@ -34,3 +40,8 @@ import Prelude (Bool (..))
 -- Nix overlay flips this to 'True'.
 enableSramFetch :: Bool
 enableSramFetch = False
+
+-- | Default: SDRAM fetch path disabled. The sdramexec variant's
+-- Nix overlay flips this to 'True'.
+enableSdramFetch :: Bool
+enableSdramFetch = False

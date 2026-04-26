@@ -87,15 +87,28 @@
 
       # Debug bitstream that bakes firmware/phase1/HelloSramExec.hs
       # into the imem. Probes whether the core can execute
-      # instructions fetched from SRAM — the current SoC hardwires
-      # @imemDataS@ to BRAM with @pcFetch `mod` ProgSize@, so the
-      # expected on-silicon behaviour is an infinite 'B' stream
-      # (fetch at 0x2000_0000 wraps to BRAM[0] = firmware restart).
-      # If the fetch path ever grows an SRAM route, this bitstream
-      # is the regression probe.
+      # instructions fetched from SRAM. End-to-end working since
+      # the SRAM-exec arc closed (CoreMark stable at 44.57 / 1.114,
+      # silicon prints @BSBSBS…@ over JTAG-UART).
       riski5-core-sramexec = pkgs.callPackage ./riski5-core/package.nix {
         inherit quartus-ii-13;
         sramExec = true;
+      };
+
+      # Debug bitstream that bakes firmware/phase1/HelloSdramExec.hs
+      # into the imem. Probes whether the core can execute
+      # instructions fetched from SDRAM (the off-chip 8 MB IS42S16400
+      # via the Altera SDRAM Controller IP, same IP that already
+      # serves SDRAM data accesses). Architectural contract: writes
+      # two encoded instructions into SDRAM[0x80000000..], JALRs
+      # there, the SDRAM-resident @sw@ prints @S@ to the UART, the
+      # @ebreak@ traps back to BRAM[0], firmware loops — yielding
+      # @BSBSBS…@ on the JTAG-UART iff SDRAM execution works.
+      # Last architectural piece before the core can run a Linux
+      # kernel image (kernels live in SDRAM).
+      riski5-core-sdramexec = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sdramExec = true;
       };
 
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
@@ -118,6 +131,12 @@
         riski5-core = self'.packages.riski5-core-sramexec;
       };
 
+      # Flasher for the SDRAM-execution debug bitstream.
+      flash-riski5-sdramexec = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sdramexec;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -137,6 +156,10 @@
       flash-riski5-sramexec = {
         type = "app";
         program = "${self'.packages.flash-riski5-sramexec}/bin/flash-riski5";
+      };
+      flash-riski5-sdramexec = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sdramexec}/bin/flash-riski5";
       };
       console = {
         type = "app";

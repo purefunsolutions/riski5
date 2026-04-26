@@ -42,7 +42,7 @@ import CoreMark (coreMarkFirmwareWords)
 #else
 import MemTest (memTestFirmwareWords)
 #endif
-import FetchPolicy (enableSramFetch)
+import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
@@ -245,7 +245,7 @@ topEntity
               <*> uartRdataS
               <*> uartReadyS
               <*> sdramReplyS
-          outS = soc enableSramFetch firmwareImage dataImage inS
+          outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
           lcdDataS = lcdData . soLcdPins <$> outS
