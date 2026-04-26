@@ -82,6 +82,73 @@ rules around maintaining it.
 
 ## Next up
 
+- **SDRAM execution — extend the SRAM-exec pattern to off-chip
+  DRAM.** Phase 1D closed end-to-end SDRAM data access (T39:
+  SW + LW round-trip through the off-chip IS42S16400 via the
+  Altera @altera_avalon_new_sdram_controller@ IP, validated on
+  silicon with `0xCAFEBABE`). Phase 1's SRAM-exec work (now
+  closed) added the fetch-side bus decoder + multi-cycle fetch
+  protocol + master-side post-acceptance gating, but **only for
+  SRAM** — `JALR`s to `0x8000_0000+` (SDRAM range) currently
+  fall back to the BRAM-default path via `addrToImemIdx`'s
+  `mod ProgSize` wraparound, i.e., garbage instructions.
+  This task makes the SDRAM-execution path real.
+
+  Required to land Linux: the kernel image lives in SDRAM,
+  so the core has to be able to actually fetch and execute
+  from there.
+
+  Sub-tasks (broadly modelled on the SRAM-exec arc):
+
+  - **SX-1.** Either extend `enableSramFetch` to mean "off-chip
+    fetch enabled" and route both SRAM + SDRAM, or introduce a
+    parallel `enableSdramFetch :: Bool` constant in
+    `firmware/phase1/FetchPolicy.hs`. Compile-time toggle, same
+    Quartus-placement-stability rationale as the SRAM case.
+  - **SX-2.** Extend `Riski5.Soc.soc`'s `imemDataS` mux + multi-
+    cycle readiness wiring to include the SDRAM controller's
+    response. The Altera SDRAM IP returns `za_data` synchronously
+    with a `za_valid` pulse; the existing `Riski5.Sdram` adapter
+    already handles the 32 ↔ 16 width split for data accesses
+    and the master-side waitrequest stall — same mechanism applies
+    to fetches.
+  - **SX-3.** Arbitration between data and fetch on the SDRAM
+    controller, parallel to `SramOwner`. Same data-priority
+    pattern: data wins on simultaneous request, fetch waits.
+  - **SX-4.** Re-apply the lessons from the SRAM-exec silicon
+    halt: the Altera IPs' `av_waitrequest` defaults high when
+    chipselect=0, so `dataStallS`'s `SlaveSdram` case must
+    similarly be gated by the per-slave accepted-latch (the
+    fix that made the JTAG UART halt go away in commit
+    `11e662b`). Pre-empt the same hang.
+  - **SX-5.** New `firmware/phase1/HelloSdramExec.hs` (SW-into-
+    SDRAM, JALR-to-SDRAM, ebreak) + new
+    `test/SdramExecSpec.hs` exercising the architectural
+    contract through `socSimFullWith True` (or a new wrapper
+    if the SDRAM mock needs more setup than the SRAM one).
+  - **SX-6.** New `riski5-core-sdramexec` bitstream Nix
+    overlay (parallel to `riski5-core-sramexec`). Verify
+    silicon end-to-end: BRAM-init → write SDRAM[0..] → JALR
+    to SDRAM → SW prints to UART → ebreak → trap → loop.
+    Use the existing `altsource_probe` infrastructure (PCFE
+    + DBGF) if anything goes weird; the diagnostic harness
+    is already wired in every variant.
+
+  Notes:
+    * Multi-cycle fetch is already supported in the core's IF
+      stage (`pendingS` / `pcFetchHoldS` / `effective*S`) since
+      the SRAM-exec work — SDRAM's longer per-fetch latency
+      (~10+ cycles for an Altera-IP read at 40 MHz, vs SRAM's
+      3) just exercises more of that machinery, no new core-
+      side changes needed.
+    * Each 32-bit instruction fetch is two 16-bit Avalon-MM
+      reads to the IP (the @Riski5.Sdram@ adapter already does
+      this width adaptation for data); fetch path inherits the
+      same.
+    * Quartus-placement stability is again the high-stakes
+      part — the SRAM-exec compile-time toggle pattern
+      established the right shape; SX-1 should keep it.
+
 - **SRAM-execution architectural gap — FIXED (2026-04-24).**
   Core's IF stage previously hardwired to a 1-cycle BRAM sync-read;
   jumps into SRAM range wrapped back into BRAM. Now:
