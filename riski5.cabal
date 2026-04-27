@@ -72,6 +72,7 @@ library
     Riski5.AvalonMm
     Riski5.Bram
     Riski5.Clint
+    Riski5.Compressed
     Riski5.Core
     Riski5.Core.Assembly
     Riski5.Core.Config
@@ -162,6 +163,7 @@ test-suite riski5-test
     BramSpec
     BramStallForwardSpec
     ClintSpec
+    CompressedSpec
     CoreMarkRealBytes
     CoreMarkSimSpec
     CoreSimSpec
