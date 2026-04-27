@@ -18,6 +18,7 @@ import BramStallForwardSpec qualified
 import ClintSpec qualified
 import CompressedSpec qualified
 -- import CoreMarkSimSpec qualified  -- disabled: see module header
+import ExtIrqSpec qualified
 import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
@@ -78,4 +79,5 @@ main =
       , SpikeDriverSpec.tests
       , SpikeDiffSpec.tests
       , TimerIrqSpec.tests
+      , ExtIrqSpec.tests
       ]
