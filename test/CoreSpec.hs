@@ -101,7 +101,7 @@ simulateProgram n program =
         -- instruction at cycle N).
         imemSig = CP.register 0x0000_0013 (fmap imemOf pcFetch)
         (pcFetch, outPc, dAddr, dWdata, dBe, dRen, _wb, _rvfi) =
-          core imemSig (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False)
+          core imemSig (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False) (CP.pure P.False)
        in
         bundle (outPc, dAddr, dWdata, dBe, dRen)
     samples =

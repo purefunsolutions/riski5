@@ -71,6 +71,7 @@ import Riski5.JtagUartAdapter (jtagUartAdapter)
 import Riski5.Clint (clint)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
+import Riski5.Plic (PlicSources, plic)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
 import Riski5.Sram (SramPins (..), sram, sramChipSim)
 
@@ -341,7 +342,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- identical; phase-2 pipelining will make them differ by one
   -- cycle (fetch leads execute).
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
-    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS mtipS
+    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS mtipS meipS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- Two read ports over the same @progInit@:
@@ -545,6 +546,25 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   clintSelS = (\a -> slaveOf a == SlaveClint) <$> dAddrS
   (clintRdataS, mtipS) =
     clint clintSelS dAddrS dWdataS dBeS dRenS
+
+  -- ----- PLIC (SiFive-1.0.0-compatible interrupt controller) ---
+  -- Memory-mapped at 'plicBase' = 0x4000_0000. Owns the full top-4-bit
+  -- chunk (256 MB) so the SiFive sparse register layout — priority
+  -- at 0x0004, pending at 0x1000, enable at 0x2000, threshold/claim
+  -- at 0x0020_0000 — fits without wrapping. Drives @meipS@ →
+  -- core's @mip.MEIP@ bit.
+  --
+  -- The external IRQ source vector is currently pinned to 0 (no
+  -- peripheral wired). Once T-LI2 (16550 UART) and the LCD-IRQ work
+  -- (P2-H) land, those slaves' @irq@ outputs feed bits 1 and 2 of
+  -- this vector and the trap path is fully active. Until then the
+  -- block is dead-coded by Quartus on the CoreMark hot loop because
+  -- @meipS = 0@ identically.
+  plicSelS = (\a -> slaveOf a == SlavePlic) <$> dAddrS
+  plicExtIrqsS :: Signal dom (BitVector PlicSources)
+  plicExtIrqsS = pure 0
+  (plicRdataS, meipS) =
+    plic plicSelS dAddrS dWdataS dBeS dRenS plicExtIrqsS
 
   -- ----- SRAM (off-chip 512 KB IS61LV25616-class) --------------
   -- Pure half-word controller — see 'Riski5.Sram' for the
@@ -949,13 +969,14 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
   dmemRdataS =
-    ( \s bR uR lR gR cR sR dR ->
+    ( \s bR uR lR gR cR pR sR dR ->
         case s of
           SlaveBram -> bR
           SlaveJtagUart -> uR
           SlaveLcd -> lR
           SlaveGpio -> gR
           SlaveClint -> cR
+          SlavePlic -> pR
           SlaveSram -> sR
           SlaveSdram -> dR
           _ -> 0
@@ -966,6 +987,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> lcdRdataS
       <*> gpioRdataS
       <*> clintRdataS
+      <*> plicRdataS
       <*> sramRdataS
       <*> sdramRdataS
 

@@ -35,6 +35,7 @@ module Riski5.CSR (
   applyMret,
   interruptPending,
   causeMachineTimerInterrupt,
+  causeMachineExternalInterrupt,
 
   -- * Trap-cause codes (from priv-spec §3.1.20 "Machine Cause Register")
   causeInstrAddrMisaligned,
@@ -189,23 +190,36 @@ applyMret cs =
 {- | True iff a machine-mode interrupt is pending and architecturally
 allowed to fire — i.e. @mstatus.MIE@ is set, the corresponding
 @mie.* bit is set, and the matching @mip.* bit is set. Returns the
-cause code if pending, 'Nothing' otherwise. Phase-2 only checks the
-machine-timer interrupt (MTIP / MTIE); software / external IRQs
-arrive when the CLINT / PLIC paths land.
+cause code if pending, 'Nothing' otherwise.
+
+Priority order (per priv-spec §3.1.9, table "Synchronous exception
+priority"): MEI > MSI > MTI > SEI > … We currently model only
+MTI and MEI; if both fire on the same cycle, MEI takes
+precedence.
 -}
 interruptPending :: Csrs -> Maybe (BitVector 32)
 interruptPending cs
-  | allEnabled = Just causeMachineTimerInterrupt
+  | meiAllEnabled = Just causeMachineExternalInterrupt
+  | mtiAllEnabled = Just causeMachineTimerInterrupt
   | otherwise = Nothing
  where
   mieEnabled = cMstatus cs .&. bit 3 /= 0
   mtieEnabled = cMie cs .&. bit 7 /= 0
   mtipPending = cMip cs .&. bit 7 /= 0
-  allEnabled = mieEnabled && mtieEnabled && mtipPending
+  meieEnabled = cMie cs .&. bit 11 /= 0
+  meipPending = cMip cs .&. bit 11 /= 0
+  mtiAllEnabled = mieEnabled && mtieEnabled && mtipPending
+  meiAllEnabled = mieEnabled && meieEnabled && meipPending
 
 -- | Cause code for a machine-timer interrupt (bit 31 set, low bits 7).
 causeMachineTimerInterrupt :: BitVector 32
 causeMachineTimerInterrupt = bit 31 .|. 7
+
+-- | Cause code for a machine-external interrupt (bit 31 set, low bits 11).
+-- The PLIC's @meipS@ output pulls the trap path here when
+-- @mstatus.MIE && mie.MEIE@.
+causeMachineExternalInterrupt :: BitVector 32
+causeMachineExternalInterrupt = bit 31 .|. 11
 
 -- * Trap causes ----------------------------------------------------
 

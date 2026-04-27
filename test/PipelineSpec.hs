@@ -125,7 +125,7 @@ run prog nCycles =
         let imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
             dmem = CP.pure 0
             (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS, _) =
-              core imem (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False)
+              core imem (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False) (CP.pure P.False)
          in bundle (pcExecS, wbS, dAddrS, dBeS)
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go
@@ -163,7 +163,7 @@ runWithStall prog nCycles stallPattern =
             dmem = CP.pure 0
             stallS = CP.fromList stallList
             (pcFetchS, pcExecS, dAddrS, _dWdataS, dBeS, _dReS, wbS, _) =
-              core imem (CP.pure P.True) dmem stallS (CP.pure P.False)
+              core imem (CP.pure P.True) dmem stallS (CP.pure P.False) (CP.pure P.False)
          in bundle (pcExecS, wbS, dAddrS, dBeS)
    in sampleN @CP.System nCycles $
         withClockResetEnable @CP.System clockGen resetGen enableGen go

@@ -485,6 +485,12 @@ core ::
   -- @mie.MTIE@ to fire a machine-timer interrupt. Drive 'pure
   -- False' if the surrounding SoC has no CLINT yet.
   Signal dom Bool ->
+  -- | external machine-external-interrupt-pending strobe. Wired
+  -- straight into @mip.MEIP@ (bit 11 of the @cMip@ CSR) on every
+  -- clock edge; combined with @mstatus.MIE@ and @mie.MEIE@ to
+  -- fire a machine-external interrupt. Drive 'pure False' if the
+  -- surrounding SoC has no PLIC yet.
+  Signal dom Bool ->
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
   , Signal dom (BitVector 32) -- dmem address
@@ -494,7 +500,7 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   , Signal dom Rvfi -- RVFI observability bundle
   )
-core imemData imemReadyS dmemRData stallS mtipS =
+core imemData imemReadyS dmemRData stallS mtipS meipS =
   ( pcFetchS
   , mwPcOutS
   , dmemAddrOutS
@@ -1180,21 +1186,29 @@ core imemData imemReadyS dmemRData stallS mtipS =
 
   -- cMcycle increments every core clock (CM-4 — needed for CoreMark's
   -- mcycle-based timing). cMip's MTIP bit follows the external 'mtipS'
-  -- strobe driven by 'Riski5.Clint'. Everything else in Csrs follows
-  -- the existing "update-on-retire" rule: capture xCsrsNextS when the
+  -- strobe driven by 'Riski5.Clint'; cMip's MEIP bit follows 'meipS'
+  -- driven by 'Riski5.Plic'. Everything else in Csrs follows the
+  -- existing "update-on-retire" rule: capture xCsrsNextS when the
   -- X-stage instruction is valid and the pipeline isn't stalled, hold
   -- otherwise.
   csrsS :: Signal dom Csrs
   csrsS =
     register initCsrs $
-      ( \stall valid next cur mtip ->
+      ( \stall valid next cur mtip meip ->
           let base = if stall || not valid then cur else next
-              mipMasked = cMip base .&. complement (bit 7)
-              mipWithMtip =
-                mipMasked .|. (if mtip then bit 7 else 0)
+              -- Strip both hardware-driven mip bits (MTIP @ bit 7,
+              -- MEIP @ bit 11) before re-folding them from the live
+              -- external strobes — software writes to mip can never
+              -- override the hardware view.
+              mipMasked =
+                cMip base .&. complement (bit 7 .|. bit 11)
+              mipFinal =
+                mipMasked
+                  .|. (if mtip then bit 7 else 0)
+                  .|. (if meip then bit 11 else 0)
            in base
                 { cMcycle = cMcycle cur + 1
-                , cMip = mipWithMtip
+                , cMip = mipFinal
                 }
       )
         <$> stallInternalS
@@ -1202,6 +1216,7 @@ core imemData imemReadyS dmemRData stallS mtipS =
         <*> xCsrsNextS
         <*> csrsS
         <*> mtipS
+        <*> meipS
 
   -- ====================================================================
   -- Outputs
