@@ -81,6 +81,11 @@ data MachineState = MachineState
   , pc :: Word32
   , memory :: Map Addr Word8
   , csrs :: Map (BitVector 12) Word32
+  , reservation :: Maybe Addr
+  -- ^ A-extension LR/SC reservation. @Nothing@ when no reservation is
+  -- live. @Just addr@ records the word-aligned address an earlier
+  -- @LR.W@ registered. The matching @SC.W@ checks this; any other
+  -- write to the same address (including AMOs and traps) clears it.
   }
   deriving stock (Eq, Show)
 
@@ -92,6 +97,7 @@ initial =
     , pc = 0
     , memory = Map.empty
     , csrs = Map.empty
+    , reservation = Nothing
     }
 
 -- * Traps ------------------------------------------------------------
@@ -302,6 +308,37 @@ execute i s = case i of
       )
   Or rd rs1 rs2 -> next (writeReg rd (readReg rs1 s .|. readReg rs2 s) s)
   And rd rs1 rs2 -> next (writeReg rd (readReg rs1 s .&. readReg rs2 s) s)
+  -- A-extension. Reservation is single-hart-only here. Address
+  -- alignment is checked and AMO/SC misalignment traps as a store
+  -- fault, mirroring the hardware path.
+  LrW rd rs1 _aqrl ->
+    let addr = readReg rs1 s
+     in if addr .&. 3 /= 0
+          then trap LoadAddrMisaligned s
+          else
+            let v = readWord addr s
+             in next (writeReg rd v (s {reservation = Just addr}))
+  ScW rd rs1 rs2 _aqrl ->
+    let addr = readReg rs1 s
+     in if addr .&. 3 /= 0
+          then trap StoreAddrMisaligned s
+          else case reservation s of
+            Just resAddr | resAddr == addr ->
+              -- Success: write rs2, return 0, clear reservation.
+              let s' = writeWord addr (readReg rs2 s) s
+               in next (writeReg rd 0 (s' {reservation = Nothing}))
+            _ ->
+              -- Fail: skip store, return non-zero, clear reservation.
+              next (writeReg rd 1 (s {reservation = Nothing}))
+  AmoSwapW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnSwap s
+  AmoAddW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnAdd s
+  AmoXorW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnXor s
+  AmoAndW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnAnd s
+  AmoOrW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnOr s
+  AmoMinW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnMin s
+  AmoMaxW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnMax s
+  AmoMinuW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnMinu s
+  AmoMaxuW rd rs1 rs2 aqrl -> doAmo rd rs1 rs2 aqrl AmoFnMaxu s
   -- RV32M — integer multiply / divide.
   Mul rd rs1 rs2 ->
     -- Low 32 bits of the 64-bit product; sign-agnostic.
@@ -412,6 +449,55 @@ execute i s = case i of
 -- | Advance PC by 4; no writes beyond what the caller has already done.
 next :: MachineState -> Either TrapCause MachineState
 next s = Right (s {pc = pc s + 4})
+
+-- | The nine RV32A read-modify-write atomics share a single helper.
+data AmoFn
+  = AmoFnSwap
+  | AmoFnAdd
+  | AmoFnXor
+  | AmoFnAnd
+  | AmoFnOr
+  | AmoFnMin
+  | AmoFnMax
+  | AmoFnMinu
+  | AmoFnMaxu
+
+-- | Apply an AMO read-modify-write at @[rs1]@: read original, compute
+-- the new value, write it back, deliver the original to @rd@. Always
+-- clears any live reservation per the spec. Misaligned addresses
+-- trap as store faults — RISC-V groups AMO misalignment under the
+-- store class.
+doAmo ::
+  Reg ->
+  Reg ->
+  Reg ->
+  BitVector 2 ->
+  AmoFn ->
+  MachineState ->
+  Either TrapCause MachineState
+doAmo rd rs1 rs2 _aqrl op s =
+  let addr = readReg rs1 s
+   in if addr .&. 3 /= 0
+        then trap StoreAddrMisaligned s
+        else
+          let original = readWord addr s
+              operand = readReg rs2 s
+              newVal = applyAmo op original operand
+              s' = writeWord addr newVal s
+           in next (writeReg rd original (s' {reservation = Nothing}))
+
+-- | Pure-function definitions of the nine RV32A binary operations.
+applyAmo :: AmoFn -> Word32 -> Word32 -> Word32
+applyAmo op a b = case op of
+  AmoFnSwap -> b
+  AmoFnAdd -> a + b
+  AmoFnXor -> a `xor` b
+  AmoFnAnd -> a .&. b
+  AmoFnOr -> a .|. b
+  AmoFnMin -> if toSigned a < toSigned b then a else b
+  AmoFnMax -> if toSigned a > toSigned b then a else b
+  AmoFnMinu -> if a < b then a else b
+  AmoFnMaxu -> if a > b then a else b
 
 {- |
 Compute a load and write it to @rd@; traps on misalignment. Accepts

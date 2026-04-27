@@ -357,6 +357,18 @@ instrWritesRd (Just i) = case i of
   Csrrwi {} -> True
   Csrrsi {} -> True
   Csrrci {} -> True
+  -- A-extension: every variant writes rd (LR/SC/AMOs all do).
+  LrW {} -> True
+  ScW {} -> True
+  AmoSwapW {} -> True
+  AmoAddW {} -> True
+  AmoXorW {} -> True
+  AmoAndW {} -> True
+  AmoOrW {} -> True
+  AmoMinW {} -> True
+  AmoMaxW {} -> True
+  AmoMinuW {} -> True
+  AmoMaxuW {} -> True
   -- Does not write rd.
   Sb {} -> False
   Sh {} -> False
@@ -422,6 +434,17 @@ instrRd (Just i) = case i of
   Csrrwi rd _ _ -> unReg rd
   Csrrsi rd _ _ -> unReg rd
   Csrrci rd _ _ -> unReg rd
+  LrW rd _ _ -> unReg rd
+  ScW rd _ _ _ -> unReg rd
+  AmoSwapW rd _ _ _ -> unReg rd
+  AmoAddW rd _ _ _ -> unReg rd
+  AmoXorW rd _ _ _ -> unReg rd
+  AmoAndW rd _ _ _ -> unReg rd
+  AmoOrW rd _ _ _ -> unReg rd
+  AmoMinW rd _ _ _ -> unReg rd
+  AmoMaxW rd _ _ _ -> unReg rd
+  AmoMinuW rd _ _ _ -> unReg rd
+  AmoMaxuW rd _ _ _ -> unReg rd
   _ -> 0
 
 {- |
@@ -1439,6 +1462,22 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
         new = old .&. complement (zeroExtend zimm)
         cs' = writeCsr addr new cs
      in regWb cs' rd old (pc + 4)
+  -- A-extension placeholders. Same shape as the M-extension stubs
+  -- ('Mul' / 'Div' etc.) that are also dispatched to a separate FU
+  -- ('mulDivFU') and have their writeback overridden on retire. The
+  -- 'amoFU' (phase-2D) supplies the real value; until then these
+  -- decode legally and write zero, leaving the bus untouched.
+  LrW rd _ _ -> regWb cs rd 0 (pc + 4)
+  ScW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoSwapW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoAddW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoXorW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoAndW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoOrW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoMinW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoMaxW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoMinuW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  AmoMaxuW rd _ _ _ -> regWb cs rd 0 (pc + 4)
 
 nop :: Csrs -> BitVector 32 -> Out
 nop cs p = (p + 4, cs, 0, 0, 0, False, Nothing, False)

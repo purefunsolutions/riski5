@@ -43,6 +43,8 @@ tests =
     , testCase "beqz forward = BEQ rs x0 offset" case_beqzForward
     , testCase "two forward jumps + back-reference assemble together" case_combo
     , testCase "undefined label fails cleanly" case_undefined
+    , testCase "lr.w / sc.w pair round-trip" case_aLrSc
+    , testCase "all 9 AMO ops round-trip with aqrl=0b11" case_aAmoAqRl
     ]
 
 -- * Helpers ----------------------------------------------------------
@@ -175,3 +177,43 @@ case_undefined =
     j end
 
 -- end is never placed; placeAt not called.
+
+-- A-extension: LR.W / SC.W pair with aqrl=0 (bare).
+case_aLrSc :: Assertion
+case_aLrSc =
+  expect
+    ( do
+        lr_w x10 x11 0
+        sc_w x12 x11 x13 0
+    )
+    [ LrW x10 x11 0
+    , ScW x12 x11 x13 0
+    ]
+
+-- All 9 AMO ops with aqrl = 0b11 (full ordering). One Asm program emits
+-- one instance of each in canonical order; we expect the Instr list to
+-- match exactly.
+case_aAmoAqRl :: Assertion
+case_aAmoAqRl =
+  expect
+    ( do
+        amoswap_w x5 x6 x7 0b11
+        amoadd_w x5 x6 x7 0b11
+        amoxor_w x5 x6 x7 0b11
+        amoand_w x5 x6 x7 0b11
+        amoor_w x5 x6 x7 0b11
+        amomin_w x5 x6 x7 0b11
+        amomax_w x5 x6 x7 0b11
+        amominu_w x5 x6 x7 0b11
+        amomaxu_w x5 x6 x7 0b11
+    )
+    [ AmoSwapW x5 x6 x7 0b11
+    , AmoAddW x5 x6 x7 0b11
+    , AmoXorW x5 x6 x7 0b11
+    , AmoAndW x5 x6 x7 0b11
+    , AmoOrW x5 x6 x7 0b11
+    , AmoMinW x5 x6 x7 0b11
+    , AmoMaxW x5 x6 x7 0b11
+    , AmoMinuW x5 x6 x7 0b11
+    , AmoMaxuW x5 x6 x7 0b11
+    ]

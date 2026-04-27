@@ -13,6 +13,43 @@ rules around maintaining it.
 
 ## In flight
 
+- **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
+  Landed **2026-04-27**: ISA + encode + decode + Asm builders +
+  Reference executor (with `reservation :: Maybe Addr`) + 11
+  ReferenceSpec cases, all green. Next sub-tasks:
+  - **T-A-ext-3.** Core datapath — wire an `amoFU` modelled on
+    `mulDivFU` that drives a 2-phase memory transaction
+    (read-modify-write) and stalls X via `mdBusyS`-style busy
+    flag, with a `reservation` register tracking LR/SC. The 9
+    AMO ops share the FU; LR/SC are special cases of the same
+    state machine. Reservation also clears on `Mret` /
+    `applyTrap` to be safe, even though single-hart in-order
+    barely needs it.
+  - **T-A-ext-4.** Extend `test/CoreSpec.hs` with the same A-ext
+    catalog the Reference executor passes. Differential-test the
+    silicon datapath against the Reference oracle for every op.
+  - **T-A-ext-5.** Once Core integration is sim-clean, bake an
+    A-ext-exercising firmware into a new flake variant
+    (`riski5-core-aexttest` or similar) and run on silicon.
+
+- **CLINT — phase-2 timer-interrupt source.** Slot reserved at
+  `0x1000_0060..0x1000_009F` per `Riski5.MemMap`. Two pieces:
+  - **T-CLINT-1.** `src/Riski5/Clint.hs` exposing a 64-bit
+    `mtime` free-running counter at the core clock plus a 64-bit
+    `mtimecmp` compare register, both memory-mapped low / high
+    halves, both read / write. Raises a single output strobe
+    `mtipS` whenever `mtime >= mtimecmp`. Wire into
+    `Riski5.Soc`'s bus decoder mirroring the JTAG-UART /
+    LCD slave shape.
+  - **T-CLINT-2.** Plumb `mtipS` into `Riski5.CSR.cMip`'s MTIP
+    bit, gate machine-timer-interrupt acceptance on
+    `mstatus.MIE && mie.MTIE && mip.MTIP`, and route the trap
+    through the existing `applyTrap` path with cause = 7
+    (machine-timer-interrupt) and an interrupt-flagged mcause
+    high-bit. New firmware test sets `mtimecmp` to fire ~10 ms
+    out, enables timer interrupts, and expects to see a single
+    handler entry.
+
 - **CM — CoreMark on riski5 silicon.** Port the EEMBC CoreMark 1.01
   C benchmark, cross-compile via `pkgsCross.riscv32-embedded`, run
   on the DE2, read the score over JTAG-UART. Gives us a publishable

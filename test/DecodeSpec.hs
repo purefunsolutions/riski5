@@ -91,6 +91,9 @@ genBv5 = fromInteger <$> Gen.integral (Range.constant 0 31)
 genBv4 :: Gen (BitVector 4)
 genBv4 = fromInteger <$> Gen.integral (Range.constant 0 15)
 
+genBv2 :: Gen (BitVector 2)
+genBv2 = fromInteger <$> Gen.integral (Range.constant 0 3)
+
 genBv20 :: Gen (BitVector 20)
 genBv20 = fromInteger <$> Gen.integral (Range.constant 0 ((2 ^ (20 :: Int)) - 1))
 
@@ -173,4 +176,15 @@ genInstr =
     , Csrrwi <$> genReg <*> genBv5 <*> genCsr
     , Csrrsi <$> genReg <*> genBv5 <*> genCsr
     , Csrrci <$> genReg <*> genBv5 <*> genCsr
+    , LrW <$> genReg <*> genReg <*> genBv2
+    , ScW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoSwapW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoAddW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoXorW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoAndW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoOrW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoMinW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoMaxW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoMinuW <$> genReg <*> genReg <*> genReg <*> genBv2
+    , AmoMaxuW <$> genReg <*> genReg <*> genReg <*> genBv2
     ]

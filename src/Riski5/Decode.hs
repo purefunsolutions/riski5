@@ -45,6 +45,7 @@ decode w = case opcode of
   0b110_0011 -> decodeBranch rs1 rs2 bImm funct3
   0b000_1111 -> decodeMiscMem w funct3
   0b111_0011 -> decodeSystem w rd rs1 funct3 csr zimm
+  0b010_1111 -> decodeAmo rd rs1 rs2 funct3 funct5 aqrl
   _ -> Nothing
  where
   -- Field extraction. These are pure wire slices; Clash/Quartus will
@@ -118,6 +119,14 @@ decode w = case opcode of
   -- rs1 field).
   zimm :: BitVector 5
   zimm = slice d19 d15 w
+
+  -- A-extension funct5 picker (top 5 bits of funct7's home).
+  funct5 :: BitVector 5
+  funct5 = slice d31 d27 w
+
+  -- A-extension aq/rl hint pair: bit 26 = aq, bit 25 = rl.
+  aqrl :: BitVector 2
+  aqrl = slice d26 d25 w
 
 decodeLoad :: Reg -> Reg -> Signed 12 -> BitVector 3 -> Maybe Instr
 decodeLoad rd rs1 imm = \case
@@ -219,6 +228,33 @@ decodeMiscMem w = \case
       then Just FenceI
       else Nothing
   _ -> Nothing
+
+decodeAmo ::
+  Reg ->
+  Reg ->
+  Reg ->
+  BitVector 3 ->
+  BitVector 5 ->
+  BitVector 2 ->
+  Maybe Instr
+decodeAmo rd rs1 rs2 funct3 funct5 aqrl
+  | funct3 /= 0b010 = Nothing
+  | otherwise = case funct5 of
+      0b00010
+        -- LR.W requires rs2 = 0 per the spec.
+        | unReg rs2 == 0 -> Just (LrW rd rs1 aqrl)
+        | otherwise -> Nothing
+      0b00011 -> Just (ScW rd rs1 rs2 aqrl)
+      0b00001 -> Just (AmoSwapW rd rs1 rs2 aqrl)
+      0b00000 -> Just (AmoAddW rd rs1 rs2 aqrl)
+      0b00100 -> Just (AmoXorW rd rs1 rs2 aqrl)
+      0b01100 -> Just (AmoAndW rd rs1 rs2 aqrl)
+      0b01000 -> Just (AmoOrW rd rs1 rs2 aqrl)
+      0b10000 -> Just (AmoMinW rd rs1 rs2 aqrl)
+      0b10100 -> Just (AmoMaxW rd rs1 rs2 aqrl)
+      0b11000 -> Just (AmoMinuW rd rs1 rs2 aqrl)
+      0b11100 -> Just (AmoMaxuW rd rs1 rs2 aqrl)
+      _ -> Nothing
 
 decodeSystem ::
   BitVector 32 ->

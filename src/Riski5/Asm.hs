@@ -100,6 +100,19 @@ module Riski5.Asm (
   rem_,
   remu,
 
+  -- ** A-extension (RV32A)
+  lr_w,
+  sc_w,
+  amoswap_w,
+  amoadd_w,
+  amoxor_w,
+  amoand_w,
+  amoor_w,
+  amomin_w,
+  amomax_w,
+  amominu_w,
+  amomaxu_w,
+
   -- ** Memory-ordering (Zifencei)
   fence,
   fenceI,
@@ -420,6 +433,53 @@ rem_ rd rs1 rs2 = emit (Rem rd rs1 rs2)
 -- | @REMU rd, rs1, rs2@ — unsigned remainder.
 remu :: Reg -> Reg -> Reg -> Asm ()
 remu rd rs1 rs2 = emit (RemU rd rs1 rs2)
+
+-- * A-extension wrappers ---------------------------------------------
+
+-- | @LR.W rd, (rs1)@ — load-reserved word. @aqrl@ packs @aq@ into bit
+-- 1 and @rl@ into bit 0; pass @0@ for the bare ordering-free form.
+lr_w :: Reg -> Reg -> BitVector 2 -> Asm ()
+lr_w rd rs1 aqrl = emit (LrW rd rs1 aqrl)
+
+-- | @SC.W rd, rs2, (rs1)@ — store-conditional word.
+sc_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+sc_w rd rs1 rs2 aqrl = emit (ScW rd rs1 rs2 aqrl)
+
+-- | @AMOSWAP.W rd, rs2, (rs1)@.
+amoswap_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amoswap_w rd rs1 rs2 aqrl = emit (AmoSwapW rd rs1 rs2 aqrl)
+
+-- | @AMOADD.W rd, rs2, (rs1)@.
+amoadd_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amoadd_w rd rs1 rs2 aqrl = emit (AmoAddW rd rs1 rs2 aqrl)
+
+-- | @AMOXOR.W rd, rs2, (rs1)@.
+amoxor_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amoxor_w rd rs1 rs2 aqrl = emit (AmoXorW rd rs1 rs2 aqrl)
+
+-- | @AMOAND.W rd, rs2, (rs1)@.
+amoand_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amoand_w rd rs1 rs2 aqrl = emit (AmoAndW rd rs1 rs2 aqrl)
+
+-- | @AMOOR.W rd, rs2, (rs1)@.
+amoor_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amoor_w rd rs1 rs2 aqrl = emit (AmoOrW rd rs1 rs2 aqrl)
+
+-- | @AMOMIN.W rd, rs2, (rs1)@ — signed-min.
+amomin_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amomin_w rd rs1 rs2 aqrl = emit (AmoMinW rd rs1 rs2 aqrl)
+
+-- | @AMOMAX.W rd, rs2, (rs1)@ — signed-max.
+amomax_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amomax_w rd rs1 rs2 aqrl = emit (AmoMaxW rd rs1 rs2 aqrl)
+
+-- | @AMOMINU.W rd, rs2, (rs1)@ — unsigned-min.
+amominu_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amominu_w rd rs1 rs2 aqrl = emit (AmoMinuW rd rs1 rs2 aqrl)
+
+-- | @AMOMAXU.W rd, rs2, (rs1)@ — unsigned-max.
+amomaxu_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
+amomaxu_w rd rs1 rs2 aqrl = emit (AmoMaxuW rd rs1 rs2 aqrl)
 
 -- | @FENCE pred, succ@ — memory ordering fence (Zifencei).
 fence :: BitVector 4 -> BitVector 4 -> Asm ()

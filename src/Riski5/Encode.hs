@@ -104,6 +104,19 @@ encode = \case
   Csrrwi rd zimm csr -> csrI zimm rd 0b101 csr
   Csrrsi rd zimm csr -> csrI zimm rd 0b110 csr
   Csrrci rd zimm csr -> csrI zimm rd 0b111 csr
+  -- A-extension. funct3 = 0b010 (.W); funct5 in @[31:27]@ picks the
+  -- specific operation; aq / rl ride in @[26:25]@.
+  LrW rd rs1 aqrl -> aType 0b00010 aqrl x0 rs1 rd
+  ScW rd rs1 rs2 aqrl -> aType 0b00011 aqrl rs2 rs1 rd
+  AmoSwapW rd rs1 rs2 aqrl -> aType 0b00001 aqrl rs2 rs1 rd
+  AmoAddW rd rs1 rs2 aqrl -> aType 0b00000 aqrl rs2 rs1 rd
+  AmoXorW rd rs1 rs2 aqrl -> aType 0b00100 aqrl rs2 rs1 rd
+  AmoAndW rd rs1 rs2 aqrl -> aType 0b01100 aqrl rs2 rs1 rd
+  AmoOrW rd rs1 rs2 aqrl -> aType 0b01000 aqrl rs2 rs1 rd
+  AmoMinW rd rs1 rs2 aqrl -> aType 0b10000 aqrl rs2 rs1 rd
+  AmoMaxW rd rs1 rs2 aqrl -> aType 0b10100 aqrl rs2 rs1 rd
+  AmoMinuW rd rs1 rs2 aqrl -> aType 0b11000 aqrl rs2 rs1 rd
+  AmoMaxuW rd rs1 rs2 aqrl -> aType 0b11100 aqrl rs2 rs1 rd
 
 {-
 Format helpers. Each one assembles a 32-bit instruction from its
@@ -274,3 +287,23 @@ csrI zimm rd funct3 csr =
     ++# funct3
     ++# unReg rd
     ++# opcodeBits OpSystem
+
+{- | A-type (RV32A AMO format): @funct5 | aq | rl | rs2 | rs1 |
+funct3 = 010 | rd | OpAmo@. The @aqrl@ argument's high bit is @aq@,
+low bit is @rl@.
+-}
+aType ::
+  BitVector 5 ->
+  BitVector 2 ->
+  Reg ->
+  Reg ->
+  Reg ->
+  BitVector 32
+aType funct5 aqrl rs2 rs1 rd =
+  funct5
+    ++# aqrl
+    ++# unReg rs2
+    ++# unReg rs1
+    ++# (0b010 :: BitVector 3)
+    ++# unReg rd
+    ++# opcodeBits OpAmo

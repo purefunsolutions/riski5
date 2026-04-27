@@ -36,6 +36,14 @@ Instruction coverage:
     @DIV@, @DIVU@, @REM@, @REMU@. Same R-type encoding as
     @OpOp@ ALU instructions but with @funct7 = 0b0000001@; see
     "Riski5.Decode" for the dispatch.
+  * A-extension (RV32A): @LR.W@, @SC.W@, plus nine read-modify-
+    write atomics @AMOSWAP.W@ / @AMOADD.W@ / @AMOXOR.W@ /
+    @AMOAND.W@ / @AMOOR.W@ / @AMOMIN.W@ / @AMOMAX.W@ /
+    @AMOMINU.W@ / @AMOMAXU.W@. AMO opcode @0b010_1111@,
+    funct3 @0b010@ for word-size, funct5 picks the op, with
+    aq/rl hint bits in @[26:25]@ — preserved for round-trip
+    fidelity but currently ignored at execute time (single-
+    hart in-order is already sequentially consistent).
 -}
 module Riski5.ISA (
   -- * Registers
@@ -296,6 +304,8 @@ data Opcode
     OpJal
   | -- | @1110011@ - ECALL / EBREAK / CSR / MRET
     OpSystem
+  | -- | @0101111@ - A-extension AMO instructions (LR/SC + AMO*)
+    OpAmo
   deriving stock (Eq, Ord, Show, Generic)
   deriving anyclass (NFDataX)
 
@@ -313,6 +323,7 @@ opcodeBits = \case
   OpJalr -> 0b110_0111
   OpJal -> 0b110_1111
   OpSystem -> 0b111_0011
+  OpAmo -> 0b010_1111
 
 {- | A single RV32I + Zicsr + Zifencei + M-mode instruction.
 
@@ -396,5 +407,42 @@ data Instr
     Csrrwi Reg (BitVector 5) Csr
   | Csrrsi Reg (BitVector 5) Csr
   | Csrrci Reg (BitVector 5) Csr
+  | -- A-extension (RV32A) — opcode @0b010_1111@, funct3 @0b010@.
+    -- aq/rl hint bits live in @[26:25]@ as one 'BitVector' 2; bit 1
+    -- is @aq@ and bit 0 is @rl@. Single-hart in-order means the
+    -- core treats every AMO as sequentially consistent regardless
+    -- of these bits, but we carry them so encode/decode round-trip
+    -- exactly.
+
+    -- | @LR.W rd, (rs1)@. Loads a 32-bit word and registers a
+    -- reservation on @rs1@'s aligned address. The matching @SC.W@
+    -- conditionally completes that reservation. rs2 is hard-wired
+    -- to 0 in the encoding; the field is omitted from the
+    -- constructor so it cannot be set wrong.
+    LrW Reg Reg (BitVector 2)
+  | -- | @SC.W rd, rs2, (rs1)@. If a reservation registered by an
+    -- earlier 'LrW' is still live and matches @rs1@, store @rs2@
+    -- to memory and write @0@ to @rd@. Otherwise skip the store
+    -- and write @1@ to @rd@.
+    ScW Reg Reg Reg (BitVector 2)
+  | -- | @AMOSWAP.W rd, rs2, (rs1)@. Atomic
+    -- @{ tmp = MEM[rs1]; MEM[rs1] = rs2; rd = tmp }@.
+    AmoSwapW Reg Reg Reg (BitVector 2)
+  | -- | @AMOADD.W@: atomic @MEM[rs1] += rs2@; @rd@ ← old.
+    AmoAddW Reg Reg Reg (BitVector 2)
+  | -- | @AMOXOR.W@: atomic @MEM[rs1] ^= rs2@; @rd@ ← old.
+    AmoXorW Reg Reg Reg (BitVector 2)
+  | -- | @AMOAND.W@: atomic @MEM[rs1] &= rs2@; @rd@ ← old.
+    AmoAndW Reg Reg Reg (BitVector 2)
+  | -- | @AMOOR.W@: atomic @MEM[rs1] |= rs2@; @rd@ ← old.
+    AmoOrW Reg Reg Reg (BitVector 2)
+  | -- | @AMOMIN.W@: signed-min between @MEM[rs1]@ and @rs2@.
+    AmoMinW Reg Reg Reg (BitVector 2)
+  | -- | @AMOMAX.W@: signed-max between @MEM[rs1]@ and @rs2@.
+    AmoMaxW Reg Reg Reg (BitVector 2)
+  | -- | @AMOMINU.W@: unsigned-min between @MEM[rs1]@ and @rs2@.
+    AmoMinuW Reg Reg Reg (BitVector 2)
+  | -- | @AMOMAXU.W@: unsigned-max between @MEM[rs1]@ and @rs2@.
+    AmoMaxuW Reg Reg Reg (BitVector 2)
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
