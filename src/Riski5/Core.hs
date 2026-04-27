@@ -119,6 +119,7 @@ module Riski5.Core (
 
 import Clash.Prelude hiding (And, Xor, not, (!!), (&&), (||))
 import Riski5.ALU (AluOp (..), BranchOp (..), alu, branchTaken)
+import Riski5.Core.FU.Amo (AmoBus (..), AmoOp (..), amoFU, amoOpOf, isAmoOp)
 import Riski5.Core.FU.MulDiv (MdOp (..), isMdOp, mdOpOf, mulDivFU)
 import Riski5.CSR (
   Csrs (..),
@@ -497,11 +498,12 @@ core imemData imemReadyS dmemRData stallS =
   -- Stall + flush plumbing
   -- ====================================================================
 
-  -- The MulDiv FU's busy flag OR external back-pressure freezes
-  -- the front of the pipeline. Back-end stages (EX/MEM, MEM/WB)
-  -- drain on bubbles so already-issued instructions keep retiring.
+  -- The MulDiv FU's busy flag, the AMO FU's busy flag, OR external
+  -- back-pressure all fold into the same stall signal. Back-end
+  -- stages (EX/MEM, MEM/WB) drain on bubbles so already-issued
+  -- instructions keep retiring.
   stallInternalS :: Signal dom Bool
-  stallInternalS = (\s m -> s || m) <$> stallS <*> mdBusyS
+  stallInternalS = (\s m a -> s || m || a) <$> stallS <*> mdBusyS <*> amoBusyS
 
   -- The X stage takes a non-sequential PC change (branch taken,
   -- JAL, JALR, MRET, trap) → flush IF/ID and ID/EX on the next
@@ -933,6 +935,81 @@ core imemData imemReadyS dmemRData stallS =
       <*> xWbMaybeS
 
   -- ====================================================================
+  -- A-extension functional unit
+  -- ====================================================================
+  --
+  -- Multi-cycle path for LR.W / SC.W / AMO*.W. Lives next to the
+  -- MulDiv FU and shares the stall protocol: amoBusyS folds into
+  -- stallInternalS, the FU drives memory directly during its
+  -- Read / Write phases, and the result mux below re-routes its
+  -- output into the EX/MEM register on the retire cycle (the same
+  -- 'xWbWithMdS'-style override the M-extension uses).
+
+  amoActiveS :: Signal dom Bool
+  amoActiveS =
+    ( \v mi -> v && case mi of
+        Just i -> isAmoOp i
+        Nothing -> False
+    )
+      <$> (idValid <$> idExS)
+      <*> (idMInstr <$> idExS)
+
+  amoOpS :: Signal dom AmoOp
+  amoOpS =
+    ( \mi -> case mi of
+        Just i -> amoOpOf i
+        Nothing -> AmoLrW
+    )
+      <$> (idMInstr <$> idExS)
+
+  amoBusyS :: Signal dom Bool
+  amoResultS :: Signal dom (BitVector 32)
+  amoBusS :: Signal dom AmoBus
+  (amoBusyS, amoResultS, amoBusS) = amoFU amoActiveS amoOpS rs1FwdS rs2FwdS dmemRData
+
+  -- Override the writeback for A-ext ops with the FU's result.
+  xWbWithAmoS :: Signal dom (Maybe (BitVector 5, BitVector 32))
+  xWbWithAmoS =
+    ( \isAmo amoR wb -> case (isAmo, wb) of
+        (True, Just (rd, _)) -> Just (rd, amoR)
+        _ -> wb
+    )
+      <$> amoActiveS
+      <*> amoResultS
+      <*> xWbWithMdS
+
+  -- Effective dmem drives. While the AMO FU is busy, its
+  -- Read / Write phase signals take over the bus; otherwise the
+  -- regular X-stage drives flow through.
+  effDmemAddrS :: Signal dom (BitVector 32)
+  effDmemAddrS =
+    (\busy bus regular -> if busy then amoDmemAddr bus else regular)
+      <$> amoBusyS
+      <*> amoBusS
+      <*> xDmemAddrS
+
+  effDmemWdataS :: Signal dom (BitVector 32)
+  effDmemWdataS =
+    (\busy bus regular -> if busy then amoDmemWdata bus else regular)
+      <$> amoBusyS
+      <*> amoBusS
+      <*> xDmemWdataS
+
+  effDmemBeS :: Signal dom (BitVector 4)
+  effDmemBeS =
+    (\busy bus regular -> if busy then amoDmemBe bus else regular)
+      <$> amoBusyS
+      <*> amoBusS
+      <*> xDmemBeS
+
+  effDmemRenS :: Signal dom Bool
+  effDmemRenS =
+    (\busy bus regular -> if busy then amoDmemRen bus else regular)
+      <$> amoBusyS
+      <*> amoBusS
+      <*> xDmemRenS
+
+  -- ====================================================================
   -- EX/MEM pipeline register
   -- ====================================================================
   --
@@ -984,7 +1061,7 @@ core imemData imemReadyS dmemRData stallS =
       <$> stallInternalS
       <*> exMemS
       <*> idExS
-      <*> xWbWithMdS
+      <*> xWbWithAmoS
       <*> xDmemAddrS
       <*> xDmemWdataS
       <*> xDmemBeS
@@ -1096,10 +1173,10 @@ core imemData imemReadyS dmemRData stallS =
   -- value. This matches the 2-stage core's behaviour —
   -- 'Riski5.Soc' sees the same addr / wdata / be / ren contract.
   dmemAddrOutS :: Signal dom (BitVector 32)
-  dmemAddrOutS = xDmemAddrS
+  dmemAddrOutS = effDmemAddrS
 
   dmemWdataOutS :: Signal dom (BitVector 32)
-  dmemWdataOutS = xDmemWdataS
+  dmemWdataOutS = effDmemWdataS
 
   -- Gate the byte-enable by @idValid@ so bubble cycles can't
   -- spuriously store through.
@@ -1107,13 +1184,13 @@ core imemData imemReadyS dmemRData stallS =
   dmemBeOutS =
     (\v be -> if v then be else 0)
       <$> (idValid <$> idExS)
-      <*> xDmemBeS
+      <*> effDmemBeS
 
   dmemRenOutS :: Signal dom Bool
   dmemRenOutS =
     (\v re -> v && re)
       <$> (idValid <$> idExS)
-      <*> xDmemRenS
+      <*> effDmemRenS
 
   -- ====================================================================
   -- RVFI observability (at W retire edge)

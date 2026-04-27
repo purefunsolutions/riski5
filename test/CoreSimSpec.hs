@@ -56,6 +56,15 @@ import Data.Word (Word32)
 import Riski5.Asm (
   Asm,
   addi,
+  amoadd_w,
+  amoand_w,
+  amomax_w,
+  amomaxu_w,
+  amomin_w,
+  amominu_w,
+  amoor_w,
+  amoswap_w,
+  amoxor_w,
   assemble,
   beq,
   bne,
@@ -64,6 +73,7 @@ import Riski5.Asm (
   j,
   labelUnplaced,
   li,
+  lr_w,
   mul,
   mulh,
   mulhu,
@@ -71,6 +81,8 @@ import Riski5.Asm (
   placeAt,
   rem_,
   remu,
+  sc_w,
+  sw,
  )
 import Riski5.Asm qualified as Asm
 import Riski5.Core (core)
@@ -88,6 +100,7 @@ tests =
     "Riski5.Core ≡ Riski5.Reference (diff)"
     ( P.map mkCase catalog
         P.++ P.map mkMdCase mdCatalog
+        P.++ P.map mkACase aCatalog
     )
  where
   mkCase (name, prog, nSteps) = testCase name (diffCore prog nSteps 0)
@@ -97,6 +110,12 @@ tests =
   -- budget correctly: @nSteps + 34 * nMOps + 2@.
   mkMdCase (name, prog, nSteps, nMOps) =
     testCase name (diffCore prog nSteps nMOps)
+  -- A-ext cases compare the AMO's retire value (rd) against the
+  -- Reference oracle's writeback to the same register. The clock
+  -- budget covers the per-op stall of the AMO FU (4 cycles for
+  -- AMO*, 3 for LR.W, 3 for SC.W-success, 2 for SC.W-fail).
+  mkACase (name, prog, nSteps, nAOps) =
+    testCase name (diffCoreA prog nSteps nAOps)
 
 -- * Catalog --------------------------------------------------------
 
@@ -280,6 +299,117 @@ progDivOverflow = do
   div_ x3 x1 x2 -- x3 = INT_MIN (spec: no trap, return INT_MIN)
   rem_ x4 x1 x2 -- x4 = 0
 
+-- * A-extension catalogue ----------------------------------------
+--
+-- Every program parks a single seed word at @0x100@, then exercises
+-- the LR/SC or AMO of interest at that same address. The dmem stub
+-- ('dmemSingleWord') tracks that single word so reads and writes
+-- across cycles see each other. This is enough coverage to confirm
+-- the core's 'amoFU' agrees with the Reference oracle on every
+-- variant.
+
+{- | @(name, program, nSteps, nAOps)@. @nAOps@ counts the LR / SC /
+AMO* instructions (each charges ~5 cycles to the clock budget for
+the AMO FU's multi-cycle stall).
+-}
+aCatalog :: [(String, Asm (), Int, Int)]
+aCatalog =
+  [ ("LR.W latches the seeded word", progLrW, 4, 1)
+  , ("SC.W (success) writes and returns 0", progScWSuccess, 7, 2)
+  , ("SC.W (failure) leaves memory and returns 1", progScWFail, 5, 1)
+  , ("AMOSWAP.W returns old, mem becomes rs2", progAmoSwap, 5, 1)
+  , ("AMOADD.W returns old, mem += rs2", progAmoAdd, 5, 1)
+  , ("AMOXOR.W folds rs2 into mem with xor", progAmoXor, 5, 1)
+  , ("AMOAND.W bitwise and", progAmoAnd, 5, 1)
+  , ("AMOOR.W bitwise or", progAmoOr, 5, 1)
+  , ("AMOMIN.W signed-min", progAmoMin, 5, 1)
+  , ("AMOMAX.W signed-max", progAmoMax, 5, 1)
+  , ("AMOMINU.W unsigned-min", progAmoMinu, 5, 1)
+  , ("AMOMAXU.W unsigned-max", progAmoMaxu, 5, 1)
+  ]
+
+-- Common preamble: x10 := 0x100, x11 := some seed word.
+seedAt0x100 :: P.Int -> Asm ()
+seedAt0x100 seedWord = do
+  addi x10 x0 0x100
+  addi x11 x0 (P.fromIntegral seedWord)
+  sw x10 x11 0
+
+progLrW :: Asm ()
+progLrW = do
+  -- Seed memory with 0x77, then LR.W reads back into x12.
+  seedAt0x100 0x77
+  lr_w x12 x10 0
+
+progScWSuccess :: Asm ()
+progScWSuccess = do
+  seedAt0x100 0x11
+  lr_w x12 x10 0 -- registers reservation
+  addi x13 x0 0x22 -- new value to store
+  sc_w x14 x10 x13 0 -- success: x14 ← 0, mem[0x100] ← 0x22
+
+progScWFail :: Asm ()
+progScWFail = do
+  -- No LR.W issued first → the matching reservation never gets
+  -- registered, so the SC.W must fail.
+  seedAt0x100 0x11
+  addi x13 x0 0x22
+  sc_w x14 x10 x13 0 -- fail: x14 ← 1, mem unchanged
+
+progAmoSwap :: Asm ()
+progAmoSwap = do
+  seedAt0x100 0x11
+  addi x13 x0 0x22
+  amoswap_w x14 x10 x13 0 -- x14 ← 0x11, mem ← 0x22
+
+progAmoAdd :: Asm ()
+progAmoAdd = do
+  seedAt0x100 100
+  addi x13 x0 25
+  amoadd_w x14 x10 x13 0 -- x14 ← 100, mem ← 125
+
+progAmoXor :: Asm ()
+progAmoXor = do
+  seedAt0x100 0x55
+  addi x13 x0 0x33
+  amoxor_w x14 x10 x13 0 -- x14 ← 0x55, mem ← 0x66
+
+progAmoAnd :: Asm ()
+progAmoAnd = do
+  seedAt0x100 0xFF
+  addi x13 x0 0x0F
+  amoand_w x14 x10 x13 0 -- x14 ← 0xFF, mem ← 0x0F
+
+progAmoOr :: Asm ()
+progAmoOr = do
+  seedAt0x100 0x0F
+  addi x13 x0 0xF0
+  amoor_w x14 x10 x13 0 -- x14 ← 0x0F, mem ← 0xFF
+
+progAmoMin :: Asm ()
+progAmoMin = do
+  seedAt0x100 (-1) -- 0xFFFF_FFFF
+  addi x13 x0 5
+  amomin_w x14 x10 x13 0 -- signed-min: -1 < 5 so mem ← -1
+
+progAmoMax :: Asm ()
+progAmoMax = do
+  seedAt0x100 (-1)
+  addi x13 x0 5
+  amomax_w x14 x10 x13 0 -- signed-max: 5 > -1 so mem ← 5
+
+progAmoMinu :: Asm ()
+progAmoMinu = do
+  seedAt0x100 (-1) -- treated unsigned as 0xFFFF_FFFF
+  addi x13 x0 5
+  amominu_w x14 x10 x13 0 -- unsigned-min: 5 < 0xFFFF_FFFF so mem ← 5
+
+progAmoMaxu :: Asm ()
+progAmoMaxu = do
+  seedAt0x100 (-1)
+  addi x13 x0 5
+  amomaxu_w x14 x10 x13 0 -- unsigned-max: 0xFFFF_FFFF > 5 so mem unchanged
+
 -- * Differential driver -------------------------------------------
 
 {- | Run the program through Core + Reference; assert they agree on the
@@ -417,3 +547,82 @@ simHarness program =
 -- | Type-level sugar for @fromIntegral (natVal ...)@.
 natValInt :: forall n proxy. (CP.KnownNat n) => proxy n -> Int
 natValInt p = P.fromIntegral (CP.natVal p)
+
+-- * A-extension differential driver -------------------------------
+--
+-- Same shape as 'diffCore' but uses a stateful single-word dmem at
+-- @0x100@ so the LR / SC / AMO transactions see each other across
+-- cycles. The Reference side runs through 'Riski5.Reference.run' as
+-- usual; the Core side uses 'simHarnessA' which threads the
+-- mutable word through the Clash mealy machine.
+
+diffCoreA :: Asm () -> Int -> Int -> Assertion
+diffCoreA prog nSteps nAOps = do
+  words_ <- case assemble prog of
+    Left err -> assertFailure ("assemble failed: " P.++ P.show err)
+    Right ws -> P.pure ws
+  let coreRegs = runCoreA words_ nSteps nAOps
+      refRegs = runReference words_ nSteps
+  assertEqual
+    "final register file state"
+    (Map.filter (P./= 0) refRegs)
+    (Map.filter (P./= 0) coreRegs)
+
+runCoreA :: [BitVector 32] -> Int -> Int -> Map.Map Word32 Word32
+runCoreA words_ nSteps nAOps =
+  let cycles = 2 P.* nSteps P.+ 10 P.+ 8 P.* nAOps
+      trace =
+        sampleN @System cycles $
+          withClockResetEnable @System clockGen resetGen enableGen $
+            simHarnessA words_
+      retirements = P.take nSteps [wb | (valid, wb) <- trace, valid]
+      updates = [(rdOf rd, w32 v) | Just (rd, v) <- retirements]
+   in foldl' apply Map.empty updates
+ where
+  apply m (k, v) = Map.insert k v m
+  rdOf :: BitVector 5 -> Word32
+  rdOf b = P.fromIntegral (unpack b :: CP.Unsigned 5)
+  w32 :: BitVector 32 -> Word32
+  w32 b = P.fromIntegral (unpack b :: CP.Unsigned 32)
+
+{- | Sim harness with a single-word stateful dmem at @0x100@. Every
+A-ext catalogue program parks one seed word at that address with a
+preamble @sw@, then exercises an LR / SC / AMO against it; this
+stub is enough to round-trip the data across cycles without
+needing a full bus or BlockRAM.
+
+Reads return the latched value combinationally; writes (be == 0xF)
+update the latch on the next clock edge — same async-read /
+sync-write contract the M4K-backed BRAM provides on real silicon.
+-}
+simHarnessA ::
+  (HiddenClockResetEnable System) =>
+  [BitVector 32] ->
+  Signal System (P.Bool, Maybe (BitVector 5, BitVector 32))
+simHarnessA program =
+  let progVec :: Vec ProgSize (BitVector 32)
+      progVec = V.unsafeFromList (P.take (natValInt (CP.SNat @ProgSize)) padded)
+      padded = program P.++ P.repeat 0x0000_0013
+      progSize :: CP.Unsigned 32
+      progSize = P.fromIntegral (natValInt (CP.SNat @ProgSize))
+      pcToIdx :: BitVector 32 -> Index ProgSize
+      pcToIdx pc =
+        let wordIdx :: CP.Unsigned 32
+            wordIdx = unpack (pc `shiftR` 2)
+         in P.fromIntegral (wordIdx `P.mod` progSize)
+      imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
+      -- The single-word dmem latch. Updates whenever the core
+      -- drives be == 0xF on this cycle.
+      dWordS :: Signal System (BitVector 32)
+      dWordS = CP.register 0 dWordNextS
+      dWordNextS =
+        ( \be wd cur -> if be P.== 0xF then wd else cur
+        )
+          P.<$> dBeS
+          P.<*> dWdataS
+          P.<*> dWordS
+      dmemRdataS = dWordS
+      (pcFetchS, _pcExecS, _dAddrS, dWdataS, dBeS, _dRenS, wbS, rvfiS) =
+        core imem (CP.pure P.True) dmemRdataS (CP.pure P.False)
+      retireS = fmap ((P.== (CP.high :: CP.Bit)) . rfValid) rvfiS
+   in bundle (retireS, wbS)
