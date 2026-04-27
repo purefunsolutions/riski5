@@ -82,74 +82,53 @@ rules around maintaining it.
 
 ## Next up
 
-- **SDRAM-execution — silicon multi-byte residual (open).**
-  Silicon verifies the architectural path works:
-  `nix run .#flash-riski5-sdramexec` produces a clean
-  @BSBSBS…@ first ~30 iterations, proving JALR-to-SDRAM,
-  SDRAM-resident @sw@, and JALR-to-0 redirect all work
-  end-to-end. After that warmup the byte stream degrades to
-  multi-byte clusters once nios2-terminal's drain rate drops
-  below the firmware's commit rate and FIFO backpressure
-  kicks in.
+- **SDRAM-execution — silicon multi-byte residual (FIXED
+  2026-04-27, commit `1bd7a41`).** The visible "multi-byte"
+  pattern was __FIFO overflow drops biased by timing__, not a
+  master-side multi-commit bug. Root cause: the firmware loops
+  at ~2.2 MB/s but nios2-terminal drains at ~36 KB/s, so ~96 %
+  of bytes overflow the JTAG-UART IP's 64-byte FIFO; @S@ writes
+  happen ~150 cycles after @B@ within an iteration, so the
+  FIFO has time to drain one byte and @S@ writes are slightly
+  more likely to find space than @B@ writes — producing the
+  1.66:1 visible @S@:@B@ ratio.
 
-  __Investigation done so far (2026-04-27):__
+  __How we got there__ (full picture in commit message of
+  `1bd7a41`): added a SignalTap-equivalent freeze-on-trigger
+  capture FSM in @Riski5.Soc@, exposed via wide
+  altsource_probes (`FRZP` 128-bit, `FRZF` 32-bit, `CAPR`
+  re-arm). The 4-cycle waveform confirmed the master-side
+  @uartAcceptedS@ latch engages exactly 1 cycle after the
+  trigger as designed. Wrapper-side IP-commit (`CMTC`) and
+  iteration (`ITRC`) counters then nailed the answer:
+  @CMTC@:@ITRC@ ratio is __exactly 2.000__ — the IP commits 1
+  @B@ + 1 @S@ per iteration, architecturally correct. The
+  multi-byte was post-IP, in FIFO drop bias.
 
-  - __Initial silicon symptom__: clusters of 4-5 @B@ + 6-8 @S@
-    per visible iteration after warmup. Bimodal distribution:
-    ~22500 clean iterations alongside ~115K degraded.
-  - __Defensive prefetch fill__: writing `jalr x0, x0, 0` into
-    @SDRAM[4..60]@ (instead of leaving them at power-on noise)
-    drops @B@-clusters to mostly 1, @S@-clusters to mostly
-    1-2. Confirms the IF stage prefetches past the
-    architectural terminator and retires whatever instructions
-    happen to land there.
-  - __Replacing @ebreak@ with `jalr x0, x0, 0`__: skipping the
-    M-mode trap path (mepc / mcause / mtvec base) makes no
-    measurable difference vs @ebreak@ — pipeline retirement is
-    the same for both.
-  - __Diagnostic SW at SDRAM[4]__: replacing the @jalr@ at
-    @SDRAM[4]@ with `sw x15, 0(x10)` writing @?@ confirmed
-    silicon byte stream `BS?BS?BS?…` for the first ~20
-    iterations. The IF-stage prefetch __does__ retire
-    @SDRAM[4]@ before any redirect from @SDRAM[8]@'s @jalr@
-    can flush the pipeline. __This is correct RV32 pipeline
-    behaviour__ — instructions older than the redirect-causing
-    instruction always retire — so the cluster pattern is
-    real pipeline retirement, not an IP-level commit anomaly.
-  - __Average per-iteration commit counts__ (with
-    `jalr x0, x0, 0` fill in @SDRAM[4..60]@, no diagnostic):
-    @B@ = 1.0, @S@ = 1.5–2.7 depending on backpressure
-    severity. The @S@-side multi-commit is localised to the
-    SDRAM-resident @sw@; the BRAM @sw@ for @B@ stays at 1.0.
-  - __Verilog inspection of the master-side gating__:
-    @uartAcceptedS@ register, dataStallS gating, and
-    write-data muxing all match my mental model exactly.
-    Latch engages on the first cycle ipReady=True
-    (= waitrequest=0), 1 commit per @sw@ per IP-acceptance
-    cycle. No clear analytical reason for >1 commit per @sw@
-    on silicon.
+  __Fix__: WSPACE polling before each @sw@ to UART, same
+  pattern CoreMark applies (CM-4). Implemented for both the
+  BRAM-resident @B@ side (using `Riski5.Asm`) and the
+  SDRAM-resident @S@ side (hand-encoded). Silicon now shows a
+  clean `BSBSBSBS…` byte stream over 12-second captures —
+  217,154 / 217,219 = 99.97 % length-1 @B@ runs, 217,217 /
+  217,219 = 99.999 % length-1 @S@ runs, ratio 1:1.0003. SDRAM
+  execution working end-to-end.
 
-  __Open question:__ where does the multi-S come from
-  specifically on the @sw@ at @SDRAM[0]@, given the BRAM @sw@
-  for @B@ doesn't show the same pattern?
+  __Tooling left in place__: the freeze-on-trigger FSM, the
+  `FRZP` / `FRZF` / `CAPR` probes, the `CMTC` / `ITRC`
+  counters, and `scripts/freeze-trigger-probe.tcl` are kept in
+  every bitstream variant for future debugging. The
+  source-driven `OFFS` mux probe is kept for completeness but
+  unused — multi-bit altsource_probe sources don't propagate
+  reliably through Quartus 13.0sp1's JTAG hub on this design,
+  so the wide-probe approach (read all 4 captured cycles in
+  one transaction) is the working pattern.
 
-  __Next investigation step__: SignalTap II. With
-  `quartus_stp` now exposed by alterade2-flake commit
-  `eeba52a`, instrumenting a SignalTap capture of
-  @uartWrMasterS@ / @uartReadyS@ / @uartAcceptedS@ /
-  @stallS@ around the SDRAM[0] @sw@'s M-stage tenure should
-  give cycle-accurate visibility. The PCFE / DBGF
-  altsource_probes already in the bitstream sample at
-  ms-resolution (too coarse for cycle-level transitions);
-  SignalTap captures GHz-class with trigger conditions, which
-  is what's needed.
+## Next up
 
-  __Workaround__ (firmware-side, not yet applied): poll
-  @WSPACE@ in the JTAG-UART CONTROL register before each
-  @sw@ to UART, the same fix CoreMark uses (see CLAUDE.md /
-  the CM-4 entry). The firmware-side polling avoids
-  back-to-back-write dependence on the @av_waitrequest@
-  toggle protocol entirely.
+- *(currently nothing pending — phase 1 SDRAM-exec arc is
+  silicon-clean; phase 2 work is broad and lives in
+  [docs/core-family.md](./docs/core-family.md))*
 
 - **SDRAM-execution architectural gap — FIXED in sim
   (2026-04-26).** Phase 1D closed end-to-end SDRAM data access
