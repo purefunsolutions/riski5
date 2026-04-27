@@ -67,6 +67,7 @@ import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (jtagUartAlteraSim, jtagUartSim)
+import Riski5.JtagUartAdapter (jtagUartAdapter)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
@@ -431,7 +432,35 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- bus structurally identical to the pre-fix baseline so Quartus
   -- reproduces its placement.
   jtagSelS = (\a -> slaveOf a == SlaveJtagUart) <$> dAddrS
-  uartRdataS = siUartRdata <$> inS
+
+  -- 'Riski5.JtagUartAdapter.jtagUartAdapter' wraps the Altera
+  -- @altera_avalon_jtag_uart@ IP and translates its quirky
+  -- "commit-on-waitrequest=1, drop-silently-on-FIFO-full"
+  -- behaviour into standard Avalon-MM backpressure semantics.
+  -- The adapter:
+  --   * tracks the IP's TX FIFO occupancy locally (initialised
+  --     to 64 bytes — the IP's default depth);
+  --   * holds the master with @waitrequest=1@ when the FIFO is
+  --     full, instead of letting the IP silently drop the byte;
+  --   * issues its own CTRL reads to the IP while held to track
+  --     drain, releasing the master as soon as a slot opens;
+  --   * passes CTRL accesses through transparently and snoops
+  --     read responses to refresh its occupancy estimate.
+  --
+  -- Master-side firmware no longer needs to poll WSPACE — it
+  -- can issue back-to-back @sw@s to the UART and the SoC takes
+  -- care of backpressure. The existing 'uartAcceptedS' gating
+  -- (below) sits in front of the adapter and continues to
+  -- handle the IP's quirky @waitrequest@-toggle protocol within
+  -- a single transaction (1 commit per master assertion);
+  -- 'jtagUartAdapter' adds the FIFO-full backpressure on top.
+  --
+  -- See @Riski5.JtagUartAdapter@ for the full design rationale.
+  ( uartRdataS
+    , uartReadyAdapterS
+    , uartIpBusS
+    ) =
+      jtagUartAdapter uartBusS (siUartRdata <$> inS) (siUartReady <$> inS)
 
   uartWrMasterS :: Signal dom Bool
   uartWrMasterS =
@@ -851,7 +880,12 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   --     read so the sync-read blockRam output lines up with the
   --     M-stage capture (CM-3).
   --   * GPIO / LCD remain single-cycle.
-  uartReadyS = siUartReady <$> inS
+  -- The master sees the adapter's @waitrequest@ behaviour, not
+  -- the IP's directly. 'uartReadyAdapterS' is True only when the
+  -- IP's FIFO has space AND the IP itself is ready — i.e. the
+  -- master will only see @waitrequest@ deassert on cycles where
+  -- a clean commit will actually land in the FIFO.
+  uartReadyS = uartReadyAdapterS
 
   -- The UART tap is masked by 'uartAcceptedS' (the IP saw the
   -- transaction; we hold the master deasserted until X advances).
@@ -1092,7 +1126,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> lcdPinsS
       <*> lcdIrqS
       <*> sramPinsS
-      <*> uartBusS
+      <*> uartIpBusS
       <*> sdramBusS
       <*> pcFetchS
       <*> dbgFlagsS

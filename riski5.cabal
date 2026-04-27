@@ -84,6 +84,7 @@ library
     Riski5.Gpio
     Riski5.ISA
     Riski5.JtagUart
+    Riski5.JtagUartAdapter
     Riski5.Lcd
     Riski5.MemMap
     Riski5.Reference
