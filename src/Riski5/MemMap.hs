@@ -26,8 +26,16 @@ See @CLAUDE.md@ for the human-readable table. Summary:
   0x1000_0040 – 0x1000_005F   LCD        (32 B)
   0x1000_0060 – 0x1000_009F   CLINT      (64 B, phase 2+)
   0x2000_0000 – 0x2007_FFFF   SRAM       (512 KB, phase 1C)
+  0x4000_0000 – 0x403F_FFFF   PLIC       (4 MB, phase 2+, SiFive-PLIC-1.0.0 layout)
   0x8000_0000 – 0x807F_FFFF   SDRAM      (8 MB, phase 1D)
 @
+
+The PLIC is allocated a full 256 MB top-4-bit chunk (top4 = 0x4)
+even though only the first ~2 MB carry registers. The SiFive-PLIC
+register layout uses sparse offsets — priority at 0x0000_0004,
+pending at 0x0000_1000, enables at 0x0000_2000, threshold/claim
+at 0x0020_0000 — so the addressable footprint is ~2 MB regardless
+of how few sources / harts we instantiate.
 -}
 module Riski5.MemMap (
   SlaveId (..),
@@ -39,6 +47,7 @@ module Riski5.MemMap (
   gpioBase,
   lcdBase,
   clintBase,
+  plicBase,
   sramBase,
   sdramBase,
 
@@ -58,6 +67,7 @@ data SlaveId
   | SlaveGpio
   | SlaveLcd
   | SlaveClint
+  | SlavePlic
   | SlaveSram
   | SlaveSdram
   | {- | Address falls outside any decoded region — the core raises an
@@ -79,6 +89,7 @@ slaveOf addr = case top4 of
   0x0 -> SlaveBram
   0x1 -> classifyPeripheral addr
   0x2 -> SlaveSram
+  0x4 -> SlavePlic
   0x8 -> SlaveSdram
   _ -> SlaveNone
  where
@@ -111,6 +122,12 @@ lcdBase = 0x1000_0040
 
 clintBase :: BitVector 32
 clintBase = 0x1000_0060
+
+-- | SiFive-PLIC base. Owns the full top-4-bit chunk @0x4000_0000@
+-- (256 MB) but the highest live address is @plicBase + 0x0020_0008@
+-- (claim/complete). DT @reg = <0x40000000 0x400000>@ (4 MB).
+plicBase :: BitVector 32
+plicBase = 0x4000_0000
 
 sramBase :: BitVector 32
 sramBase = 0x2000_0000

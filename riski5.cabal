@@ -90,6 +90,7 @@ library
     Riski5.JtagUartAdapter
     Riski5.Lcd
     Riski5.MemMap
+    Riski5.Plic
     Riski5.Reference
     Riski5.Regfile
     Riski5.Rvfi
@@ -173,6 +174,7 @@ test-suite riski5-test
     JalrStackSpec
     LcdSpec
     PipelineSpec
+    PlicSpec
     ReferenceSpec
     RegfileSpec
     SdramExecSpec

@@ -25,6 +25,7 @@ import HelloSpec qualified
 import JalrStackSpec qualified
 import LcdSpec qualified
 import PipelineSpec qualified
+import PlicSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
 import SdramExecSpec qualified
@@ -63,6 +64,7 @@ main =
       , CompressedSpec.tests
       -- , CoreMarkSimSpec.tests  -- disabled: see module header
       , LcdSpec.tests
+      , PlicSpec.tests
       , SocSpec.tests
       , SramSpec.tests
       , SramExecSpec.tests
