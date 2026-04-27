@@ -149,6 +149,7 @@ reset and on cycles after a flush (bubble).
 -}
 data IfId = IfId
   { ifPc :: BitVector 32
+  , ifPcNext :: BitVector 32
   , ifInstr :: BitVector 32
   , ifValid :: Bool
   }
@@ -156,7 +157,7 @@ data IfId = IfId
   deriving anyclass (NFDataX)
 
 defaultIfId :: IfId
-defaultIfId = IfId {ifPc = 0, ifInstr = 0x0000_0013, ifValid = False}
+defaultIfId = IfId {ifPc = 0, ifPcNext = 0, ifInstr = 0x0000_0013, ifValid = False}
 
 bubbleIfId :: IfId
 bubbleIfId = defaultIfId
@@ -168,6 +169,7 @@ are kept here for RVFI's pre-forwarding observability tap.
 -}
 data IdEx = IdEx
   { idPc :: BitVector 32
+  , idPcNext :: BitVector 32
   , idInstr :: BitVector 32
   , idMInstr :: Maybe Instr
   , idRs1 :: BitVector 5
@@ -189,6 +191,7 @@ defaultIdEx :: IdEx
 defaultIdEx =
   IdEx
     { idPc = 0
+    , idPcNext = 0
     , idInstr = 0x0000_0013
     , idMInstr = Nothing
     , idRs1 = 0
@@ -738,7 +741,13 @@ core imemData imemReadyS dmemRData stallS mtipS =
           else
             if flush
               then bubbleIfId
-              else IfId {ifPc = pcP, ifInstr = imem, ifValid = valid}
+              else
+                IfId
+                  { ifPc = pcP
+                  , ifPcNext = pcP + 4
+                  , ifInstr = imem
+                  , ifValid = valid
+                  }
     )
       <$> stallInternalS
       <*> flushIfIdS
@@ -822,6 +831,7 @@ core imemData imemReadyS dmemRData stallS mtipS =
               else
                 IdEx
                   { idPc = ifPc ifr
+                  , idPcNext = ifPcNext ifr
                   , idInstr = i
                   , idMInstr = mI
                   , idRs1 = r1
@@ -871,6 +881,7 @@ core imemData imemReadyS dmemRData stallS mtipS =
   xOutS =
     handleInstr
       <$> (idPc <$> idExS)
+      <*> (idPcNext <$> idExS)
       <*> (idInstr <$> idExS)
       <*> (idMInstr <$> idExS)
       <*> rs1FwdS
@@ -889,10 +900,12 @@ core imemData imemReadyS dmemRData stallS mtipS =
     unbundle xOutS
 
   -- A non-sequential PC change iff the raw next-PC differs from
-  -- the straight-line continuation.
+  -- the realigner-supplied straight-line continuation. Compressed
+  -- retires advance by 2, uncompressed by 4 — this comparison is
+  -- the same shape either way.
   xPcChangedS :: Signal dom Bool
   xPcChangedS =
-    (\p pn -> pn /= p + 4) <$> (idPc <$> idExS) <*> xPcNextRawS
+    (\pN pn -> pn /= pN) <$> (idPcNext <$> idExS) <*> xPcNextRawS
 
   -- For pcFetchNextS on flush: jump to the raw next-PC.
   xPcNextS :: Signal dom (BitVector 32)
@@ -1461,6 +1474,7 @@ against 'Riski5.Reference' and easy to Hedgehog against.
 -}
 handleInstr ::
   BitVector 32 ->
+  BitVector 32 -> -- pcN — next sequential PC (= pc+4 for uncompressed; pc+2 for compressed)
   BitVector 32 -> -- raw instruction word (for mtval on illegal)
   Maybe Instr ->
   BitVector 32 ->
@@ -1468,7 +1482,7 @@ handleInstr ::
   BitVector 32 ->
   Csrs ->
   Out
-handleInstr pc rawInstr mInstr rs1V rs2V memRData cs =
+handleInstr pc pcN rawInstr mInstr rs1V rs2V memRData cs =
   -- Machine-mode interrupts pre-empt the instruction: if mstatus.MIE
   -- and mie.MTIE are set and mip.MTIP is pending, redirect to the
   -- trap handler at mtvec.base before executing the instruction.
@@ -1476,11 +1490,16 @@ handleInstr pc rawInstr mInstr rs1V rs2V memRData cs =
   -- resumes there.
   case interruptPending cs of
     Just cause -> trap cause pc 0 cs
-    Nothing -> handleInstr_ pc rawInstr mInstr rs1V rs2V memRData cs
+    Nothing -> handleInstr_ pc pcN rawInstr mInstr rs1V rs2V memRData cs
 
 -- The original instruction-dispatch logic — unchanged save for being
--- guarded by the pre-emption check above.
+-- guarded by the pre-emption check above. @pcN@ is the
+-- post-instruction PC, used wherever the spec says "the address of
+-- the following instruction" — JAL/JALR link, branch fall-through,
+-- sequential retire, and the straight-line PC of every non-jumping
+-- instruction. With the IF realigner inactive @pcN = pc + 4@.
 handleInstr_ ::
+  BitVector 32 ->
   BitVector 32 ->
   BitVector 32 ->
   Maybe Instr ->
@@ -1489,68 +1508,68 @@ handleInstr_ ::
   BitVector 32 ->
   Csrs ->
   Out
-handleInstr_ pc rawInstr Nothing _ _ _ cs =
+handleInstr_ pc _ rawInstr Nothing _ _ _ cs =
   trap causeIllegalInstr pc rawInstr cs
-handleInstr_ pc _ (Just instr) rs1V rs2V memRData cs = case instr of
+handleInstr_ pc pcN _ (Just instr) rs1V rs2V memRData cs = case instr of
   Lui rd imm ->
     let res = imm ++# (0 :: BitVector 12)
-     in regWb cs rd res (pc + 4)
+     in regWb cs rd res pcN
   Auipc rd imm ->
     let res = pc + (imm ++# (0 :: BitVector 12))
-     in regWb cs rd res (pc + 4)
+     in regWb cs rd res pcN
   Jal rd off ->
     let target = pc + sxImm21 off
      in if slice d1 d0 target /= 0
           then trap causeInstrAddrMisaligned pc target cs
-          else regWb cs rd (pc + 4) target
+          else regWb cs rd pcN target
   Jalr rd _ off ->
     let target = (rs1V + sxImm12 off) .&. complement 1
      in if slice d1 d0 target /= 0
           then trap causeInstrAddrMisaligned pc target cs
-          else regWb cs rd (pc + 4) target
-  Lb rd _ off -> doLoad cs rd off 1 True rs1V memRData pc
-  Lh rd _ off -> doLoad cs rd off 2 True rs1V memRData pc
-  Lw rd _ off -> doLoad cs rd off 4 False rs1V memRData pc
-  Lbu rd _ off -> doLoad cs rd off 1 False rs1V memRData pc
-  Lhu rd _ off -> doLoad cs rd off 2 False rs1V memRData pc
-  Addi rd _ imm -> aluImm cs rd AluAdd rs1V imm pc
-  Slti rd _ imm -> aluImm cs rd AluSlt rs1V imm pc
-  Sltiu rd _ imm -> aluImm cs rd AluSltu rs1V imm pc
-  Xori rd _ imm -> aluImm cs rd AluXor rs1V imm pc
-  Ori rd _ imm -> aluImm cs rd AluOr rs1V imm pc
-  Andi rd _ imm -> aluImm cs rd AluAnd rs1V imm pc
-  Slli rd _ shamt -> aluShamt cs rd AluSll rs1V shamt pc
-  Srli rd _ shamt -> aluShamt cs rd AluSrl rs1V shamt pc
-  Srai rd _ shamt -> aluShamt cs rd AluSra rs1V shamt pc
-  Sb _ _ off -> doStore cs off rs1V rs2V 1 pc
-  Sh _ _ off -> doStore cs off rs1V rs2V 2 pc
-  Sw _ _ off -> doStore cs off rs1V rs2V 4 pc
-  Beq _ _ off -> doBranch cs BrEq rs1V rs2V off pc
-  Bne _ _ off -> doBranch cs BrNe rs1V rs2V off pc
-  Blt _ _ off -> doBranch cs BrLt rs1V rs2V off pc
-  Bge _ _ off -> doBranch cs BrGe rs1V rs2V off pc
-  Bltu _ _ off -> doBranch cs BrLtu rs1V rs2V off pc
-  Bgeu _ _ off -> doBranch cs BrGeu rs1V rs2V off pc
-  Add rd _ _ -> aluReg cs rd AluAdd rs1V rs2V pc
-  Sub rd _ _ -> aluReg cs rd AluSub rs1V rs2V pc
-  Sll rd _ _ -> aluReg cs rd AluSll rs1V rs2V pc
-  Slt rd _ _ -> aluReg cs rd AluSlt rs1V rs2V pc
-  Sltu rd _ _ -> aluReg cs rd AluSltu rs1V rs2V pc
-  Xor rd _ _ -> aluReg cs rd AluXor rs1V rs2V pc
-  Srl rd _ _ -> aluReg cs rd AluSrl rs1V rs2V pc
-  Sra rd _ _ -> aluReg cs rd AluSra rs1V rs2V pc
-  Or rd _ _ -> aluReg cs rd AluOr rs1V rs2V pc
-  And rd _ _ -> aluReg cs rd AluAnd rs1V rs2V pc
-  Mul rd _ _ -> regWb cs rd 0 (pc + 4)
-  MulH rd _ _ -> regWb cs rd 0 (pc + 4)
-  MulHsu rd _ _ -> regWb cs rd 0 (pc + 4)
-  MulHu rd _ _ -> regWb cs rd 0 (pc + 4)
-  Div rd _ _ -> regWb cs rd 0 (pc + 4)
-  DivU rd _ _ -> regWb cs rd 0 (pc + 4)
-  Rem rd _ _ -> regWb cs rd 0 (pc + 4)
-  RemU rd _ _ -> regWb cs rd 0 (pc + 4)
-  Fence _ _ -> nop cs pc
-  FenceI -> nop cs pc
+          else regWb cs rd pcN target
+  Lb rd _ off -> doLoad cs rd off 1 True rs1V memRData pc pcN
+  Lh rd _ off -> doLoad cs rd off 2 True rs1V memRData pc pcN
+  Lw rd _ off -> doLoad cs rd off 4 False rs1V memRData pc pcN
+  Lbu rd _ off -> doLoad cs rd off 1 False rs1V memRData pc pcN
+  Lhu rd _ off -> doLoad cs rd off 2 False rs1V memRData pc pcN
+  Addi rd _ imm -> aluImm cs rd AluAdd rs1V imm pcN
+  Slti rd _ imm -> aluImm cs rd AluSlt rs1V imm pcN
+  Sltiu rd _ imm -> aluImm cs rd AluSltu rs1V imm pcN
+  Xori rd _ imm -> aluImm cs rd AluXor rs1V imm pcN
+  Ori rd _ imm -> aluImm cs rd AluOr rs1V imm pcN
+  Andi rd _ imm -> aluImm cs rd AluAnd rs1V imm pcN
+  Slli rd _ shamt -> aluShamt cs rd AluSll rs1V shamt pcN
+  Srli rd _ shamt -> aluShamt cs rd AluSrl rs1V shamt pcN
+  Srai rd _ shamt -> aluShamt cs rd AluSra rs1V shamt pcN
+  Sb _ _ off -> doStore cs off rs1V rs2V 1 pc pcN
+  Sh _ _ off -> doStore cs off rs1V rs2V 2 pc pcN
+  Sw _ _ off -> doStore cs off rs1V rs2V 4 pc pcN
+  Beq _ _ off -> doBranch cs BrEq rs1V rs2V off pc pcN
+  Bne _ _ off -> doBranch cs BrNe rs1V rs2V off pc pcN
+  Blt _ _ off -> doBranch cs BrLt rs1V rs2V off pc pcN
+  Bge _ _ off -> doBranch cs BrGe rs1V rs2V off pc pcN
+  Bltu _ _ off -> doBranch cs BrLtu rs1V rs2V off pc pcN
+  Bgeu _ _ off -> doBranch cs BrGeu rs1V rs2V off pc pcN
+  Add rd _ _ -> aluReg cs rd AluAdd rs1V rs2V pcN
+  Sub rd _ _ -> aluReg cs rd AluSub rs1V rs2V pcN
+  Sll rd _ _ -> aluReg cs rd AluSll rs1V rs2V pcN
+  Slt rd _ _ -> aluReg cs rd AluSlt rs1V rs2V pcN
+  Sltu rd _ _ -> aluReg cs rd AluSltu rs1V rs2V pcN
+  Xor rd _ _ -> aluReg cs rd AluXor rs1V rs2V pcN
+  Srl rd _ _ -> aluReg cs rd AluSrl rs1V rs2V pcN
+  Sra rd _ _ -> aluReg cs rd AluSra rs1V rs2V pcN
+  Or rd _ _ -> aluReg cs rd AluOr rs1V rs2V pcN
+  And rd _ _ -> aluReg cs rd AluAnd rs1V rs2V pcN
+  Mul rd _ _ -> regWb cs rd 0 pcN
+  MulH rd _ _ -> regWb cs rd 0 pcN
+  MulHsu rd _ _ -> regWb cs rd 0 pcN
+  MulHu rd _ _ -> regWb cs rd 0 pcN
+  Div rd _ _ -> regWb cs rd 0 pcN
+  DivU rd _ _ -> regWb cs rd 0 pcN
+  Rem rd _ _ -> regWb cs rd 0 pcN
+  RemU rd _ _ -> regWb cs rd 0 pcN
+  Fence _ _ -> nop cs pcN
+  FenceI -> nop cs pcN
   Ecall -> trap causeEcallFromM pc 0 cs
   Ebreak -> trap causeBreakpoint pc 0 cs
   Mret ->
@@ -1562,69 +1581,69 @@ handleInstr_ pc _ (Just instr) rs1V rs2V memRData cs = case instr of
         old = readCsr cs addr
         new = rs1V
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   Csrrs rd _ csr ->
     let addr = unCsr csr
         old = readCsr cs addr
         new = old .|. rs1V
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   Csrrc rd _ csr ->
     let addr = unCsr csr
         old = readCsr cs addr
         new = old .&. complement rs1V
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   Csrrwi rd zimm csr ->
     let addr = unCsr csr
         old = readCsr cs addr
         new = zeroExtend zimm
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   Csrrsi rd zimm csr ->
     let addr = unCsr csr
         old = readCsr cs addr
         new = old .|. zeroExtend zimm
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   Csrrci rd zimm csr ->
     let addr = unCsr csr
         old = readCsr cs addr
         new = old .&. complement (zeroExtend zimm)
         cs' = writeCsr addr new cs
-     in regWb cs' rd old (pc + 4)
+     in regWb cs' rd old pcN
   -- A-extension placeholders. Same shape as the M-extension stubs
   -- ('Mul' / 'Div' etc.) that are also dispatched to a separate FU
   -- ('mulDivFU') and have their writeback overridden on retire. The
   -- 'amoFU' (phase-2D) supplies the real value; until then these
   -- decode legally and write zero, leaving the bus untouched.
-  LrW rd _ _ -> regWb cs rd 0 (pc + 4)
-  ScW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoSwapW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoAddW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoXorW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoAndW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoOrW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoMinW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoMaxW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoMinuW rd _ _ _ -> regWb cs rd 0 (pc + 4)
-  AmoMaxuW rd _ _ _ -> regWb cs rd 0 (pc + 4)
+  LrW rd _ _ -> regWb cs rd 0 pcN
+  ScW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoSwapW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoAddW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoXorW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoAndW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoOrW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoMinW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoMaxW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoMinuW rd _ _ _ -> regWb cs rd 0 pcN
+  AmoMaxuW rd _ _ _ -> regWb cs rd 0 pcN
 
 nop :: Csrs -> BitVector 32 -> Out
-nop cs p = (p + 4, cs, 0, 0, 0, False, Nothing, False)
+nop cs pN = (pN, cs, 0, 0, 0, False, Nothing, False)
 
 regWb :: Csrs -> Reg -> BitVector 32 -> BitVector 32 -> Out
 regWb cs rd val nextPc =
   (nextPc, cs, 0, 0, 0, False, Just (unReg rd, val), False)
 
 aluImm :: Csrs -> Reg -> AluOp -> BitVector 32 -> Signed 12 -> BitVector 32 -> Out
-aluImm cs rd op rs1V imm p = regWb cs rd (alu op rs1V (sxImm12 imm)) (p + 4)
+aluImm cs rd op rs1V imm pN = regWb cs rd (alu op rs1V (sxImm12 imm)) pN
 
 aluShamt :: Csrs -> Reg -> AluOp -> BitVector 32 -> BitVector 5 -> BitVector 32 -> Out
-aluShamt cs rd op rs1V shamt p = regWb cs rd (alu op rs1V (zeroExtend shamt)) (p + 4)
+aluShamt cs rd op rs1V shamt pN = regWb cs rd (alu op rs1V (zeroExtend shamt)) pN
 
 aluReg :: Csrs -> Reg -> AluOp -> BitVector 32 -> BitVector 32 -> BitVector 32 -> Out
-aluReg cs rd op a b p = regWb cs rd (alu op a b) (p + 4)
+aluReg cs rd op a b pN = regWb cs rd (alu op a b) pN
 
 doLoad ::
   Csrs ->
@@ -1635,8 +1654,9 @@ doLoad ::
   BitVector 32 ->
   BitVector 32 ->
   BitVector 32 ->
+  BitVector 32 ->
   Out
-doLoad cs rd off width signed rs1 rdata p =
+doLoad cs rd off width signed rs1 rdata p pN =
   let addr = rs1 + sxImm12 off
       aligned = case width of
         1 -> True
@@ -1647,7 +1667,7 @@ doLoad cs rd off width signed rs1 rdata p =
         then trap causeLoadAddrMisaligned p addr cs
         else
           let loaded = extendLoad width signed addr rdata
-           in (p + 4, cs, addr, 0, 0, True, Just (unReg rd, loaded), False)
+           in (pN, cs, addr, 0, 0, True, Just (unReg rd, loaded), False)
 
 doStore ::
   Csrs ->
@@ -1656,8 +1676,9 @@ doStore ::
   BitVector 32 ->
   Int ->
   BitVector 32 ->
+  BitVector 32 ->
   Out
-doStore cs off base value width p =
+doStore cs off base value width p pN =
   let addr = base + sxImm12 off
       aligned = case width of
         1 -> True
@@ -1669,7 +1690,7 @@ doStore cs off base value width p =
         else
           let be = byteEnable width addr
               wdata = shiftStoreData width addr value
-           in (p + 4, cs, addr, wdata, be, False, Nothing, False)
+           in (pN, cs, addr, wdata, be, False, Nothing, False)
 
 doBranch ::
   Csrs ->
@@ -1678,11 +1699,12 @@ doBranch ::
   BitVector 32 ->
   Signed 13 ->
   BitVector 32 ->
+  BitVector 32 ->
   Out
-doBranch cs op a b off p =
+doBranch cs op a b off p pN =
   let taken = branchTaken op a b
       target = p + sxImm13 off
-      pcNext = if taken then target else p + 4
+      pcNext = if taken then target else pN
       misaligned = slice d1 d0 pcNext /= 0
    in if misaligned
         then trap causeInstrAddrMisaligned p pcNext cs
