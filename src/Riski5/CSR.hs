@@ -32,6 +32,9 @@ module Riski5.CSR (
   readCsr,
   writeCsr,
   applyTrap,
+  applyMret,
+  interruptPending,
+  causeMachineTimerInterrupt,
 
   -- * Trap-cause codes (from priv-spec §3.1.20 "Machine Cause Register")
   causeInstrAddrMisaligned,
@@ -42,11 +45,13 @@ module Riski5.CSR (
   causeEcallFromM,
 ) where
 
-import Clash.Prelude
+import Clash.Prelude hiding ((&&))
 import Riski5.ISA (
   csrMcause,
   csrMcycle,
   csrMepc,
+  csrMie,
+  csrMip,
   csrMscratch,
   csrMstatus,
   csrMtval,
@@ -71,6 +76,14 @@ data Csrs = Csrs
   -- Wraps at 2^32, which at the shipping 40 MHz clock is ~107 s —
   -- large enough for CoreMark-class benchmark timing. The upper 32
   -- bits (mcycleh) are not yet implemented; reads return 0.
+  , cMie :: BitVector 32
+  -- ^ Machine interrupt-enable mask. Bits MTIE (7), MSIE (3), MEIE (11)
+  -- gate which machine-mode interrupts can fire. Software-controlled.
+  , cMip :: BitVector 32
+  -- ^ Machine interrupt-pending. Bit MTIP (7) is __read-only__ — it
+  -- follows the external @mtipS@ strobe driven by 'Riski5.Clint'
+  -- (updated each cycle in 'Riski5.Core' alongside 'cMcycle'). Bits
+  -- MSIP / MEIP are not yet wired and stay at 0.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -86,6 +99,8 @@ initCsrs =
     , cMtval = 0
     , cMscratch = 0
     , cMcycle = 0
+    , cMie = 0
+    , cMip = 0
     }
 
 {- | Read a 32-bit CSR value. Addresses the core doesn't implement
@@ -101,6 +116,8 @@ readCsr cs addr
   | addr == unCsr csrMtval = cMtval cs
   | addr == unCsr csrMscratch = cMscratch cs
   | addr == unCsr csrMcycle = cMcycle cs
+  | addr == unCsr csrMie = cMie cs
+  | addr == unCsr csrMip = cMip cs
   | otherwise = 0
 
 {- | Write a 32-bit CSR value. Writes to addresses the core doesn't
@@ -115,6 +132,12 @@ writeCsr addr v cs
   | addr == unCsr csrMtval = cs {cMtval = v}
   | addr == unCsr csrMscratch = cs {cMscratch = v}
   | addr == unCsr csrMcycle = cs {cMcycle = v}
+  | addr == unCsr csrMie = cs {cMie = v}
+  -- mip is mostly read-only; software writes affect only the soft-set
+  -- bits MSIP / MEIP / SSIP / STIP / UTIP. MTIP is hardware-driven.
+  -- Phase-2 firmware doesn't touch mip writes, so we accept the write
+  -- but mask MTIP back from the hardware pin on the next cycle.
+  | addr == unCsr csrMip = cs {cMip = v}
   | otherwise = cs
 
 {- | Latch a trap: record the cause, the instruction's @pc@ in
@@ -133,11 +156,56 @@ applyTrap ::
   Csrs ->
   Csrs
 applyTrap cause epc tval cs =
-  cs
-    { cMcause = cause
-    , cMepc = epc
-    , cMtval = tval
-    }
+  let oldStatus = cMstatus cs
+      oldMie = oldStatus .&. bit 3 -- MIE bit (bit 3)
+      -- MPIE := old MIE (shifted to bit 7); clear MIE.
+      mpieSet = if oldMie /= 0 then bit 7 else 0
+      newStatus =
+        (oldStatus .&. complement (bit 3 .|. bit 7))
+          .|. mpieSet
+   in cs
+        { cMcause = cause
+        , cMepc = epc
+        , cMtval = tval
+        , cMstatus = newStatus
+        }
+
+{- | Apply the @MRET@ instruction to the CSR file: restore @mstatus.MIE@
+from @mstatus.MPIE@ and re-arm @MPIE@ to 1. The PC redirect to
+@mepc@ is handled by the caller in 'Riski5.Core.handleInstr'.
+-}
+applyMret :: Csrs -> Csrs
+applyMret cs =
+  let oldStatus = cMstatus cs
+      mpie = oldStatus .&. bit 7
+      mieFromMpie = if mpie /= 0 then bit 3 else 0
+      -- Clear current MIE, install MPIE there; set MPIE := 1.
+      newStatus =
+        (oldStatus .&. complement (bit 3))
+          .|. mieFromMpie
+          .|. bit 7
+   in cs {cMstatus = newStatus}
+
+{- | True iff a machine-mode interrupt is pending and architecturally
+allowed to fire — i.e. @mstatus.MIE@ is set, the corresponding
+@mie.* bit is set, and the matching @mip.* bit is set. Returns the
+cause code if pending, 'Nothing' otherwise. Phase-2 only checks the
+machine-timer interrupt (MTIP / MTIE); software / external IRQs
+arrive when the CLINT / PLIC paths land.
+-}
+interruptPending :: Csrs -> Maybe (BitVector 32)
+interruptPending cs
+  | allEnabled = Just causeMachineTimerInterrupt
+  | otherwise = Nothing
+ where
+  mieEnabled = cMstatus cs .&. bit 3 /= 0
+  mtieEnabled = cMie cs .&. bit 7 /= 0
+  mtipPending = cMip cs .&. bit 7 /= 0
+  allEnabled = mieEnabled && mtieEnabled && mtipPending
+
+-- | Cause code for a machine-timer interrupt (bit 31 set, low bits 7).
+causeMachineTimerInterrupt :: BitVector 32
+causeMachineTimerInterrupt = bit 31 .|. 7
 
 -- * Trap causes ----------------------------------------------------
 

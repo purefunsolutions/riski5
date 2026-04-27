@@ -159,6 +159,7 @@ test-suite riski5-test
     BramCoreSpec
     BramSpec
     BramStallForwardSpec
+    ClintSpec
     CoreMarkRealBytes
     CoreMarkSimSpec
     CoreSimSpec
@@ -179,6 +180,7 @@ test-suite riski5-test
     SramExecSpec
     SramSpec
     SramStallForwardSpec
+    TimerIrqSpec
     TrapSpec
     UartBackpressureSpec
 

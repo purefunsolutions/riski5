@@ -226,7 +226,7 @@ simHarness program =
     -- pcFetchS drives imem; pcExecS would be used for writeback-
     -- PC assertions (none in this test, so we discard it).
     (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, _dReS, wbS, _rvfiS) =
-      core imemDataS (CP.pure P.True) dmemDataS (CP.pure P.False)
+      core imemDataS (CP.pure P.True) dmemDataS (CP.pure P.False) (CP.pure P.False)
 
     -- Instruction memory: BRAM read-only, address driven by
     -- pcFetchS. A 1-cycle register delay matches the pipelined

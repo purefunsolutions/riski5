@@ -123,6 +123,7 @@ import Riski5.Core.FU.Amo (AmoBus (..), AmoOp (..), amoFU, amoOpOf, isAmoOp)
 import Riski5.Core.FU.MulDiv (MdOp (..), isMdOp, mdOpOf, mulDivFU)
 import Riski5.CSR (
   Csrs (..),
+  applyMret,
   applyTrap,
   causeBreakpoint,
   causeEcallFromM,
@@ -131,6 +132,7 @@ import Riski5.CSR (
   causeLoadAddrMisaligned,
   causeStoreAddrMisaligned,
   initCsrs,
+  interruptPending,
   readCsr,
   writeCsr,
  )
@@ -474,6 +476,12 @@ core ::
   -- stalls (SRAM / SDRAM / UART waits) and fetch-in-flight
   -- stalls both fold into this.
   Signal dom Bool ->
+  -- | external machine-timer-interrupt-pending strobe. Wired
+  -- straight into @mip.MTIP@ (bit 7 of the @cMip@ CSR) on every
+  -- clock edge in the core; combined with @mstatus.MIE@ and
+  -- @mie.MTIE@ to fire a machine-timer interrupt. Drive 'pure
+  -- False' if the surrounding SoC has no CLINT yet.
+  Signal dom Bool ->
   ( Signal dom (BitVector 32) -- pcFetch — drives imem address
   , Signal dom (BitVector 32) -- pcExec — PC of the retiring instruction
   , Signal dom (BitVector 32) -- dmem address
@@ -483,7 +491,7 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   , Signal dom Rvfi -- RVFI observability bundle
   )
-core imemData imemReadyS dmemRData stallS =
+core imemData imemReadyS dmemRData stallS mtipS =
   ( pcFetchS
   , mwPcOutS
   , dmemAddrOutS
@@ -1145,20 +1153,29 @@ core imemData imemReadyS dmemRData stallS =
   -- (idValid = False) or stalled.
 
   -- cMcycle increments every core clock (CM-4 — needed for CoreMark's
-  -- mcycle-based timing). Everything else in Csrs follows the existing
-  -- "update-on-retire" rule: capture xCsrsNextS when the X-stage
-  -- instruction is valid and the pipeline isn't stalled, hold otherwise.
+  -- mcycle-based timing). cMip's MTIP bit follows the external 'mtipS'
+  -- strobe driven by 'Riski5.Clint'. Everything else in Csrs follows
+  -- the existing "update-on-retire" rule: capture xCsrsNextS when the
+  -- X-stage instruction is valid and the pipeline isn't stalled, hold
+  -- otherwise.
   csrsS :: Signal dom Csrs
   csrsS =
     register initCsrs $
-      ( \stall valid next cur ->
+      ( \stall valid next cur mtip ->
           let base = if stall || not valid then cur else next
-           in base {cMcycle = cMcycle cur + 1}
+              mipMasked = cMip base .&. complement (bit 7)
+              mipWithMtip =
+                mipMasked .|. (if mtip then bit 7 else 0)
+           in base
+                { cMcycle = cMcycle cur + 1
+                , cMip = mipWithMtip
+                }
       )
         <$> stallInternalS
         <*> (idValid <$> idExS)
         <*> xCsrsNextS
         <*> csrsS
+        <*> mtipS
 
   -- ====================================================================
   -- Outputs
@@ -1438,9 +1455,30 @@ handleInstr ::
   BitVector 32 ->
   Csrs ->
   Out
-handleInstr pc rawInstr Nothing _ _ _ cs =
+handleInstr pc rawInstr mInstr rs1V rs2V memRData cs =
+  -- Machine-mode interrupts pre-empt the instruction: if mstatus.MIE
+  -- and mie.MTIE are set and mip.MTIP is pending, redirect to the
+  -- trap handler at mtvec.base before executing the instruction.
+  -- mepc is the pc of the instruction we did __not__ run, so mret
+  -- resumes there.
+  case interruptPending cs of
+    Just cause -> trap cause pc 0 cs
+    Nothing -> handleInstr_ pc rawInstr mInstr rs1V rs2V memRData cs
+
+-- The original instruction-dispatch logic — unchanged save for being
+-- guarded by the pre-emption check above.
+handleInstr_ ::
+  BitVector 32 ->
+  BitVector 32 ->
+  Maybe Instr ->
+  BitVector 32 ->
+  BitVector 32 ->
+  BitVector 32 ->
+  Csrs ->
+  Out
+handleInstr_ pc rawInstr Nothing _ _ _ cs =
   trap causeIllegalInstr pc rawInstr cs
-handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
+handleInstr_ pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   Lui rd imm ->
     let res = imm ++# (0 :: BitVector 12)
      in regWb cs rd res (pc + 4)
@@ -1502,7 +1540,10 @@ handleInstr pc _ (Just instr) rs1V rs2V memRData cs = case instr of
   FenceI -> nop cs pc
   Ecall -> trap causeEcallFromM pc 0 cs
   Ebreak -> trap causeBreakpoint pc 0 cs
-  Mret -> (cMepc cs, cs, 0, 0, 0, False, Nothing, False)
+  Mret ->
+    -- Restore mstatus.MIE from MPIE and re-arm MPIE := 1; jump to mepc.
+    let cs' = applyMret cs
+     in (cMepc cs, cs', 0, 0, 0, False, Nothing, False)
   Csrrw rd _ csr ->
     let addr = unCsr csr
         old = readCsr cs addr

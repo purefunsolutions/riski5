@@ -537,7 +537,7 @@ simHarness program =
       imem = CP.register 0x0000_0013 (fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
       dmem = CP.pure 0
       (pcFetchS, _pcExecS, _, _, _, _, wbS, rvfiS) =
-        core imem (CP.pure P.True) dmem (CP.pure P.False)
+        core imem (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False)
       -- Retire flag from the RVFI tap: distinguishes "valid
       -- retirement" from "no writeback this cycle" (which happens
       -- both on bubble cycles and on real store / branch retires).
@@ -623,6 +623,6 @@ simHarnessA program =
           P.<*> dWordS
       dmemRdataS = dWordS
       (pcFetchS, _pcExecS, _dAddrS, dWdataS, dBeS, _dRenS, wbS, rvfiS) =
-        core imem (CP.pure P.True) dmemRdataS (CP.pure P.False)
+        core imem (CP.pure P.True) dmemRdataS (CP.pure P.False) (CP.pure P.False)
       retireS = fmap ((P.== (CP.high :: CP.Bit)) . rfValid) rvfiS
    in bundle (retireS, wbS)

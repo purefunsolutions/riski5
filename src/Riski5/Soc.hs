@@ -341,7 +341,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- identical; phase-2 pipelining will make them differ by one
   -- cycle (fetch leads execute).
   (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
-    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS
+    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS mtipS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- Two read ports over the same @progInit@:

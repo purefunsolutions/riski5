@@ -33,6 +33,7 @@ import SocSpec qualified
 import SpikeDiffSpec qualified
 import SpikeDriverSpec qualified
 import SramExecSpec qualified
+import TimerIrqSpec qualified
 import SramSpec qualified
 import SramStallForwardSpec qualified
 import Test.Tasty (defaultMain, testGroup)
@@ -72,4 +73,5 @@ main =
       , SocHwSim.tests
       , SpikeDriverSpec.tests
       , SpikeDiffSpec.tests
+      , TimerIrqSpec.tests
       ]

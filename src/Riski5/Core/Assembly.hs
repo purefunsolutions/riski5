@@ -51,7 +51,7 @@ inputs, same output tuple, same RVFI observability bundle.
 The preset selects which kernel implementation is wired in.
 
 @
- coreWith tiny32 imemData dmemRData stallS
+ coreWith tiny32 imemData imemReadyS dmemRData stallS mtipS
 @
 
 resolves to today's 'core' kernel (pipelineless \/ F+X). Any
@@ -78,6 +78,8 @@ coreWith ::
   Signal dom (BitVector 32) ->
   -- | back-pressure: freezes all sequential state when 'True'
   Signal dom Bool ->
+  -- | machine-timer-interrupt-pending strobe (CLINT-driven)
+  Signal dom Bool ->
   -- | @(pcFetch, pcExec, dmemAddr, dmemWdata, dmemByteEn,
   -- dmemReadEn, writeBack, rvfi)@ — see 'Riski5.Core.core'
   -- for per-field semantics.
@@ -90,7 +92,7 @@ coreWith ::
   , Signal dom (Maybe (BitVector 5, BitVector 32))
   , Signal dom Rvfi
   )
-coreWith cfg imemData imemReadyS dmemRData stallS
+coreWith cfg imemData imemReadyS dmemRData stallS mtipS
   -- Phase 2A/2B: the current 'Riski5.Core.core' kernel covers both
   -- the RV32I 'tiny32' preset and its RV32M sibling 'tiny32M' —
   -- the MulDiv functional unit in "Riski5.Core.FU.MulDiv" is
@@ -99,8 +101,8 @@ coreWith cfg imemData imemReadyS dmemRData stallS
   -- without any shape change. Phase 2C's @Mem/Cache.hs@ + C-ext
   -- realigner + Zba/Zbb is the first preset boundary that needs
   -- a different kernel.
-  | cfg == tiny32 = core imemData imemReadyS dmemRData stallS
-  | cfg == tiny32M = core imemData imemReadyS dmemRData stallS
+  | cfg == tiny32 = core imemData imemReadyS dmemRData stallS mtipS
+  | cfg == tiny32M = core imemData imemReadyS dmemRData stallS mtipS
   | otherwise =
       errorX $
         "Riski5.Core.Assembly.coreWith: preset not yet "
