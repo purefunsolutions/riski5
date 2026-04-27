@@ -82,31 +82,74 @@ rules around maintaining it.
 
 ## Next up
 
-- **SDRAM-execution — silicon verification.** The architectural
-  work (SX-1 through SX-6) landed sim-green: 161 / 161 cabal
-  tests, including the new
-  [`test/SdramExecSpec.hs`](./test/SdramExecSpec.hs) which loops
-  the @HelloSdramExec@ probe through `socSimFullWith False True`
-  with the SDRAM IP sim model and asserts the architectural 1:1
-  B:S ratio per iteration. The new `riski5-core-sdramexec` Nix
-  variant (`pkgs/default.nix`) overlays
-  `firmware/phase1/CoreMark.hs` with a re-export of
-  `HelloSdramExec.helloSdramExecFirmwareWords` and flips
-  `FetchPolicy.enableSdramFetch = True`, so
-  `nix build .#riski5-core-sdramexec` produces a `Riski5.sof`
-  with the SDRAM-fetch arbiter wired in. Silicon verification
-  not yet attempted — `nix run .#flash-riski5-sdramexec` then
-  `nix run .#console` should print `BSBSBS…` over JTAG-UART iff
-  SDRAM execution works on real hardware.
+- **SDRAM-execution — silicon multi-byte residual (open).**
+  Silicon verifies the architectural path works:
+  `nix run .#flash-riski5-sdramexec` produces a clean
+  @BSBSBS…@ first ~30 iterations, proving JALR-to-SDRAM,
+  SDRAM-resident @sw@, and JALR-to-0 redirect all work
+  end-to-end. After that warmup the byte stream degrades to
+  multi-byte clusters once nios2-terminal's drain rate drops
+  below the firmware's commit rate and FIFO backpressure
+  kicks in.
 
-  If the silicon halts mid-loop (the way `riski5-core-sramexec`
-  did at iter 2 before the `uartAcceptedS` fix landed in
-  `11e662b`), use the same diagnostic harness — the PCFE +
-  DBGF altsource_probes are already wired into the SDRAM-exec
-  variant unchanged (`riski5_top.v` is bit-identical across
-  variants by design). Read `pcFetchS` and the 8-bit flags via
-  `quartus_stp -t script.tcl` `read_probe_data` to root-cause
-  without a SignalTap recompile cycle.
+  __Investigation done so far (2026-04-27):__
+
+  - __Initial silicon symptom__: clusters of 4-5 @B@ + 6-8 @S@
+    per visible iteration after warmup. Bimodal distribution:
+    ~22500 clean iterations alongside ~115K degraded.
+  - __Defensive prefetch fill__: writing `jalr x0, x0, 0` into
+    @SDRAM[4..60]@ (instead of leaving them at power-on noise)
+    drops @B@-clusters to mostly 1, @S@-clusters to mostly
+    1-2. Confirms the IF stage prefetches past the
+    architectural terminator and retires whatever instructions
+    happen to land there.
+  - __Replacing @ebreak@ with `jalr x0, x0, 0`__: skipping the
+    M-mode trap path (mepc / mcause / mtvec base) makes no
+    measurable difference vs @ebreak@ — pipeline retirement is
+    the same for both.
+  - __Diagnostic SW at SDRAM[4]__: replacing the @jalr@ at
+    @SDRAM[4]@ with `sw x15, 0(x10)` writing @?@ confirmed
+    silicon byte stream `BS?BS?BS?…` for the first ~20
+    iterations. The IF-stage prefetch __does__ retire
+    @SDRAM[4]@ before any redirect from @SDRAM[8]@'s @jalr@
+    can flush the pipeline. __This is correct RV32 pipeline
+    behaviour__ — instructions older than the redirect-causing
+    instruction always retire — so the cluster pattern is
+    real pipeline retirement, not an IP-level commit anomaly.
+  - __Average per-iteration commit counts__ (with
+    `jalr x0, x0, 0` fill in @SDRAM[4..60]@, no diagnostic):
+    @B@ = 1.0, @S@ = 1.5–2.7 depending on backpressure
+    severity. The @S@-side multi-commit is localised to the
+    SDRAM-resident @sw@; the BRAM @sw@ for @B@ stays at 1.0.
+  - __Verilog inspection of the master-side gating__:
+    @uartAcceptedS@ register, dataStallS gating, and
+    write-data muxing all match my mental model exactly.
+    Latch engages on the first cycle ipReady=True
+    (= waitrequest=0), 1 commit per @sw@ per IP-acceptance
+    cycle. No clear analytical reason for >1 commit per @sw@
+    on silicon.
+
+  __Open question:__ where does the multi-S come from
+  specifically on the @sw@ at @SDRAM[0]@, given the BRAM @sw@
+  for @B@ doesn't show the same pattern?
+
+  __Next investigation step__: SignalTap II. With
+  `quartus_stp` now exposed by alterade2-flake commit
+  `eeba52a`, instrumenting a SignalTap capture of
+  @uartWrMasterS@ / @uartReadyS@ / @uartAcceptedS@ /
+  @stallS@ around the SDRAM[0] @sw@'s M-stage tenure should
+  give cycle-accurate visibility. The PCFE / DBGF
+  altsource_probes already in the bitstream sample at
+  ms-resolution (too coarse for cycle-level transitions);
+  SignalTap captures GHz-class with trigger conditions, which
+  is what's needed.
+
+  __Workaround__ (firmware-side, not yet applied): poll
+  @WSPACE@ in the JTAG-UART CONTROL register before each
+  @sw@ to UART, the same fix CoreMark uses (see CLAUDE.md /
+  the CM-4 entry). The firmware-side polling avoids
+  back-to-back-write dependence on the @av_waitrequest@
+  toggle protocol entirely.
 
 - **SDRAM-execution architectural gap — FIXED in sim
   (2026-04-26).** Phase 1D closed end-to-end SDRAM data access

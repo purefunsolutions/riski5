@@ -16,38 +16,63 @@ phase 1's last architectural piece is making the same chip
 fetchable so a Linux kernel image (which lives in SDRAM) can
 actually execute.
 
-Flow:
+Flow per iteration:
 
-  1. UART-print @B@ — confirms BRAM execution + bus + UART.
+  1. BRAM bootstrap. @sw x11, 0(x10)@ writes @B@ to the UART
+     (one byte per iteration confirms BRAM exec + bus + UART
+     are alive).
 
-  2. Write two pre-assembled instructions into SDRAM via the
-     bus:
+  2. Pre-assembled instructions are written into SDRAM via the
+     bus. The architecturally meaningful pair is:
 
        SDRAM[0x8000_0000] = @sw x14, 0(x10)@   ; 0x00E5_2023
-       SDRAM[0x8000_0004] = @ebreak@           ; 0x0010_0073
+       SDRAM[0x8000_0004] = @jalr x0, x0, 0@   ; 0x0000_0067
 
-     @x10@ holds the UART DATA address, @x14@ holds the
-     constant 'S'. The @sw@ prints 'S'; the @ebreak@ triggers
-     a breakpoint trap so we don't fall off the end of what we
-     wrote.
+     The @sw@ at SDRAM[0] prints @S@; the @jalr@ at SDRAM[4]
+     redirects PC to BRAM[0] for the next iteration. Because
+     the IF stage prefetches past the architectural terminator
+     before its X-stage redirect actually fires, the rest of
+     the @SDRAM[8..60]@ window is __defensively filled__ with
+     the same @jalr x0, x0, 0@ encoding — so any prefetch
+     leakage past the architectural @jalr@ also lands on a
+     clean redirect rather than executing whatever
+     power-on-noise happens to live in those SDRAM cells. (See
+     the @docs/perf/sdram-exec@ writeup if it exists; the
+     diagnostic that uncovered this — replacing SDRAM[4] with
+     a second SW writing @?@ to the UART — confirmed pipeline
+     retirement of __both__ SDRAM[0] AND SDRAM[4] before any
+     redirect from SDRAM[8] could flush them.)
 
-  3. @jalr x0, x12, 0@ where @x12 = 0x8000_0000@ — jump to
-     SDRAM's first instruction.
+  3. @jalr x0, x12, 0@ in BRAM where @x12 = 0x8000_0000@ jumps
+     to the SDRAM-resident routine.
 
 Observable outcomes on the UART:
 
   * __@BSBSBS…@__ (one @B@ + one @S@ per iteration, looping)
-      — SDRAM execution __works__. The core fetched
-        SDRAM[0x8000_0000], ran the @sw@ (prints 'S'), then
-        fetched SDRAM[0x8000_0004] (ebreak) and trapped to
-        @mtvec.base@ which (in this firmware) sits on BRAM[0],
-        restarting the firmware from the top.
+      — SDRAM execution __works__. This is the architectural
+        contract; the simulator (sdramIpSim) reproduces it
+        cleanly, and silicon hits this for the first ~30
+        iterations before any FIFO-backpressure pattern kicks
+        in.
 
   * __@BBBB...@__ (infinite @B@ stream)
       — SDRAM execution __does not work__. The @jalr@ set PC
         to @0x8000_0000@, but the SoC's @addrToImemIdx@ hashes
         that @\`mod\` 4096@ and returns a word of BRAM —
-        firmware restarts via the BRAM image.
+        firmware restarts via the BRAM image. This was the
+        pre-SX-1..SX-6 baseline.
+
+  * __@BSS…BSS…@__ — silicon-only artefact under sustained
+        FIFO backpressure: the SDRAM[0] @sw@ commits 1.5–2.7
+        bytes per iteration on average instead of 1.0. The
+        BRAM B-side and the SDRAM[4] redirect side both stay
+        clean (≈ 1 byte each), so the multi-byte is localised
+        to the SDRAM-resident @sw@. Likely a pipeline +
+        IF-stage-prefetch interaction with the JTAG-UART IP's
+        @av_waitrequest@ toggle protocol. Tracked under the
+        SDRAM-execution follow-ups in TODO.md; SignalTap II
+        (now reachable through the alterade2-flake debug
+        wrapper) is the right next investigation step.
 
   * Anything else
       — interesting surprise; note the exact byte stream and
@@ -56,12 +81,12 @@ Observable outcomes on the UART:
 The pattern mirrors 'HelloSramExec' so the Nix overlay machinery
 (the @riski5-core-sdramexec@ variant in @pkgs/riski5-core@) can
 drop this firmware in via the same @firmware/phase1/CoreMark.hs@
-re-export trick that @riski5-core-sramexec@ uses, and the
-@altsource_probe@-based diagnostic harness in @riski5_top.v@ is
-already wired in every variant — so if SDRAM execution doesn't
-work the first time, @quartus_stp -t@ + the PCFE / DBGF probe
-indices give a no-SignalTap path to root-cause exactly which
-stall signal latches in the wrong place.
+re-export trick that @riski5-core-sramexec@ uses. The
+@altsource_probe@-based diagnostic harness in @riski5_top.v@
+is wired in every variant — so if silicon misbehaves,
+@quartus_stp -t@ + the PCFE / DBGF probe indices give a
+no-SignalTap path to peek at @pcFetchS@ and the packed
+stall / ready / accepted flags at any moment.
 -}
 module HelloSdramExec (
   helloSdramExecFirmware,
@@ -96,6 +121,22 @@ encodedSw_x14_0_x10 = 0x00E5_2023
 encodedEbreak :: Int32
 encodedEbreak = 0x0010_0073
 
+-- | Encoded @jalr x0, x0, 0@ → PC := x0 + 0 = 0. A direct redirect
+-- back to BRAM[0] without going through the trap path. Used to fill
+-- the post-@sw@ window in SDRAM so any IF-stage prefetch past the
+-- intended terminator hits a clean branch back to the firmware
+-- entry point — no @ebreak@ trap, no mepc / mcause sequence, just
+-- one cycle of pipeline-flushing branch resolution.
+--
+-- Encoding:
+--
+--   jalr x0, x0, 0   = I-type
+--     opcode = 1100111, funct3 = 000,
+--     rd = 0, rs1 = 0, imm = 0
+--     ⇒ 0b000000000000_00000_000_00000_1100111 = 0x0000_0067
+encodedJalrToZero :: Int32
+encodedJalrToZero = 0x0000_0067
+
 -- * Firmware -------------------------------------------------------
 
 helloSdramExecFirmware :: Asm ()
@@ -108,20 +149,53 @@ helloSdramExecFirmware = do
   addi tmpReg x0 (0x42 :: Signed 12) -- 'B'
   sw uartReg tmpReg 0
 
-  -- Pin 'S' into x14 so the SDRAM routine can use it as rs2 of
-  -- the SW it's about to execute.
+  -- Pin 'S' into x14 so the SDRAM-resident @sw x14, 0(x10)@ at
+  -- SDRAM[0] has the right rs2 value when it retires.
   addi sdramChar x0 (0x53 :: Signed 12) -- 'S'
 
   -- SDRAM base.
   li sdramAddrR 0x8000_0000
 
-  -- Write SDRAM[0] = `sw x14, 0(x10)`.
+  -- Write SDRAM[0] = `sw x14, 0(x10)` (architectural — prints @S@).
   li encReg encodedSw_x14_0_x10
   sw sdramAddrR encReg 0
 
-  -- Write SDRAM[4] = `ebreak`.
-  li encReg encodedEbreak
+  -- Write SDRAM[4..60] = `jalr x0, x0, 0`. SDRAM[4] is the
+  -- architectural redirect terminator (@jalr@ to PC = 0); the
+  -- rest of the window is a defensive fill for IF-stage prefetch
+  -- leakage.
+  --
+  -- Earlier revisions used @ebreak@ here; @ebreak@ traps to
+  -- @mtvec.base@ via the M-mode trap path. A diagnostic sweep
+  -- that put a second @sw x15, 0(x10)@ writing @?@ at SDRAM[4]
+  -- showed the IF stage retires both SDRAM[0] AND SDRAM[4]
+  -- before any redirect from SDRAM[8]'s JALR can flush — i.e.
+  -- multi-byte clusters in the silicon byte stream are real
+  -- pipeline-execution, not IP-side noise. Switching SDRAM[4]
+  -- to a plain @jalr x0, x0, 0@ skips the trap path entirely
+  -- and just redirects PC to 0 (the BRAM firmware entry) on a
+  -- single cycle of branch resolution in X.
+  --
+  -- The fill extends to SDRAM[60] because pipeline depth + the
+  -- multi-cycle SDRAM fetch combine to let the IF stage prefetch
+  -- ~3-5 instructions past the architectural terminator before
+  -- the X-stage redirect actually settles.
+  li encReg encodedJalrToZero
   sw sdramAddrR encReg 4
+  sw sdramAddrR encReg 8
+  sw sdramAddrR encReg 12
+  sw sdramAddrR encReg 16
+  sw sdramAddrR encReg 20
+  sw sdramAddrR encReg 24
+  sw sdramAddrR encReg 28
+  sw sdramAddrR encReg 32
+  sw sdramAddrR encReg 36
+  sw sdramAddrR encReg 40
+  sw sdramAddrR encReg 44
+  sw sdramAddrR encReg 48
+  sw sdramAddrR encReg 52
+  sw sdramAddrR encReg 56
+  sw sdramAddrR encReg 60
 
   -- Jump to SDRAM[0] — the moment of truth.
   jalr x0 sdramAddrR 0
