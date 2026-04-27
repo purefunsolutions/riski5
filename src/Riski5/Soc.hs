@@ -68,6 +68,7 @@ import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (jtagUartAlteraSim, jtagUartSim)
 import Riski5.JtagUartAdapter (jtagUartAdapter)
+import Riski5.Clint (clint)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
@@ -228,6 +229,15 @@ data SocOut = SocOut
     bits [15: 8] = flags_{K+2}
     bits [ 7: 0] = flags_{K+3}
   @
+  -}
+  , soMtip :: Bool
+  {- ^ Machine-timer interrupt pending — combinational
+  @mtime >= mtimecmp@ from the on-chip CLINT
+  ('Riski5.Clint'). The CSR file's @mip.MTIP@ bit follows
+  this signal; once @mie.MTIE && mstatus.MIE@ are set, the
+  core takes a machine-timer interrupt and traps into
+  @mtvec.base@. Exposed on 'SocOut' so simulation harnesses
+  and on-chip debug probes can observe the strobe directly.
   -}
   }
   deriving stock (Eq, Show, Generic)
@@ -524,6 +534,17 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   gpInS = (\SocIn {..} -> GpioIn {gpiSwitches = siSwitches, gpiKeys = siKeys}) <$> inS
   (gpioRdataS, gpOutS) =
     gpio gpioSelS dAddrS dWdataS dBeS dRenS gpInS
+
+  -- ----- CLINT (timer + software-interrupt source) ------------
+  -- Free-running 64-bit @mtime@ + 64-bit @mtimecmp@; raises
+  -- 'mtipS' when @mtime >= mtimecmp@. The CSR file's @mip.MTIP@
+  -- bit follows this signal so a machine-timer interrupt fires
+  -- once both @mie.MTIE@ and @mstatus.MIE@ are set. Memory-
+  -- mapped at 'clintBase' (32-byte register window inside the
+  -- 64-byte slot the memory map reserves).
+  clintSelS = (\a -> slaveOf a == SlaveClint) <$> dAddrS
+  (clintRdataS, mtipS) =
+    clint clintSelS dAddrS dWdataS dBeS dRenS
 
   -- ----- SRAM (off-chip 512 KB IS61LV25616-class) --------------
   -- Pure half-word controller — see 'Riski5.Sram' for the
@@ -928,12 +949,13 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- ----- Bus read mux ------------------------------------------
   dmemRdataS :: Signal dom (BitVector 32)
   dmemRdataS =
-    ( \s bR uR lR gR sR dR ->
+    ( \s bR uR lR gR cR sR dR ->
         case s of
           SlaveBram -> bR
           SlaveJtagUart -> uR
           SlaveLcd -> lR
           SlaveGpio -> gR
+          SlaveClint -> cR
           SlaveSram -> sR
           SlaveSdram -> dR
           _ -> 0
@@ -943,6 +965,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> uartRdataS
       <*> lcdRdataS
       <*> gpioRdataS
+      <*> clintRdataS
       <*> sramRdataS
       <*> sdramRdataS
 
@@ -1132,6 +1155,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> dbgFlagsS
       <*> frozenPcFetchAllS
       <*> dbgFrozenFlagsAllS
+      <*> mtipS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus

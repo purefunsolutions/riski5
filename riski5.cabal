@@ -71,6 +71,7 @@ library
     Riski5.Asm
     Riski5.AvalonMm
     Riski5.Bram
+    Riski5.Clint
     Riski5.Core
     Riski5.Core.Assembly
     Riski5.Core.Config
