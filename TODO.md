@@ -14,41 +14,44 @@ rules around maintaining it.
 ## In flight
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
-  Landed **2026-04-27**: ISA + encode + decode + Asm builders +
-  Reference executor (with `reservation :: Maybe Addr`) + 11
-  ReferenceSpec cases, all green. Next sub-tasks:
-  - **T-A-ext-3.** Core datapath — wire an `amoFU` modelled on
-    `mulDivFU` that drives a 2-phase memory transaction
-    (read-modify-write) and stalls X via `mdBusyS`-style busy
-    flag, with a `reservation` register tracking LR/SC. The 9
-    AMO ops share the FU; LR/SC are special cases of the same
-    state machine. Reservation also clears on `Mret` /
-    `applyTrap` to be safe, even though single-hart in-order
-    barely needs it.
-  - **T-A-ext-4.** Extend `test/CoreSpec.hs` with the same A-ext
-    catalog the Reference executor passes. Differential-test the
-    silicon datapath against the Reference oracle for every op.
-  - **T-A-ext-5.** Once Core integration is sim-clean, bake an
-    A-ext-exercising firmware into a new flake variant
-    (`riski5-core-aexttest` or similar) and run on silicon.
+  Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
+  `229e6a2`, `4bfb809`): ISA + encode + decode + Asm builders +
+  Reference executor (with `reservation :: Maybe Addr`) +
+  `Riski5.Core.FU.Amo` (4-state mealy FSM with reservation as
+  internal state) + bus muxing in `Riski5.Core` + 12 differential
+  CoreSpec cases vs the Reference oracle, all green. Remaining:
+  - **T-A-ext-5.** Silicon firmware demo. New Nix variant (e.g.
+    `riski5-core-aexttest`) overlaying a `firmware/phase2/HelloAExt.hs`
+    that exercises an LR.W / SC.W pair and the 9 AMOs against an
+    SRAM word, prints a sentinel byte stream over JTAG-UART, and
+    `flash-riski5-aexttest` to run on the DE2. Should reuse the
+    `riski5-core-sramexec`-style overlay machinery so CoreMark's
+    Quartus placement stays untouched.
 
 - **CLINT — phase-2 timer-interrupt source.** Slot reserved at
-  `0x1000_0060..0x1000_009F` per `Riski5.MemMap`. Two pieces:
-  - **T-CLINT-1.** `src/Riski5/Clint.hs` exposing a 64-bit
-    `mtime` free-running counter at the core clock plus a 64-bit
-    `mtimecmp` compare register, both memory-mapped low / high
-    halves, both read / write. Raises a single output strobe
-    `mtipS` whenever `mtime >= mtimecmp`. Wire into
-    `Riski5.Soc`'s bus decoder mirroring the JTAG-UART /
-    LCD slave shape.
-  - **T-CLINT-2.** Plumb `mtipS` into `Riski5.CSR.cMip`'s MTIP
-    bit, gate machine-timer-interrupt acceptance on
-    `mstatus.MIE && mie.MTIE && mip.MTIP`, and route the trap
-    through the existing `applyTrap` path with cause = 7
-    (machine-timer-interrupt) and an interrupt-flagged mcause
-    high-bit. New firmware test sets `mtimecmp` to fire ~10 ms
-    out, enables timer interrupts, and expects to see a single
-    handler entry.
+  `0x1000_0060..0x1000_009F` per `Riski5.MemMap`. Two pieces, both
+  landed **2026-04-27** in `229e6a2` and `4bfb809`:
+  - **T-CLINT-1. ✓** `src/Riski5/Clint.hs` — 64-bit free-running
+    `mtime`, 64-bit `mtimecmp`, 32-bit reserved `msip`. Memory-
+    mapped at `clintBase` with one-cycle synchronous-write +
+    combinational-read semantics. `mtipS` strobe flows out of
+    `SocOut.soMtip`. Three `ClintSpec` sim tests pin
+    increment / write / threshold-crossing.
+  - **T-CLINT-2. ✓** `Riski5.CSR` grew `cMie` + `cMip` fields, an
+    `applyMret` that restores `MIE` from `MPIE`, and an
+    `interruptPending` predicate gating on `MIE && MTIE && MTIP`.
+    `applyTrap` now does the priv-spec MIE → MPIE save. `core`
+    takes a new `mtipS` parameter that gets folded into
+    `cMip.MTIP` each cycle; `handleInstr` consults
+    `interruptPending` before dispatch and traps to `mtvec.base`
+    with cause `0x8000_0007` when pending. New `TimerIrqSpec`
+    integration test demonstrates handler entry. CoreMark stable
+    at 44.57 / 1.114 — pre-emption check is dead logic on the hot
+    loop because firmware never enables `MIE`.
+  - Follow-up: **TimerIrq silicon demo** — boot stub sets `mtvec`,
+    enables `MTIE` + `MIE`, writes `mtimecmp = mtime + N` ticks,
+    spins; handler prints a byte and re-arms `mtimecmp`. Same
+    overlay + new flake variant pattern as T-A-ext-5.
 
 - **CM — CoreMark on riski5 silicon.** Port the EEMBC CoreMark 1.01
   C benchmark, cross-compile via `pkgsCross.riscv32-embedded`, run
