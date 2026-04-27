@@ -263,7 +263,26 @@ topEntity
               <*> sdramValidS
               <*> sdramReadyS
           inS =
-            SocIn
+            (\sw key dq ur urRdy sdr cr co ->
+                SocIn
+                  { siSwitches = sw
+                  , siKeys = key
+                  , siSramDqIn = dq
+                  , siUartRdata = ur
+                  , siUartReady = urRdy
+                  , -- The Altera JTAG-UART IP exposes an @av_irq@
+                    -- output that the riski5_top.v wrapper currently
+                    -- ignores; firmware on phase-2A silicon doesn't
+                    -- enable RX-interrupts yet, so the IRQ line is
+                    -- tied 'False' here. When firmware (or T-LI2's
+                    -- 16550-shape adapter) wants live UART-RX traps,
+                    -- the wrapper grows a top-level input wired
+                    -- through to here.
+                    siUartIrq = False
+                  , siSdramReply = sdr
+                  , siCaptureReset = cr
+                  , siCaptureOffset = co
+                  })
               <$> swS
               <*> keyS
               <*> sramDqInS

@@ -53,6 +53,7 @@ module Riski5.Soc (
   socSimFullWith,
   SocIn (..),
   SocInSim (..),
+  defaultSocInSim,
   SocInFull (..),
   SocOut (..),
   SocOutSim (..),
@@ -115,6 +116,17 @@ data SocIn = SocIn
   until it deasserts we must hold bus signals. The 'jtagUartSim'
   model returns constant @True@ because the sim model has no
   registered write-data path.
+  -}
+  , siUartIrq :: Bool
+  {- ^ Altera JTAG-UART IP's @av_irq@ output. The real IP asserts
+  it whenever @CONTROL.RE && CONTROL.RI@ — read-interrupt enabled
+  and the RX FIFO is non-empty. We route this through the SoC into
+  PLIC source 1; firmware that has set both @plic.priority[1] >
+  threshold@ and @mie.MEIE@ will see a machine-external interrupt
+  on the next cycle. Tied to 'pure False' in the sim wrappers
+  ('socSim' / 'socSimFullWith') because the simulation models
+  don't yet implement an RX-FIFO interrupt path; the live wiring
+  comes online when the firmware enables RX on real silicon.
   -}
   , siSdramReply :: SdramIpReply
   {- ^ Slave → master return channel from the Altera SDRAM
@@ -253,9 +265,29 @@ data SocInSim = SocInSim
   { sisSwitches :: BitVector 18
   , sisKeys :: BitVector 4
   , sisSramDqIn :: BitVector 16
+  , sisUartIrq :: Bool
+  -- ^ Per-cycle override for the JTAG-UART IP's @av_irq@ output —
+  -- forwarded to 'SocIn.siUartIrq'. Tests that exercise the
+  -- machine-external-interrupt trap path (PLIC source 1 →
+  -- @mip.MEIP@ → handler) drive this 'True' on selected cycles.
+  -- Existing tests can leave it 'False' (the default for the
+  -- record-with-defaults pattern below).
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
+
+-- | Default 'SocInSim' value with all switches cleared, all keys
+-- de-asserted (active-low — 0xF means "no key pressed"), no SRAM
+-- DQ activity, and no UART IRQ. Tests that only need to override
+-- one field can use record-update syntax against this default.
+defaultSocInSim :: SocInSim
+defaultSocInSim =
+  SocInSim
+    { sisSwitches = 0
+    , sisKeys = 0xF
+    , sisSramDqIn = 0
+    , sisUartIrq = False
+    }
 
 {- |
 Output bundle from 'socSim': the full 'SocOut' plus the TX byte that
@@ -561,8 +593,16 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- block is dead-coded by Quartus on the CoreMark hot loop because
   -- @meipS = 0@ identically.
   plicSelS = (\a -> slaveOf a == SlavePlic) <$> dAddrS
+  -- External IRQ source vector. Bit 0 is reserved per SiFive PLIC
+  -- spec (firmware never enables source 0). Bit 1 = JTAG-UART RX
+  -- (the IP's @av_irq@ pin asserts on @CONTROL.RE && RI@ once
+  -- firmware has set RE; ties to 'pure False' on sim and on early
+  -- silicon until firmware opts in). Bits 2..7 reserved for future
+  -- peripheral IRQs (LCD-ready, GPIO edge, SDRAM-bus error, etc.).
   plicExtIrqsS :: Signal dom (BitVector PlicSources)
-  plicExtIrqsS = pure 0
+  plicExtIrqsS =
+    (\uartIrq -> if uartIrq then 0b10 else 0)
+      <$> (siUartIrq <$> inS)
   (plicRdataS, meipS) =
     plic plicSelS dAddrS dWdataS dBeS dRenS plicExtIrqsS
 
@@ -1207,6 +1247,7 @@ socSim progInit dataInit inSimS = outSimS
           , siSramDqIn = sisSramDqIn
           , siUartRdata = ur
           , siUartReady = True
+          , siUartIrq = sisUartIrq
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
@@ -1323,6 +1364,7 @@ socSimFullWith enableSramFetch enableSdramFetch progInit dataInit sramInit inFul
           , siSramDqIn = dq
           , siUartRdata = ur
           , siUartReady = urRdy
+          , siUartIrq = False
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
@@ -1392,6 +1434,7 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
           , siSramDqIn = sisSramDqIn
           , siUartRdata = ur
           , siUartReady = urRdy
+          , siUartIrq = sisUartIrq
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0

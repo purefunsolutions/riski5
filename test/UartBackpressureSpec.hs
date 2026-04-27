@@ -160,7 +160,7 @@ runSoc progWords nCycles =
       dataVec :: Vec 64 (BitVector 32)
       dataVec = CP.repeat 0
       inputSig =
-        fromList (P.repeat SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0})
+        fromList (P.repeat SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0, sisUartIrq = P.False})
       go ::
         (HiddenClockResetEnable System) =>
         Signal System SocOutSim
