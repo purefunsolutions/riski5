@@ -120,6 +120,25 @@ data SocIn = SocIn
   feeds @~waitrequest@ back to the core and the 'Riski5.Sdram'
   adapter latches @za_data@ when @za_valid@ pulses.
   -}
+  , siCaptureReset :: Bool
+  {- ^ Re-arm the freeze-on-trigger snapshot used to debug the
+  SDRAM-exec multi-byte residual. Driven on hardware by an
+  Altera @altsource_probe@ megafunction's source pin (instance
+  ID @CAPR@); software writes 1 via @quartus_stp@'s
+  @write_source_data@, the SoC clears the capture state machine
+  next cycle, and the snapshot re-arms for the next trigger
+  event. In simulation this is hardcoded 'False' (snapshot fires
+  once and holds; sim tests don't drive the reset).
+  -}
+  , siCaptureOffset :: Unsigned 2
+  {- ^ Unused — historical artefact from the source-driven mux
+  approach to the freeze-on-trigger capture. Multi-bit
+  altsource_probe sources don't propagate reliably through
+  Quartus 13.0sp1's JTAG hub on this design; the working
+  alternative is to expose all 4 captured cycles as a single
+  wide probe (see @soDbgFrozenPcAll@ / @soDbgFrozenFlagsAll@).
+  Kept in the record for now to avoid a wide refactor.
+  -}
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -176,6 +195,37 @@ data SocOut = SocOut
     [5] uartReadyS
     [6] bramReadyS
     [7] reserved (0)
+  @
+  -}
+  , soDbgFrozenPcAll :: BitVector 128
+  {- ^ Concatenation of all 4 freeze-on-trigger snapshots' PC
+  values: @{pc_K, pc_{K+1}, pc_{K+2}, pc_{K+3}}@ where K is the
+  trigger cycle. Each PC is 32 bits; bits [127:96] hold @pc_K@,
+  bits [95:64] hold @pc_{K+1}@, etc. Held until
+  @siCaptureReset@ pulses 'True'. Exposed via the @FRZP@
+  @altsource_probe@.
+
+  Trigger condition: @stallS && jtagSelS && (dBeS != 0)
+  && uartReadyS && !uartAcceptedS@ — the cycle where the
+  master-side @uartAcceptedS@ latch __should__ engage. By
+  capturing 4 consecutive cycles starting at K, we can see
+  the latch's transition pattern: @uartAcceptedS@ at K should
+  be 0 and at K+1 should be 1, with the master gated from K+1
+  onwards.
+  -}
+  , soDbgFrozenFlagsAll :: BitVector 32
+  {- ^ Concatenation of all 4 freeze-on-trigger snapshots'
+  flag bytes: @{flags_K, flags_{K+1}, flags_{K+2}, flags_{K+3}}@.
+  Each flag byte uses the same bit layout as 'soDbgFlags', with
+  bit [7] of each byte repurposed as @capturedS@ for that
+  snapshot's slot. Software polls bit [7] of any byte (they're
+  all written together) to know when the snapshot is valid.
+
+  @
+    bits [31:24] = flags_K     (trigger cycle)
+    bits [23:16] = flags_{K+1}
+    bits [15: 8] = flags_{K+2}
+    bits [ 7: 0] = flags_{K+3}
   @
   -}
   }
@@ -887,22 +937,158 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> uartReadyS
       <*> bramReadyS
 
+  -- ----- Freeze-on-trigger capture (SDRAM-exec multi-byte debug)
+  -- A 4-cycle snapshot of @pcFetchS@ + the diagnostic flags
+  -- starting at the cycle the master-side @uartAcceptedS@ latch
+  -- __should__ engage (i.e. the IP is presenting waitrequest=0
+  -- with the master's UART-write strobes asserted). The captured
+  -- values hold until software pulses @siCaptureReset@ via the
+  -- @CAPR@ altsource_probe.
+  --
+  -- Trigger expression mirrors the engaging arm of
+  -- @uartAcceptedNextS@'s case statement so cycle 0 of the
+  -- snapshot is the exact decision point. Cycles 1..3 capture
+  -- the three subsequent cycles, which lets us see whether the
+  -- latch engages on schedule (cycle 1 should show
+  -- @uartAcceptedS=1@) or whether something is delaying it.
+  --
+  -- The buffer is exposed via two indexed altsource_probes:
+  -- @FRZP@ returns @bufPc[index]@ and @FRZF@ returns
+  -- @bufFlags[index]@, where @index@ is a 2-bit source from
+  -- @OFFS@ that software writes via @write_source_data@.
+  uartWantsS :: Signal dom Bool
+  uartWantsS =
+    (\sel be -> case (sel, be /= 0) of (True, True) -> True; _ -> False)
+      <$> jtagSelS
+      <*> dBeS
+
+  captureTriggerS :: Signal dom Bool
+  captureTriggerS =
+    ( \stall wants urdy uacc -> case (stall, wants, urdy, uacc) of
+        (True, True, True, False) -> True
+        _ -> False
+    )
+      <$> stallS
+      <*> uartWantsS
+      <*> uartReadyS
+      <*> uartAcceptedS
+
+  captureResetS :: Signal dom Bool
+  captureResetS = siCaptureReset <$> inS
+
+  captureOffsetS :: Signal dom (Unsigned 2)
+  captureOffsetS = siCaptureOffset <$> inS
+
+  -- 5-state state machine:
+  --   0: idle (armed, waiting for trigger). On the trigger cycle
+  --      itself, slot 0 is captured with the cycle-K values, and
+  --      the FSM advances to state 1 for the following cycle.
+  --   1: capture slot 1 = cycle K+1.
+  --   2: capture slot 2 = cycle K+2.
+  --   3: capture slot 3 = cycle K+3.
+  --   4: frozen — hold all 4 captures.
+  -- Reset takes the SM back to 0.
+  captureStateS :: Signal dom (Unsigned 3)
+  captureStateS = register 0 captureStateNextS
+
+  captureStateNextS :: Signal dom (Unsigned 3)
+  captureStateNextS =
+    ( \rst st trig -> case (rst, st, trig) of
+        (True, _, _) -> 0
+        (False, 0, True) -> 1
+        (False, 0, False) -> 0
+        (False, 4, _) -> 4
+        (False, n, _) -> n + 1
+    )
+      <$> captureResetS
+      <*> captureStateS
+      <*> captureTriggerS
+
+  capturedS :: Signal dom Bool
+  capturedS = (== 4) <$> captureStateS
+
+  -- Buffer of 4 (pcFetch, flags) snapshots. Slot 0 latches on the
+  -- trigger cycle itself (state=0 with trigger asserted). Slots
+  -- 1..3 latch on subsequent cycles via state=1..3.
+  capturePcBufS :: Signal dom (Vec 4 (BitVector 32))
+  capturePcBufS = register (CP.repeat 0) capturePcBufNextS
+
+  capturePcBufNextS :: Signal dom (Vec 4 (BitVector 32))
+  capturePcBufNextS =
+    ( \buf st trig pc -> case (st, trig) of
+        (0, True) -> replace (0 :: Index 4) pc buf
+        (1, _) -> replace (1 :: Index 4) pc buf
+        (2, _) -> replace (2 :: Index 4) pc buf
+        (3, _) -> replace (3 :: Index 4) pc buf
+        _ -> buf
+    )
+      <$> capturePcBufS
+      <*> captureStateS
+      <*> captureTriggerS
+      <*> pcFetchS
+
+  captureFlagsBufS :: Signal dom (Vec 4 (BitVector 8))
+  captureFlagsBufS = register (CP.repeat 0) captureFlagsBufNextS
+
+  captureFlagsBufNextS :: Signal dom (Vec 4 (BitVector 8))
+  captureFlagsBufNextS =
+    ( \buf st trig flags -> case (st, trig) of
+        (0, True) -> replace (0 :: Index 4) flags buf
+        (1, _) -> replace (1 :: Index 4) flags buf
+        (2, _) -> replace (2 :: Index 4) flags buf
+        (3, _) -> replace (3 :: Index 4) flags buf
+        _ -> buf
+    )
+      <$> captureFlagsBufS
+      <*> captureStateS
+      <*> captureTriggerS
+      <*> dbgFlagsS
+
+  -- Concatenate all 4 captures into single wide outputs.
+  -- The source-driven mux approach (selecting via an @OFFS@
+  -- altsource_probe source) didn't propagate reliably on
+  -- silicon; reading the full buffer in one read sidesteps
+  -- the issue entirely.
+  --
+  -- Bit layout: slot 0 (trigger cycle) lives in the
+  -- most-significant bits. Software splits the 128-bit /
+  -- 32-bit reads into 4 chunks.
+  frozenPcFetchAllS :: Signal dom (BitVector 128)
+  frozenPcFetchAllS =
+    ( \buf ->
+        let s0 = buf CP.!! (0 :: Index 4)
+            s1 = buf CP.!! (1 :: Index 4)
+            s2 = buf CP.!! (2 :: Index 4)
+            s3 = buf CP.!! (3 :: Index 4)
+         in s0 ++# s1 ++# s2 ++# s3
+    )
+      <$> capturePcBufS
+
+  dbgFrozenFlagsAllS :: Signal dom (BitVector 32)
+  dbgFrozenFlagsAllS =
+    ( \buf held ->
+        let mask :: BitVector 8
+            mask = if held then 0x80 else 0x00
+            tag b = (b .&. 0x7F) .|. mask
+            s0 = tag (buf CP.!! (0 :: Index 4))
+            s1 = tag (buf CP.!! (1 :: Index 4))
+            s2 = tag (buf CP.!! (2 :: Index 4))
+            s3 = tag (buf CP.!! (3 :: Index 4))
+         in s0 ++# s1 ++# s2 ++# s3
+    )
+      <$> captureFlagsBufS
+      <*> capturedS
+
+  -- captureOffsetS is read from inS but unused now. Keep it
+  -- referenced so GHC doesn't complain about an unused field.
+  _captureOffsetUnused :: Signal dom (Unsigned 2)
+  _captureOffsetUnused = captureOffsetS
+
   -- ----- Bundle outputs ----------------------------------------
   outS =
-    ( \gpo lcdPins lcdIrq sramPins uartBus sdramBus pcFetch flags ->
-        SocOut
-          { soLedR = gpoLedR gpo
-          , soLedG = gpoLedG gpo
-          , soLcdPins = lcdPins
-          , soLcdIrq = lcdIrq
-          , soSramPins = sramPins
-          , soUartBus = uartBus
-          , soSdramBus = sdramBus
-          , soDbgPcFetch = pcFetch
-          , soDbgFlags = flags
-          }
-    )
-      <$> gpOutS
+    SocOut
+      <$> (gpoLedR <$> gpOutS)
+      <*> (gpoLedG <$> gpOutS)
       <*> lcdPinsS
       <*> lcdIrqS
       <*> sramPinsS
@@ -910,6 +1096,8 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> sdramBusS
       <*> pcFetchS
       <*> dbgFlagsS
+      <*> frozenPcFetchAllS
+      <*> dbgFrozenFlagsAllS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
@@ -940,6 +1128,8 @@ socSim progInit dataInit inSimS = outSimS
           , siUartRdata = ur
           , siUartReady = True
           , siSdramReply = sdr
+          , siCaptureReset = False
+          , siCaptureOffset = 0
           }
     )
       <$> inSimS
@@ -1054,6 +1244,8 @@ socSimFullWith enableSramFetch enableSdramFetch progInit dataInit sramInit inFul
           , siUartRdata = ur
           , siUartReady = urRdy
           , siSdramReply = sdr
+          , siCaptureReset = False
+          , siCaptureOffset = 0
           }
     )
       <$> inFullS
@@ -1121,6 +1313,8 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
           , siUartRdata = ur
           , siUartReady = urRdy
           , siSdramReply = sdr
+          , siCaptureReset = False
+          , siCaptureOffset = 0
           }
     )
       <$> inSimS

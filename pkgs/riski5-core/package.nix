@@ -582,8 +582,12 @@ in
         wire sdram_ready = ~sdram_ip_waitrequest;
 
         // ----- Clash riski5 core --------------------------------------
-        wire [31:0] debug_pcfetch;
-        wire [7:0]  debug_flags;
+        wire [31:0]  debug_pcfetch;
+        wire [7:0]   debug_flags;
+        wire [127:0] debug_frozen_pc;     // 4 × 32-bit pc snapshots
+        wire [31:0]  debug_frozen_flags;  // 4 × 8-bit flag snapshots
+        wire         debug_reset_capture;
+        wire [1:0]   debug_capture_offset; // unused — kept to match port shape
 
         riski5 u_riski5 (
             .CLOCK_30    (clk30),
@@ -596,6 +600,8 @@ in
             .SDRAM_RDATA (sdram_ip_readdata),
             .SDRAM_VALID (sdram_ip_valid),
             .SDRAM_READY (sdram_ready),
+            .DEBUG_RESET_CAPTURE  (debug_reset_capture),
+            .DEBUG_CAPTURE_OFFSET (debug_capture_offset),
             .LEDR        (LEDR),
             .LEDG        (LEDG),
             .LCD_DATA    (LCD_DATA),
@@ -623,8 +629,10 @@ in
             .SDRAM_BE    (sdram_be),
             .SDRAM_RD    (sdram_rd),
             .SDRAM_WR    (sdram_wr),
-            .DEBUG_PCFETCH (debug_pcfetch),
-            .DEBUG_FLAGS   (debug_flags)
+            .DEBUG_PCFETCH      (debug_pcfetch),
+            .DEBUG_FLAGS        (debug_flags),
+            .DEBUG_FROZEN_PC    (debug_frozen_pc),
+            .DEBUG_FROZEN_FLAGS (debug_frozen_flags)
         );
 
         // ----- altsource_probe — read pcFetchS via JTAG --------------
@@ -673,6 +681,192 @@ in
             .enable_metastability     ("NO")
         ) u_flags_probe (
             .probe        (debug_flags),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — 4-cycle frozen pcFetch waveform ----
+        // 128-bit probe carrying the core's pcFetchS captured at the
+        // freeze-on-trigger cycle and 3 cycles after, concatenated
+        // MSB-first: bits [127:96] = pc_K (trigger cycle), [95:64] =
+        // pc_{K+1}, [63:32] = pc_{K+2}, [31:0] = pc_{K+3}. Holds
+        // until @CAPR@'s 1-bit source pulses 1 to re-arm. Used for
+        // SDRAM-exec multi-byte residual investigation.
+        //
+        // The wide-probe approach replaced an earlier source-driven
+        // mux on a 2-bit @OFFS@ probe: multi-bit altsource_probe
+        // sources didn't propagate reliably through Quartus 13.0sp1's
+        // JTAG hub on this design, but probes (FPGA → JTAG) work
+        // fine at any reasonable width.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (128),
+            .instance_id              ("FRZP"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (2),
+            .enable_metastability     ("NO")
+        ) u_frozen_pc_probe (
+            .probe        (debug_frozen_pc),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — 4-cycle frozen flags waveform ------
+        // 32-bit probe carrying the 4 frozen flag bytes concatenated:
+        // bits [31:24] = flags_K, [23:16] = flags_{K+1},
+        // [15:8] = flags_{K+2}, [7:0] = flags_{K+3}. Same per-byte
+        // bit layout as @DBGF@ with bit [7] repurposed as
+        // @capturedS@.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("FRZF"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (3),
+            .enable_metastability     ("NO")
+        ) u_frozen_flags_probe (
+            .probe        (debug_frozen_flags),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — capture re-arm pulse ----------------
+        // 1-bit source that software writes to clear the capture
+        // FSM and re-arm the snapshot for the next trigger. The
+        // @source_clk@ is tied to the design clock so the pulse is
+        // synchronous to the rest of the SoC.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (1),
+            .probe_width              (0),
+            .instance_id              ("CAPR"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (4),
+            .enable_metastability     ("NO")
+        ) u_capture_reset_source (
+            .probe        (),
+            .source       (debug_reset_capture),
+            .source_clk   (clk30),
+            .source_ena   (1'b1)
+        );
+
+        // ----- altsource_probe — capture cycle-offset selector ------
+        // 2-bit source that was intended to multiplex between the 4
+        // freeze-trigger snapshots, but multi-bit altsource_probe
+        // sources don't propagate reliably through this design's
+        // JTAG hub on Quartus 13.0sp1. Replaced by the wide-probe
+        // approach above (FRZP is now 128-bit, FRZF is 32-bit, all
+        // 4 cycles read in one JTAG transaction). The source-probe
+        // instance is kept here so the riski5 module's
+        // @DEBUG_CAPTURE_OFFSET@ port has a driver (otherwise
+        // Quartus would fail elaboration); the value ends up unused
+        // inside the SoC.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (2),
+            .probe_width              (0),
+            .instance_id              ("OFFS"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (5),
+            .enable_metastability     ("NO")
+        ) u_capture_offset_source (
+            .probe        (),
+            .source       (debug_capture_offset),
+            .source_clk   (clk30),
+            .source_ena   (1'b1)
+        );
+
+        // ----- IP-side commit counter -------------------------------
+        // Counts every cycle the JTAG-UART IP would actually commit a
+        // byte to its FIFO, using the IP's own commit condition:
+        // @av_chipselect & ~av_write_n & av_waitrequest@. This sits
+        // OUTSIDE the Clash core so it observes the master-bus
+        // values the IP itself sees, sidestepping any subtle Clash
+        // signal renaming or pipeline timing assumptions.
+        //
+        // The counter resets via @CAPR@ (= @debug_reset_capture@)
+        // along with the freeze-on-trigger FSM, so software can
+        // pulse @CAPR@, wait, and read the counter to learn how
+        // many bytes the IP committed in that interval. Compare
+        // against the iteration count (from PCFE / DBGF probes
+        // inferring the firmware's loop frequency) to determine
+        // whether the silicon multi-byte residual is master-side
+        // multi-commit or something further out (FIFO drain
+        // doubling, JTAG transport).
+        wire ip_commit_pulse = uart_sel & jtag_uart_wr & jtag_uart_waitrequest;
+        reg [31:0] ip_commit_counter = 32'b0;
+        always @(posedge clk30 or negedge rst30_n) begin
+            if (!rst30_n)
+                ip_commit_counter <= 32'b0;
+            else if (debug_reset_capture)
+                ip_commit_counter <= 32'b0;
+            else if (ip_commit_pulse)
+                ip_commit_counter <= ip_commit_counter + 32'b1;
+        end
+
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("CMTC"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (6),
+            .enable_metastability     ("NO")
+        ) u_commit_counter_probe (
+            .probe        (ip_commit_counter),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // Iteration-counter — increments once per BRAM-resident @sw@
+        // for @B@. We approximate "iterations" by counting the cycles
+        // where the IP committed a byte that happened to be 'B'
+        // (= 0x42). Same reset semantics as the IP commit counter.
+        wire byte_is_b = (uart_wdata[7:0] == 8'h42);
+        reg [31:0] iter_counter = 32'b0;
+        always @(posedge clk30 or negedge rst30_n) begin
+            if (!rst30_n)
+                iter_counter <= 32'b0;
+            else if (debug_reset_capture)
+                iter_counter <= 32'b0;
+            else if (ip_commit_pulse & byte_is_b)
+                iter_counter <= iter_counter + 32'b1;
+        end
+
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("ITRC"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (7),
+            .enable_metastability     ("NO")
+        ) u_iter_counter_probe (
+            .probe        (iter_counter),
             .source       (),
             .source_clk   (1'b0),
             .source_ena   (1'b0)

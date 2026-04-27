@@ -121,6 +121,52 @@ encodedSw_x14_0_x10 = 0x00E5_2023
 encodedEbreak :: Int32
 encodedEbreak = 0x0010_0073
 
+-- * SDRAM-resident WSPACE-poll preamble ----------------------------
+-- The Altera JTAG-UART IP commits one byte per master assertion
+-- regardless of FIFO state — bytes that arrive when the FIFO is
+-- full are silently dropped (the @woverflow@ flag is set but the
+-- byte is gone). On silicon, nios2-terminal drains at ~100 KB/s
+-- while this firmware commits at ~2.2 MB/s, so ~96 % of writes
+-- overflow. The visible byte stream becomes a lottery between
+-- @B@-drops and @S@-drops, with a slight @S@-bias because
+-- @S@ writes happen ~150 cycles after @B@ in each iteration —
+-- enough time for one byte to drain, leaving @S@ slightly more
+-- likely to find FIFO space than @B@.
+--
+-- The fix is the same one CoreMark applies: poll the @WSPACE@
+-- bits in the JTAG-UART CONTROL register before each write, and
+-- only commit when @WSPACE > 0@. The 3-instruction polling
+-- preamble is hand-encoded for the SDRAM-resident routine
+-- (which sits at byte addresses we choose explicitly):
+--
+-- @
+--   lw   x11, 4(x10)      ; CTRL = MEM[uartBase + 4]
+--   srli x11, x11, 16     ; WSPACE = CTRL >> 16
+--   beq  x11, x0, -8      ; if WSPACE == 0, retry from lw
+-- @
+--
+-- Encoding breakdown:
+--
+--   lw x11, 4(x10):       I-type, opcode 0000011, funct3 010,
+--                          rs1=01010, rd=01011, imm=4
+--                          ⇒ 0x00452583
+--   srli x11, x11, 16:    I-type immediate, opcode 0010011,
+--                          funct3 101, rs1=01011, rd=01011,
+--                          shamt=10000
+--                          ⇒ 0x01055593
+--   beq x11, x0, -8:      B-type, opcode 1100011, funct3 000,
+--                          rs1=01011, rs2=00000, imm=-8
+--                          ⇒ 0xFE058CE3
+
+encodedLwX11_4_X10 :: Int32
+encodedLwX11_4_X10 = 0x0045_2583
+
+encodedSrliX11_X11_16 :: Int32
+encodedSrliX11_X11_16 = 0x0105_5593
+
+encodedBeqX11_X0_minus8 :: Int32
+encodedBeqX11_X0_minus8 = 0xFE05_8CE3 :: Int32
+
 -- | Encoded @jalr x0, x0, 0@ → PC := x0 + 0 = 0. A direct redirect
 -- back to BRAM[0] without going through the trap path. Used to fill
 -- the post-@sw@ window in SDRAM so any IF-stage prefetch past the
@@ -145,7 +191,24 @@ helloSdramExecFirmware = do
   li uartReg 0x1000_0000
 
   -- Print 'B' — first byte on the wire confirms BRAM exec +
-  -- bus + UART all work.
+  -- bus + UART all work. The @WSPACE@-poll preamble below
+  -- ensures the byte actually lands in the JTAG-UART FIFO
+  -- rather than being silently dropped via overflow when the
+  -- FIFO is full (which is the steady-state condition because
+  -- the firmware loops faster than nios2-terminal drains).
+  --
+  -- Sequence:
+  --
+  --   pollB:
+  --     lw   t1, 4(uartReg)   ; CTRL = uart[CONTROL]
+  --     srli t1, t1, 16       ; WSPACE = CTRL >> 16
+  --     beq  t1, x0, pollB    ; if WSPACE == 0, retry
+  --     addi tmpReg, x0, 'B'
+  --     sw   uartReg, tmpReg, 0
+  pollB <- label
+  lw spaceReg uartReg 4
+  srli spaceReg spaceReg 16
+  beq spaceReg x0 pollB
   addi tmpReg x0 (0x42 :: Signed 12) -- 'B'
   sw uartReg tmpReg 0
 
@@ -156,34 +219,31 @@ helloSdramExecFirmware = do
   -- SDRAM base.
   li sdramAddrR 0x8000_0000
 
-  -- Write SDRAM[0] = `sw x14, 0(x10)` (architectural — prints @S@).
-  li encReg encodedSw_x14_0_x10
+  -- The SDRAM-resident routine is now 5 architectural instructions
+  -- (the WSPACE poll for @S@, the @sw@, and the @jalr@-to-0
+  -- redirect) plus the defensive prefetch fill out to
+  -- @SDRAM[60]@. Layout:
+  --
+  --   SDRAM[ 0] = lw   x11, 4(x10)       ; pollS: read CTRL
+  --   SDRAM[ 4] = srli x11, x11, 16      ; WSPACE = CTRL >> 16
+  --   SDRAM[ 8] = beq  x11, x0, -8       ; if WSPACE == 0, retry
+  --   SDRAM[12] = sw   x10, x14, 0       ; commit @S@
+  --   SDRAM[16] = jalr x0, x0, 0         ; redirect to BRAM[0]
+  --   SDRAM[20..60] = jalr x0, x0, 0     ; defensive prefetch fill
+  --
+  -- The WSPACE-poll preamble ensures the @S@ byte actually
+  -- lands in the FIFO (matching the @B@ side's polling), so the
+  -- visible byte stream becomes a clean @BSBSBS…@ regardless of
+  -- nios2-terminal's drain rate.
+  li encReg encodedLwX11_4_X10
   sw sdramAddrR encReg 0
-
-  -- Write SDRAM[4..60] = `jalr x0, x0, 0`. SDRAM[4] is the
-  -- architectural redirect terminator (@jalr@ to PC = 0); the
-  -- rest of the window is a defensive fill for IF-stage prefetch
-  -- leakage.
-  --
-  -- Earlier revisions used @ebreak@ here; @ebreak@ traps to
-  -- @mtvec.base@ via the M-mode trap path. A diagnostic sweep
-  -- that put a second @sw x15, 0(x10)@ writing @?@ at SDRAM[4]
-  -- showed the IF stage retires both SDRAM[0] AND SDRAM[4]
-  -- before any redirect from SDRAM[8]'s JALR can flush — i.e.
-  -- multi-byte clusters in the silicon byte stream are real
-  -- pipeline-execution, not IP-side noise. Switching SDRAM[4]
-  -- to a plain @jalr x0, x0, 0@ skips the trap path entirely
-  -- and just redirects PC to 0 (the BRAM firmware entry) on a
-  -- single cycle of branch resolution in X.
-  --
-  -- The fill extends to SDRAM[60] because pipeline depth + the
-  -- multi-cycle SDRAM fetch combine to let the IF stage prefetch
-  -- ~3-5 instructions past the architectural terminator before
-  -- the X-stage redirect actually settles.
-  li encReg encodedJalrToZero
+  li encReg encodedSrliX11_X11_16
   sw sdramAddrR encReg 4
+  li encReg encodedBeqX11_X0_minus8
   sw sdramAddrR encReg 8
+  li encReg encodedSw_x14_0_x10
   sw sdramAddrR encReg 12
+  li encReg encodedJalrToZero
   sw sdramAddrR encReg 16
   sw sdramAddrR encReg 20
   sw sdramAddrR encReg 24
@@ -206,7 +266,11 @@ helloSdramExecFirmware = do
   j halt
  where
   uartReg = x10 -- a0
-  tmpReg = x11 -- a1
+  tmpReg = x11 -- a1: scratch (also used as @t1@ for WSPACE poll)
+  spaceReg = x11 -- a1: aliased to tmpReg — WSPACE polling target.
+  -- (Both names use the same register — the BRAM-side @B@ polling
+  -- writes to @x11@, then the @addi@ reloads @x11@ with @0x42@
+  -- before the @sw@ commits, so there's no aliasing conflict.)
   sdramChar = x14 -- a4: carries 'S' to the SDRAM routine
   sdramAddrR = x12 -- a2
   encReg = x13 -- a3

@@ -174,6 +174,21 @@ topEntity ::
   stalls while this is low, same stall mechanism as the JTAG UART.
   -}
   "SDRAM_READY" ::: Signal Dom30 Bool ->
+  {- | Re-arm pulse for the freeze-on-trigger capture (see
+  'Riski5.Soc.SocOut.soDbgFrozenPc'). The @riski5_top.v@ wrapper
+  drives this from a 1-bit @altsource_probe@ source pin so
+  software can pulse @write_source_data@ to clear the
+  capture state machine and re-arm the snapshot for the next
+  trigger event.
+  -}
+  "DEBUG_RESET_CAPTURE" ::: Signal Dom30 Bool ->
+  {- | 2-bit offset selector for the freeze-on-trigger snapshot.
+  The capture FSM stores 4 consecutive cycles starting at the
+  trigger; this signal selects which one is exposed via the
+  @FRZP@ / @FRZF@ probes. Driven by the @OFFS@
+  @altsource_probe@ source.
+  -}
+  "DEBUG_CAPTURE_OFFSET" ::: Signal Dom30 (Unsigned 2) ->
   ""
     ::: ( "LEDR" ::: Signal Dom30 (BitVector 18)
         , "LEDG" ::: Signal Dom30 (BitVector 9)
@@ -219,6 +234,14 @@ topEntity ::
           -- (stall / dataStall / fetchStall / uartAccepted /
           -- sramDataReady / uartReady / bramReady / reserved).
           "DEBUG_FLAGS" ::: Signal Dom30 (BitVector 8)
+        , -- All 4 freeze-on-trigger PC snapshots concatenated.
+          -- bits [127:96] = pc_K (trigger cycle), [95:64] =
+          -- pc_{K+1}, [63:32] = pc_{K+2}, [31:0] = pc_{K+3}.
+          "DEBUG_FROZEN_PC" ::: Signal Dom30 (BitVector 128)
+        , -- All 4 frozen-flag snapshots concatenated. Each byte
+          -- has the same layout as 'DEBUG_FLAGS' with bit [7]
+          -- repurposed as @capturedS@.
+          "DEBUG_FROZEN_FLAGS" ::: Signal Dom30 (BitVector 32)
         )
 topEntity
   clk30
@@ -230,7 +253,9 @@ topEntity
   uartReadyS
   sdramRdataS
   sdramValidS
-  sdramReadyS =
+  sdramReadyS
+  captureResetS
+  captureOffsetS =
   withClockResetEnable clk30 rst30 enableGen
     $ let sdramReplyS =
             (\d v r -> SdramIpReply {sirRdata = d, sirValid = v, sirWaitrequest = P.not r})
@@ -245,6 +270,8 @@ topEntity
               <*> uartRdataS
               <*> uartReadyS
               <*> sdramReplyS
+              <*> captureResetS
+              <*> captureOffsetS
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
@@ -282,6 +309,8 @@ topEntity
           sdramWrS = sibWr <$> sdramBusS
           dbgPcFetchS = soDbgPcFetch <$> outS
           dbgFlagsS' = soDbgFlags <$> outS
+          dbgFrozenPcS = soDbgFrozenPcAll <$> outS
+          dbgFrozenFlagsS = soDbgFrozenFlagsAll <$> outS
        in ( ledrS
           , ledgS
           , lcdDataS
@@ -311,6 +340,8 @@ topEntity
           , sdramWrS
           , dbgPcFetchS
           , dbgFlagsS'
+          , dbgFrozenPcS
+          , dbgFrozenFlagsS
           )
 
 {- | Exported Clash-usable top-entity annotation so
