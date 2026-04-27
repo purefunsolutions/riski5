@@ -87,7 +87,7 @@ tests =
 nWrites :: Int
 nWrites = 80
 
-uartDataBase :: CP.BitVector 20
+uartDataBase :: P.Integer
 uartDataBase = 0x10000
 
 -- * Firmware images ------------------------------------------------

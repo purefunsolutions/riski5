@@ -78,10 +78,10 @@ tests =
 
 -- | SRAM base (from MemMap.sramBase = 0x2000_0000). @lui sp, sramTop@
 -- gives sp = SRAM top = 0x2008_0000.
-sramTop :: CP.BitVector 20
+sramTop :: P.Integer
 sramTop = 0x20080
 
-uartBase :: CP.BitVector 20
+uartBase :: P.Integer
 uartBase = 0x10000
 
 progVecOf :: [CP.BitVector 32] -> Vec 512 (CP.BitVector 32)

@@ -99,12 +99,12 @@ helloSramExecFirmware = do
 
   -- Print 'B' — first byte on the wire confirms BRAM exec +
   -- bus + UART all work.
-  addi tmpReg x0 (0x42 :: Signed 12) -- 'B'
+  addi tmpReg x0 0x42 -- 'B'
   sw uartReg tmpReg 0
 
   -- Pin 'S' into x14 so the SRAM routine can use it as rs2 of
   -- the SW it's about to execute.
-  addi sramChar x0 (0x53 :: Signed 12) -- 'S'
+  addi sramChar x0 0x53 -- 'S'
 
   -- SRAM base.
   li sramAddr 0x2000_0000

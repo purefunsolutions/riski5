@@ -73,7 +73,7 @@ tests =
 -- * Layout constants -----------------------------------------------
 
 -- | SRAM base. Must match 'Riski5.MemMap.sramBase' = 0x2000_0000.
-sramBase :: CP.BitVector 20
+sramBase :: P.Integer
 sramBase = 0x20000
 
 -- | BRAM data area offset — we bake 'dataBytes' here so the
@@ -81,7 +81,7 @@ sramBase = 0x20000
 dataOffsetWords :: Int
 dataOffsetWords = 64
 
-dataOffsetBytes :: CP.Signed 12
+dataOffsetBytes :: P.Integer
 dataOffsetBytes = 0x100
 
 -- | Four constants the firmware ferries through BRAM → SRAM → UART.

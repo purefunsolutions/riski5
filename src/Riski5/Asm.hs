@@ -172,6 +172,18 @@ data AsmError
   = UndefinedLabel Label
   | -- | Branch / jump offset out of range for its format.
     OffsetOutOfRange Label Int
+  | -- | An immediate operand passed to a wrapper (LW \/ SW \/ ADDI \/
+    -- LUI \/ shift) didn't fit the architecturally-specified range.
+    -- Carries the mnemonic, the requested value, and the inclusive
+    -- @[lo, hi]@ bounds the field actually permits. Replaces the
+    -- old silent-wrap behaviour where calling e.g.
+    -- @lw rd reg 0x1000@ would compile cleanly because Haskell's
+    -- @fromInteger@ truncated 0x1000 down to a 12-bit field — the
+    -- firmware was reading offset 0 instead of 0x1000 and there
+    -- was no diagnostic. Now 'assemble' returns this error and
+    -- forces the caller to use @lui@-then-@lw@ (or another
+    -- pseudo-op) when the access is genuinely far.
+    ImmOutOfRange !String !Integer !Integer !Integer
   deriving stock (Eq, Show)
 
 -- | Internal assembler state.
@@ -196,6 +208,12 @@ resolved position and the item's own position and produces an
 data Item
   = Concrete !Int !Instr
   | LabelRel !Int !Label !(Int -> Int -> Either AsmError Instr)
+  | -- | A deferred error from an immediate-bounds violation, surfaced
+    -- by 'resolve' the moment it's reached. Lets bounds-checking sit
+    -- in the per-op wrappers (which run inside a 'State' monad and
+    -- can't 'throwError') without complicating every wrapper into
+    -- 'Either'.
+    ErrorItem !AsmError
 
 -- | Assembler monad: a plain 'State' over 'AsmState'.
 newtype Asm a = Asm (State AsmState a)
@@ -232,6 +250,7 @@ resolve items labels = traverse one items
   one (LabelRel pos lbl f) = case Map.lookup lbl labels of
     Nothing -> Left (UndefinedLabel lbl)
     Just tgt -> f pos tgt
+  one (ErrorItem e) = Left e
 
 -- * Primitive placement -----------------------------------------------
 
@@ -244,6 +263,67 @@ emit i = Asm $ do
       { stPos = pos + 1
       , stItems = Concrete pos i : stItems s
       }
+
+-- | Stash an error so 'assemble' surfaces it instead of producing
+-- silently-wrong machine code. Used by the bounds-check helpers
+-- below to defer immediate-out-of-range violations from the
+-- per-op wrappers (which run in 'State', not 'Either').
+stashError :: AsmError -> Asm ()
+stashError err = Asm $ do
+  modify' $ \s -> s {stItems = ErrorItem err : stItems s}
+
+{- |
+Bounds-check a signed-12 immediate. Returns the typed value if it
+fits the @[-2048, 2047]@ range; otherwise stashes an
+'ImmOutOfRange' for 'assemble' to surface.
+
+Use this in every per-op wrapper that exposes a Signed-12 imm to
+firmware, so 0x1000 etc. errors clearly instead of silently
+truncating to 0 via 'fromInteger'. The mnemonic is the
+op's printable name, included verbatim in the error.
+-}
+checkSigned12 :: String -> Integer -> Asm (Signed 12)
+checkSigned12 mn v
+  | v < lo || v > hi = do
+      stashError (ImmOutOfRange mn v lo hi)
+      pure 0
+  | otherwise = pure (fromInteger v)
+ where
+  lo = -2048
+  hi = 2047
+
+{- |
+Bounds-check a 5-bit unsigned shamt or zimm. Range @[0, 31]@.
+-}
+checkShamt :: String -> Integer -> Asm (BitVector 5)
+checkShamt mn v
+  | v < 0 || v > 31 = do
+      stashError (ImmOutOfRange mn v 0 31)
+      pure 0
+  | otherwise = pure (fromInteger v)
+
+{- |
+Bounds-check a 20-bit immediate (LUI \/ AUIPC). Range
+@[0, 2^20 - 1]@. Negative values are rejected too, matching how
+the LUI imm field is used as a raw 20-bit pattern stuck in
+@instr[31:12]@.
+-}
+checkImm20 :: String -> Integer -> Asm (BitVector 20)
+checkImm20 mn v
+  | v < 0 || v > 0xFFFFF = do
+      stashError (ImmOutOfRange mn v 0 0xFFFFF)
+      pure 0
+  | otherwise = pure (fromInteger v)
+
+{- |
+Bounds-check a fence pred / succ field. Range @[0, 15]@.
+-}
+checkFence4 :: String -> Integer -> Asm (BitVector 4)
+checkFence4 mn v
+  | v < 0 || v > 15 = do
+      stashError (ImmOutOfRange mn v 0 15)
+      pure 0
+  | otherwise = pure (fromInteger v)
 
 {- | Create a fresh label placed at the current position. Use the
 returned handle with branch / jump combinators below.
@@ -292,9 +372,19 @@ emitLabelRel lbl f = Asm $ do
       }
 
 -- * Real-instruction wrappers ----------------------------------------
+--
+-- Every wrapper that exposes an immediate to firmware takes a
+-- bounds-checked 'Integer' (or 'Int' for shamt-class fields). The
+-- check fires at 'assemble' time via 'ImmOutOfRange', so a value
+-- that doesn't fit the architectural field — e.g.
+-- @lw rd reg 0x1000@ where the LW imm is signed-12 — surfaces as a
+-- clean assembly-time error instead of silently truncating through
+-- 'fromInteger'. The bare-typed primitives ('Riski5.ISA.Instr')
+-- still take 'Signed 12' / 'BitVector 5' / 'BitVector 20'; the
+-- bounds-check helpers convert the wider input.
 
-addi :: Reg -> Reg -> Signed 12 -> Asm ()
-addi rd rs1 imm = emit (Addi rd rs1 imm)
+addi :: Reg -> Reg -> Integer -> Asm ()
+addi rd rs1 imm = checkSigned12 "addi" imm >>= \i -> emit (Addi rd rs1 i)
 
 add :: Reg -> Reg -> Reg -> Asm ()
 add rd rs1 rs2 = emit (Add rd rs1 rs2)
@@ -302,61 +392,61 @@ add rd rs1 rs2 = emit (Add rd rs1 rs2)
 sub :: Reg -> Reg -> Reg -> Asm ()
 sub rd rs1 rs2 = emit (Sub rd rs1 rs2)
 
-slti :: Reg -> Reg -> Signed 12 -> Asm ()
-slti rd rs1 imm = emit (Slti rd rs1 imm)
+slti :: Reg -> Reg -> Integer -> Asm ()
+slti rd rs1 imm = checkSigned12 "slti" imm >>= \i -> emit (Slti rd rs1 i)
 
-sltiu :: Reg -> Reg -> Signed 12 -> Asm ()
-sltiu rd rs1 imm = emit (Sltiu rd rs1 imm)
+sltiu :: Reg -> Reg -> Integer -> Asm ()
+sltiu rd rs1 imm = checkSigned12 "sltiu" imm >>= \i -> emit (Sltiu rd rs1 i)
 
-xori :: Reg -> Reg -> Signed 12 -> Asm ()
-xori rd rs1 imm = emit (Xori rd rs1 imm)
+xori :: Reg -> Reg -> Integer -> Asm ()
+xori rd rs1 imm = checkSigned12 "xori" imm >>= \i -> emit (Xori rd rs1 i)
 
-ori :: Reg -> Reg -> Signed 12 -> Asm ()
-ori rd rs1 imm = emit (Ori rd rs1 imm)
+ori :: Reg -> Reg -> Integer -> Asm ()
+ori rd rs1 imm = checkSigned12 "ori" imm >>= \i -> emit (Ori rd rs1 i)
 
-andi :: Reg -> Reg -> Signed 12 -> Asm ()
-andi rd rs1 imm = emit (Andi rd rs1 imm)
+andi :: Reg -> Reg -> Integer -> Asm ()
+andi rd rs1 imm = checkSigned12 "andi" imm >>= \i -> emit (Andi rd rs1 i)
 
-slli :: Reg -> Reg -> BitVector 5 -> Asm ()
-slli rd rs1 shamt = emit (Slli rd rs1 shamt)
+slli :: Reg -> Reg -> Integer -> Asm ()
+slli rd rs1 shamt = checkShamt "slli" shamt >>= \s -> emit (Slli rd rs1 s)
 
-srli :: Reg -> Reg -> BitVector 5 -> Asm ()
-srli rd rs1 shamt = emit (Srli rd rs1 shamt)
+srli :: Reg -> Reg -> Integer -> Asm ()
+srli rd rs1 shamt = checkShamt "srli" shamt >>= \s -> emit (Srli rd rs1 s)
 
-srai :: Reg -> Reg -> BitVector 5 -> Asm ()
-srai rd rs1 shamt = emit (Srai rd rs1 shamt)
+srai :: Reg -> Reg -> Integer -> Asm ()
+srai rd rs1 shamt = checkShamt "srai" shamt >>= \s -> emit (Srai rd rs1 s)
 
 -- | @LB rd, imm(rs1)@ — load a sign-extended byte.
-lb :: Reg -> Reg -> Signed 12 -> Asm ()
-lb rd rs1 imm = emit (Lb rd rs1 imm)
+lb :: Reg -> Reg -> Integer -> Asm ()
+lb rd rs1 imm = checkSigned12 "lb" imm >>= \i -> emit (Lb rd rs1 i)
 
 -- | @LH rd, imm(rs1)@ — load a sign-extended halfword.
-lh :: Reg -> Reg -> Signed 12 -> Asm ()
-lh rd rs1 imm = emit (Lh rd rs1 imm)
+lh :: Reg -> Reg -> Integer -> Asm ()
+lh rd rs1 imm = checkSigned12 "lh" imm >>= \i -> emit (Lh rd rs1 i)
 
 -- | @LW rd, imm(rs1)@ — load a 32-bit word.
-lw :: Reg -> Reg -> Signed 12 -> Asm ()
-lw rd rs1 imm = emit (Lw rd rs1 imm)
+lw :: Reg -> Reg -> Integer -> Asm ()
+lw rd rs1 imm = checkSigned12 "lw" imm >>= \i -> emit (Lw rd rs1 i)
 
 -- | @LBU rd, imm(rs1)@ — load a zero-extended byte.
-lbu :: Reg -> Reg -> Signed 12 -> Asm ()
-lbu rd rs1 imm = emit (Lbu rd rs1 imm)
+lbu :: Reg -> Reg -> Integer -> Asm ()
+lbu rd rs1 imm = checkSigned12 "lbu" imm >>= \i -> emit (Lbu rd rs1 i)
 
 -- | @LHU rd, imm(rs1)@ — load a zero-extended halfword.
-lhu :: Reg -> Reg -> Signed 12 -> Asm ()
-lhu rd rs1 imm = emit (Lhu rd rs1 imm)
+lhu :: Reg -> Reg -> Integer -> Asm ()
+lhu rd rs1 imm = checkSigned12 "lhu" imm >>= \i -> emit (Lhu rd rs1 i)
 
 -- | @SB rs2, imm(rs1)@ — store the low byte of @rs2@.
-sb :: Reg -> Reg -> Signed 12 -> Asm ()
-sb rs1 rs2 imm = emit (Sb rs1 rs2 imm)
+sb :: Reg -> Reg -> Integer -> Asm ()
+sb rs1 rs2 imm = checkSigned12 "sb" imm >>= \i -> emit (Sb rs1 rs2 i)
 
 -- | @SH rs2, imm(rs1)@ — store the low halfword of @rs2@.
-sh :: Reg -> Reg -> Signed 12 -> Asm ()
-sh rs1 rs2 imm = emit (Sh rs1 rs2 imm)
+sh :: Reg -> Reg -> Integer -> Asm ()
+sh rs1 rs2 imm = checkSigned12 "sh" imm >>= \i -> emit (Sh rs1 rs2 i)
 
 -- | @SW rs2, imm(rs1)@ — store all 32 bits of @rs2@.
-sw :: Reg -> Reg -> Signed 12 -> Asm ()
-sw rs1 rs2 imm = emit (Sw rs1 rs2 imm)
+sw :: Reg -> Reg -> Integer -> Asm ()
+sw rs1 rs2 imm = checkSigned12 "sw" imm >>= \i -> emit (Sw rs1 rs2 i)
 
 -- | @SLL rd, rs1, rs2@ — shift left logical (low 5 bits of @rs2@).
 sll :: Reg -> Reg -> Reg -> Asm ()
@@ -482,18 +572,21 @@ amomaxu_w :: Reg -> Reg -> Reg -> BitVector 2 -> Asm ()
 amomaxu_w rd rs1 rs2 aqrl = emit (AmoMaxuW rd rs1 rs2 aqrl)
 
 -- | @FENCE pred, succ@ — memory ordering fence (Zifencei).
-fence :: BitVector 4 -> BitVector 4 -> Asm ()
-fence pred_ succ_ = emit (Fence pred_ succ_)
+fence :: Integer -> Integer -> Asm ()
+fence pred_ succ_ = do
+  p <- checkFence4 "fence (pred)" pred_
+  s <- checkFence4 "fence (succ)" succ_
+  emit (Fence p s)
 
 -- | @FENCE.I@ — instruction-fetch fence.
 fenceI :: Asm ()
 fenceI = emit FenceI
 
-lui :: Reg -> BitVector 20 -> Asm ()
-lui rd imm = emit (Lui rd imm)
+lui :: Reg -> Integer -> Asm ()
+lui rd imm = checkImm20 "lui" imm >>= \i -> emit (Lui rd i)
 
-auipc :: Reg -> BitVector 20 -> Asm ()
-auipc rd imm = emit (Auipc rd imm)
+auipc :: Reg -> Integer -> Asm ()
+auipc rd imm = checkImm20 "auipc" imm >>= \i -> emit (Auipc rd i)
 
 -- | @JAL rd, label@ — 21-bit PC-relative jump.
 jal :: Reg -> Label -> Asm ()
@@ -501,8 +594,8 @@ jal rd lbl = emitLabelRel lbl $ \pos tgt ->
   jOffset pos tgt >>= \off -> Right (Jal rd off)
 
 -- | @JALR rd, rs1, imm@ — absolute register-relative jump.
-jalr :: Reg -> Reg -> Signed 12 -> Asm ()
-jalr rd rs1 imm = emit (Jalr rd rs1 imm)
+jalr :: Reg -> Reg -> Integer -> Asm ()
+jalr rd rs1 imm = checkSigned12 "jalr" imm >>= \i -> emit (Jalr rd rs1 i)
 
 ecall :: Asm ()
 ecall = emit Ecall
@@ -528,16 +621,16 @@ csrrc rd rs1 csr = emit (Csrrc rd rs1 csr)
 {- | @CSRRWI rd, csr, uimm5@ — atomic read-write with a 5-bit
 zero-extended immediate.
 -}
-csrrwi :: Reg -> BitVector 5 -> Csr -> Asm ()
-csrrwi rd uimm csr = emit (Csrrwi rd uimm csr)
+csrrwi :: Reg -> Integer -> Csr -> Asm ()
+csrrwi rd uimm csr = checkShamt "csrrwi" uimm >>= \u -> emit (Csrrwi rd u csr)
 
 -- | @CSRRSI rd, csr, uimm5@ — atomic read-and-set with immediate.
-csrrsi :: Reg -> BitVector 5 -> Csr -> Asm ()
-csrrsi rd uimm csr = emit (Csrrsi rd uimm csr)
+csrrsi :: Reg -> Integer -> Csr -> Asm ()
+csrrsi rd uimm csr = checkShamt "csrrsi" uimm >>= \u -> emit (Csrrsi rd u csr)
 
 -- | @CSRRCI rd, csr, uimm5@ — atomic read-and-clear with immediate.
-csrrci :: Reg -> BitVector 5 -> Csr -> Asm ()
-csrrci rd uimm csr = emit (Csrrci rd uimm csr)
+csrrci :: Reg -> Integer -> Csr -> Asm ()
+csrrci rd uimm csr = checkShamt "csrrci" uimm >>= \u -> emit (Csrrci rd u csr)
 
 -- * Pseudo-instructions ----------------------------------------------
 

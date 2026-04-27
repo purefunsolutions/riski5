@@ -79,7 +79,7 @@ helloProg = do
   tmpReg = x10
   writeChar :: P.Char -> Asm ()
   writeChar c = do
-    addi tmpReg x0 (P.fromIntegral (P.fromEnum c) :: CP.Signed 12)
+    addi tmpReg x0 (P.fromIntegral (P.fromEnum c))
     emit (Sw uartReg tmpReg 0)
 
 helloProgWords :: [BitVector 32]

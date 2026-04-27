@@ -285,13 +285,13 @@ lcdWait = do
 lcdCmd :: Int -> Asm ()
 lcdCmd cmdByte = do
   lcdWait
-  addi tmpReg x0 (P.fromIntegral cmdByte :: Signed 12)
+  addi tmpReg x0 (P.fromIntegral cmdByte)
   sw lcdReg tmpReg 4
 
 lcdChar :: Int -> Asm ()
 lcdChar ch = do
   lcdWait
-  addi tmpReg x0 (P.fromIntegral ch :: Signed 12)
+  addi tmpReg x0 (P.fromIntegral ch)
   sw lcdReg tmpReg 0
 
 -- | Write the literal characters of @str@ to the LCD via DATA writes.
@@ -317,12 +317,12 @@ lcdHex16 rd =
     isAlpha <- labelUnplaced
     bge hexReg tmpReg isAlpha
     -- Digit branch: hexReg += '0'.
-    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0') :: Signed 12)
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0'))
     afterChar <- labelUnplaced
     j afterChar
     placeAt isAlpha
     -- Alpha branch: hexReg += 'A' - 10.
-    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10) :: Signed 12)
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10))
     placeAt afterChar
     -- Emit hexReg as a character.
     lcdWait
@@ -344,7 +344,7 @@ ledgSet bits = do
 
 uartChar :: Int -> Asm ()
 uartChar ch = do
-  addi tmpReg x0 (P.fromIntegral ch :: Signed 12)
+  addi tmpReg x0 (P.fromIntegral ch)
   sw uartReg tmpReg 0
 
 uartString :: P.String -> Asm ()
@@ -363,10 +363,10 @@ uartHex16 rd =
     addi tmpReg x0 10
     isAlpha <- labelUnplaced
     bge hexReg tmpReg isAlpha
-    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0') :: Signed 12)
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum '0'))
     afterChar <- labelUnplaced
     j afterChar
     placeAt isAlpha
-    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10) :: Signed 12)
+    addi hexReg hexReg (P.fromIntegral (P.fromEnum 'A' P.- 10))
     placeAt afterChar
     sw uartReg hexReg 0

@@ -83,7 +83,7 @@ helloTimerIrqFirmware = do
   li clintReg 0x1000_0060
 
   -- Print 'B' so the host sees boot completed before timer fires.
-  addi x14 x0 (0x42 :: Signed 12) -- 'B'
+  addi x14 x0 0x42 -- 'B'
   sw uartReg x14 0
 
   -- mtvec.base := 0x80 (word 32, MODE = 0 = direct).
@@ -102,11 +102,11 @@ helloTimerIrqFirmware = do
   sw clintReg x0 12
 
   -- mie.MTIE := 1 (bit 7).
-  addi x12 x0 (0x80 :: Signed 12)
+  addi x12 x0 0x80
   csrrs x0 x12 csrMie
 
   -- mstatus.MIE := 1 (bit 3).
-  addi x12 x0 (0x8 :: Signed 12)
+  addi x12 x0 0x8
   csrrs x0 x12 csrMstatus
 
   -- Main loop: print a '.' every ~16K cycles so the host sees a
@@ -120,7 +120,7 @@ helloTimerIrqFirmware = do
   andi x12 x18 0x3FF -- low 10 bits
   bne x12 x0 loopL -- 1023 of every 1024 iterations, skip the dot
 
-  addi x14 x0 (0x2E :: Signed 12) -- '.'
+  addi x14 x0 0x2E -- '.'
   sw uartReg x14 0
   j loopL
 
@@ -146,7 +146,7 @@ helloTimerIrqHandler = do
   sw clintReg x0 12
 
   -- Print 'T'.
-  addi x14 x0 (0x54 :: Signed 12)
+  addi x14 x0 0x54
   sw uartReg x14 0
 
   -- Return to interrupted instruction (mret restores MIE from MPIE).

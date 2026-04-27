@@ -85,7 +85,7 @@ helloAExtFirmware = do
 
   -- ---------------- B ----------------
   -- Print 'B'. Confirms BRAM exec + bus + UART are working.
-  addi x14 x0 (0x42 :: Signed 12)
+  addi x14 x0 0x42
   sw uartReg x14 0
 
   -- Seed mem[0x100] := 0x11111111 with a plain SW so the LR.W has
@@ -100,7 +100,7 @@ helloAExtFirmware = do
   -- aqrl = 0 (relaxed).
   lr_w lrR sramAddr 0
   -- Print 'L' — proves the LR.W decoded and retired (didn't trap).
-  addi x14 x0 (0x4C :: Signed 12)
+  addi x14 x0 0x4C
   sw uartReg x14 0
 
   -- ---------------- S ----------------
@@ -111,7 +111,7 @@ helloAExtFirmware = do
   -- Print 'S' regardless — the test stream stays a fixed length so
   -- the host can pattern-match without conditional branches in
   -- firmware.
-  addi x14 x0 (0x53 :: Signed 12)
+  addi x14 x0 0x53
   sw uartReg x14 0
 
   -- ---------------- A ----------------
@@ -120,7 +120,7 @@ helloAExtFirmware = do
   -- against SRAM so the slave-ready gating is exercised.
   li swapValR 0x3333_3333
   amoswap_w swapRdR sramAddr swapValR 0
-  addi x14 x0 (0x41 :: Signed 12) -- 'A'
+  addi x14 x0 0x41 -- 'A'
   sw uartReg x14 0
 
   -- ---------------- X ----------------
@@ -129,7 +129,7 @@ helloAExtFirmware = do
   -- not just a swap.
   addi addOpR x0 0x100
   amoadd_w addRdR sramAddr addOpR 0
-  addi x14 x0 (0x58 :: Signed 12) -- 'X'
+  addi x14 x0 0x58 -- 'X'
   sw uartReg x14 0
 
   -- Loop back for another iteration. The host sees a periodic

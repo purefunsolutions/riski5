@@ -96,7 +96,7 @@ bootCode = do
   lui enReg 0x40002
 
   -- Print 'B' so the test can see the boot stub started.
-  addi x14 x0 (0x42 :: CP.Signed 12) -- 'B'
+  addi x14 x0 0x42 -- 'B'
   sw uartReg x14 0
 
   -- PLIC priority[1] := 5. Address = plicBase + 0x04.
@@ -128,7 +128,7 @@ bootCode = do
 
   -- Print 'A' so the test confirms the boot stub completed all
   -- of its CSR / PLIC configuration.
-  addi x14 x0 (0x41 :: CP.Signed 12) -- 'A'
+  addi x14 x0 0x41 -- 'A'
   sw uartReg x14 0
 
   -- Spin forever. The handler will write 'I' once meipS rises.
@@ -150,7 +150,7 @@ handlerCode = do
   -- Reload x10 because the handler doesn't preserve caller-saved
   -- registers (this is a sim test, not a real OS handler).
   li uartReg 0x1000_0000
-  addi x14 x0 (0x49 :: CP.Signed 12) -- 'I'
+  addi x14 x0 0x49 -- 'I'
   sw uartReg x14 0
   haltL <- label
   j haltL

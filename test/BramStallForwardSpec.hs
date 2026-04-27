@@ -86,7 +86,7 @@ tests =
 dataOffsetWords :: Int
 dataOffsetWords = 64
 
-dataOffsetBytes :: CP.Signed 12
+dataOffsetBytes :: P.Integer
 dataOffsetBytes = 0x100
 
 -- | Four constants the firmware will LW and ferry to the UART.
@@ -178,7 +178,7 @@ mcycleProg = do
   -- and t1, t0, 0     → t1 = 0  (force the "character" deterministic)
   emit (Andi x6 x5 0)
   -- addi t1, t1, 'Z'
-  addi x6 x6 (0x5A :: CP.Signed 12)
+  addi x6 x6 0x5A
   emit (Sw x10 x6 0)
   spin <- label
   j spin

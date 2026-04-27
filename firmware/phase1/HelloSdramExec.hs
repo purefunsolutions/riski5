@@ -150,12 +150,12 @@ helloSdramExecFirmware = do
   -- a polite Avalon-MM proxy that asserts @waitrequest=1@
   -- whenever the TX FIFO is full. The master's @sw@ stalls
   -- naturally until a byte drains, then commits cleanly.
-  addi tmpReg x0 (0x42 :: Signed 12) -- 'B'
+  addi tmpReg x0 0x42 -- 'B'
   sw uartReg tmpReg 0
 
   -- Pin 'S' into x14 so the SDRAM-resident @sw x14, 0(x10)@ at
   -- SDRAM[0] has the right rs2 value when it retires.
-  addi sdramChar x0 (0x53 :: Signed 12) -- 'S'
+  addi sdramChar x0 0x53 -- 'S'
 
   -- SDRAM base.
   li sdramAddrR 0x8000_0000

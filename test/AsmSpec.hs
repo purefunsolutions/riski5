@@ -45,6 +45,12 @@ tests =
     , testCase "undefined label fails cleanly" case_undefined
     , testCase "lr.w / sc.w pair round-trip" case_aLrSc
     , testCase "all 9 AMO ops round-trip with aqrl=0b11" case_aAmoAqRl
+    , testCase "lw imm > 2047 errors at assemble time (no silent wrap)" case_lwImmTooLarge
+    , testCase "sw imm < -2048 errors at assemble time" case_swImmTooNegative
+    , testCase "addi imm = 2047 (boundary high) succeeds" case_addiImmBoundaryHigh
+    , testCase "addi imm = -2048 (boundary low) succeeds" case_addiImmBoundaryLow
+    , testCase "lui imm > 0xFFFFF errors at assemble time" case_luiImmTooLarge
+    , testCase "slli shamt > 31 errors at assemble time" case_slliShamtTooLarge
     ]
 
 -- * Helpers ----------------------------------------------------------
@@ -189,6 +195,45 @@ case_aLrSc =
     [ LrW x10 x11 0
     , ScW x12 x11 x13 0
     ]
+
+-- The bug uncovered while bringing up the PLIC integration test:
+-- @lw rd reg 0x1000@ used to silently emit @lw rd reg 0@ because
+-- 'fromInteger' wraps when the literal exceeds the destination type's
+-- range. Now every wrapper takes 'Integer' and bounds-checks the
+-- immediate at assemble time, so the firmware author sees the
+-- problem immediately and reaches for @lui@ instead of debugging a
+-- silently-misaddressed memory access.
+case_lwImmTooLarge :: Assertion
+case_lwImmTooLarge =
+  expectImmOutOfRange "lw" 0x1000 (-2048) 2047 (lw x10 x11 0x1000)
+
+case_swImmTooNegative :: Assertion
+case_swImmTooNegative =
+  expectImmOutOfRange "sw" (-2049) (-2048) 2047 (sw x10 x11 (-2049))
+
+case_addiImmBoundaryHigh :: Assertion
+case_addiImmBoundaryHigh = expect (addi x10 x11 2047) [Addi x10 x11 2047]
+
+case_addiImmBoundaryLow :: Assertion
+case_addiImmBoundaryLow = expect (addi x10 x11 (-2048)) [Addi x10 x11 (-2048)]
+
+case_luiImmTooLarge :: Assertion
+case_luiImmTooLarge =
+  expectImmOutOfRange "lui" 0x100000 0 0xFFFFF (lui x10 0x100000)
+
+case_slliShamtTooLarge :: Assertion
+case_slliShamtTooLarge =
+  expectImmOutOfRange "slli" 32 0 31 (slli x10 x11 32)
+
+-- | Assert that 'assemble' returns 'ImmOutOfRange' with the exact
+-- mnemonic / value / range the bounds-check should produce.
+expectImmOutOfRange ::
+  String -> Integer -> Integer -> Integer -> Asm () -> Assertion
+expectImmOutOfRange mn v lo hi prog = case assemble prog of
+  Right ws -> assertFailure ("expected ImmOutOfRange but got: " <> show ws)
+  Left (ImmOutOfRange mn' v' lo' hi') ->
+    assertEqual "ImmOutOfRange details" (mn, v, lo, hi) (mn', v', lo', hi')
+  Left other -> assertFailure ("expected ImmOutOfRange but got: " <> show other)
 
 -- All 9 AMO ops with aqrl = 0b11 (full ordering). One Asm program emits
 -- one instance of each in canonical order; we expect the Instr list to
