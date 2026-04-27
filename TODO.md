@@ -19,14 +19,18 @@ rules around maintaining it.
   Reference executor (with `reservation :: Maybe Addr`) +
   `Riski5.Core.FU.Amo` (4-state mealy FSM with reservation as
   internal state) + bus muxing in `Riski5.Core` + 12 differential
-  CoreSpec cases vs the Reference oracle, all green. Remaining:
-  - **T-A-ext-5.** Silicon firmware demo. New Nix variant (e.g.
-    `riski5-core-aexttest`) overlaying a `firmware/phase2/HelloAExt.hs`
-    that exercises an LR.W / SC.W pair and the 9 AMOs against an
-    SRAM word, prints a sentinel byte stream over JTAG-UART, and
-    `flash-riski5-aexttest` to run on the DE2. Should reuse the
-    `riski5-core-sramexec`-style overlay machinery so CoreMark's
-    Quartus placement stays untouched.
+  CoreSpec cases vs the Reference oracle, all green.
+  - **T-A-ext-5. ✓** Silicon firmware demo
+    (**LANDED 2026-04-27**). `firmware/phase1/HelloAExt.hs` +
+    `riski5-core-aexttest` Nix variant + `flash-riski5-aexttest`
+    app. JTAG-UART stream on real DE2: `BLSAXBLSAX…` repeating
+    cleanly — boot / LR.W / SC.W success / AMOSWAP / AMOADD all
+    retiring against the SRAM controller. Forced a `slaveReadyS`
+    refinement on `Riski5.Core.FU.Amo` (gates Read / Write phase
+    transitions on `not <$> stallS`) so the FU's multi-cycle FSM
+    works against multi-cycle SRAM accesses; without this gate the
+    FU would advance on every clock and capture stale rdata mid-
+    SRAM-transaction.
 
 - **CLINT — phase-2 timer-interrupt source.** Slot reserved at
   `0x1000_0060..0x1000_009F` per `Riski5.MemMap`. Two pieces, both
@@ -48,10 +52,16 @@ rules around maintaining it.
     integration test demonstrates handler entry. CoreMark stable
     at 44.57 / 1.114 — pre-emption check is dead logic on the hot
     loop because firmware never enables `MIE`.
-  - Follow-up: **TimerIrq silicon demo** — boot stub sets `mtvec`,
-    enables `MTIE` + `MIE`, writes `mtimecmp = mtime + N` ticks,
-    spins; handler prints a byte and re-arms `mtimecmp`. Same
-    overlay + new flake variant pattern as T-A-ext-5.
+  - **T-CLINT-3. ✓** Silicon firmware demo
+    (**LANDED 2026-04-27**). `firmware/phase1/HelloTimerIrq.hs` +
+    `riski5-core-timerirqtest` Nix variant +
+    `flash-riski5-timerirqtest` app. JTAG-UART stream on real DE2:
+    `B…………T…………T…………T…` — boot byte then `.`-runs separated by
+    handler-emitted `T`s, exactly the cadence the
+    `mtimecmpIncrement = 4_000_000` (≈100 ms at 40 MHz) buys.
+    Demonstrates the full `mtipS → mip.MTIP → interruptPending →
+    trap → handler → mtimecmp re-arm → mret → main` chain on real
+    hardware; no surprises vs sim.
 
 - **CM — CoreMark on riski5 silicon.** Port the EEMBC CoreMark 1.01
   C benchmark, cross-compile via `pkgsCross.riscv32-embedded`, run

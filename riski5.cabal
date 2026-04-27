@@ -126,8 +126,10 @@ library riski5-firmware
     CoreMark
     FetchPolicy
     Hello
+    HelloAExt
     HelloSdramExec
     HelloSramExec
+    HelloTimerIrq
     MemTest
 
   build-depends:

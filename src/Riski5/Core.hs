@@ -973,7 +973,20 @@ core imemData imemReadyS dmemRData stallS mtipS =
   amoBusyS :: Signal dom Bool
   amoResultS :: Signal dom (BitVector 32)
   amoBusS :: Signal dom AmoBus
-  (amoBusyS, amoResultS, amoBusS) = amoFU amoActiveS amoOpS rs1FwdS rs2FwdS dmemRData
+  -- Slave-ready signal for the AMO FU's bus phases. The external
+  -- 'stallS' goes True whenever any data-side slave (SRAM, SDRAM,
+  -- BRAM-bus-port, JTAG-UART) is mid-transaction; @not stallS@
+  -- gives us "transaction settled this cycle" — exactly the gate
+  -- the AmoFU's Read / Write phases need to know when to capture
+  -- the read response or consider the write committed. For
+  -- async-read paths (BRAM-fetch direct, simHarnessA) this signal
+  -- is constant True via the SoC's stall composition, so
+  -- single-cycle dmem still retires AMOs in the original 3-busy-
+  -- cycle envelope.
+  amoSlaveReadyS :: Signal dom Bool
+  amoSlaveReadyS = not <$> stallS
+  (amoBusyS, amoResultS, amoBusS) =
+    amoFU amoActiveS amoOpS rs1FwdS rs2FwdS dmemRData amoSlaveReadyS
 
   -- Override the writeback for A-ext ops with the FU's result.
   xWbWithAmoS :: Signal dom (Maybe (BitVector 5, BitVector 32))

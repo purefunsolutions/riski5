@@ -50,6 +50,23 @@
   # and the firmware loops — yielding @BSBSBS…@ on the JTAG-UART
   # iff SDRAM execution works end-to-end.
   sdramExec ? false,
+  # Build the A-extension silicon-test variant. Overlay
+  # @HelloAExt.helloAExtFirmwareWords@ into the imem and exercise
+  # the @Riski5.Core.FU.Amo@ FSM against an SRAM word — see the
+  # module header for the @BLSAX BLSAX …@ UART script the host
+  # should observe iff LR.W / SC.W / AMOSWAP.W / AMOADD.W all
+  # work end-to-end on real silicon. Same overlay mechanism as
+  # @sramExec@; @FetchPolicy@ stays at the BRAM-only default
+  # because we only need to fetch from BRAM (just data accesses
+  # touch SRAM via the AMO bus phases).
+  aExtTest ? false,
+  # Build the timer-interrupt silicon-test variant. Overlay
+  # @HelloTimerIrq.helloTimerIrqFirmwareWords@ into the imem.
+  # Expected silicon stream: @B......T......T…@ — boot byte,
+  # then '.'-runs separated by handler-emitted 'T' bytes. Tests
+  # the full CLINT → @mip.MTIP@ → @interruptPending@ → trap →
+  # handler → @mret@ chain on real hardware.
+  timerIrqTest ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -62,12 +79,16 @@
   isCoremark = coremarkPkg != null;
   isSramExec = sramExec && !isCoremark;
   isSdramExec = sdramExec && !isCoremark && !isSramExec;
+  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest;
 in
   stdenv.mkDerivation {
     pname =
       if isCoremark then "riski5-core-coremark"
       else if isSramExec then "riski5-core-sramexec"
       else if isSdramExec then "riski5-core-sdramexec"
+      else if isAExtTest then "riski5-core-aexttest"
+      else if isTimerIrqTest then "riski5-core-timerirqtest"
       else "riski5-core";
     version = "0.1.0";
 
@@ -243,6 +264,69 @@ in
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
+            ${lib.optionalString isAExtTest ''
+              # A-extension silicon test variant. Overlay CoreMark.hs
+              # with HelloAExt's words; FetchPolicy stays at the
+              # BRAM-only default (only data accesses touch SRAM, not
+              # fetches).
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the aExtTest Nix build: re-exports
+              -- HelloAExt's firmware under the CoreMark name so the
+              -- unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the A-extension probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloAExt (helloAExtFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloAExtFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### aExtTest variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
+            ${lib.optionalString isTimerIrqTest ''
+              # Timer-interrupt silicon test variant. Overlay
+              # CoreMark.hs with HelloTimerIrq's words; FetchPolicy
+              # stays at the BRAM-only default.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the timerIrqTest Nix build: re-exports
+              -- HelloTimerIrq's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the timer-interrupt probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloTimerIrq (helloTimerIrqFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloTimerIrqFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### timerIrqTest variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -259,7 +343,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

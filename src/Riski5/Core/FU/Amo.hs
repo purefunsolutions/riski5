@@ -272,13 +272,22 @@ amoFU ::
   Signal dom (BitVector 32) ->
   Signal dom (BitVector 32) ->
   Signal dom (BitVector 32) ->
+  -- | slave ready: 'True' on cycles the dmem bus has settled the
+  -- current transaction (read data valid, or write accepted). The
+  -- AmoFU holds in 'AmoRead' / 'AmoWrite' phases while this is
+  -- 'False', advancing only on a 'True' cycle. For BRAM / sim
+  -- harnesses with async-read dmem, the caller passes constant
+  -- 'True'. For multi-cycle slaves (SRAM, SDRAM), the caller
+  -- passes the SoC's slave-ready signal so the FSM matches the
+  -- access latency.
+  Signal dom Bool ->
   ( Signal dom Bool
   , Signal dom (BitVector 32)
   , Signal dom AmoBus
   )
-amoFU activeS opS addrS rs2S dmemRdataS = (busyS, resultS, busS)
+amoFU activeS opS addrS rs2S dmemRdataS slaveReadyS = (busyS, resultS, busS)
  where
-  inS = bundle (activeS, opS, addrS, rs2S, dmemRdataS)
+  inS = bundle (activeS, opS, addrS, rs2S, dmemRdataS, slaveReadyS)
   outS = mealy step initState inS
   (busyS, resultS, busS) = unbundle outS
 
@@ -286,9 +295,9 @@ amoFU activeS opS addrS rs2S dmemRdataS = (busyS, resultS, busS)
 
 step ::
   AmoS ->
-  (Bool, AmoOp, BitVector 32, BitVector 32, BitVector 32) ->
+  (Bool, AmoOp, BitVector 32, BitVector 32, BitVector 32, Bool) ->
   (AmoS, (Bool, BitVector 32, AmoBus))
-step s (active, op, addr, rs2, dmemRdata) = (s', (busy, resultReg s, bus))
+step s (active, op, addr, rs2, dmemRdata, slaveReady) = (s', (busy, resultReg s, bus))
  where
   -- Output combinational signals depend on the *current* phase. The
   -- transition happens on the next clock edge.
@@ -325,35 +334,39 @@ step s (active, op, addr, rs2, dmemRdata) = (s', (busy, resultReg s, bus))
     AmoIdle
       | active -> launchAt op addr rs2 s
       | otherwise -> s
-    AmoRead ->
-      -- Capture the original word; for LR.W also register the
-      -- reservation. AMOs go on to AmoWrite; LR.W skips to Done.
-      let captured = dmemRdata
-       in case opReg s of
-            AmoLrW ->
-              s
+    AmoRead
+      | not slaveReady -> s -- hold until slave settles the read
+      | otherwise ->
+          -- Capture the original word; for LR.W also register the
+          -- reservation. AMOs go on to AmoWrite; LR.W skips to Done.
+          let captured = dmemRdata
+           in case opReg s of
+                AmoLrW ->
+                  s
+                    { phase = AmoDone
+                    , originalReg = captured
+                    , resultReg = captured
+                    , reservation = Just (addrReg s)
+                    }
+                _ ->
+                  s
+                    { phase = AmoWrite
+                    , originalReg = captured
+                    }
+    AmoWrite
+      | not slaveReady -> s -- hold until slave accepts the write
+      | otherwise ->
+          -- Write phase done. AMOs return the original; SC.W returns 0
+          -- (always reached only on success — failure goes Idle → Done).
+          let res = case opReg s of
+                AmoScW -> 0
+                _ -> originalReg s
+           in s
                 { phase = AmoDone
-                , originalReg = captured
-                , resultReg = captured
-                , reservation = Just (addrReg s)
+                , resultReg = res
+                -- AMOs and successful SC.W both clear the reservation.
+                , reservation = Nothing
                 }
-            _ ->
-              s
-                { phase = AmoWrite
-                , originalReg = captured
-                }
-    AmoWrite ->
-      -- Write phase done. AMOs return the original; SC.W returns 0
-      -- (always reached only on success — failure goes Idle → Done).
-      let res = case opReg s of
-            AmoScW -> 0
-            _ -> originalReg s
-       in s
-            { phase = AmoDone
-            , resultReg = res
-            -- AMOs and successful SC.W both clear the reservation.
-            , reservation = Nothing
-            }
     AmoDone -> s {phase = AmoIdle}
 
 -- | State at the Idle → Busy transition: capture operands; for SC.W

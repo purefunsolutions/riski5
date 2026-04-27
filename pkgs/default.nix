@@ -111,6 +111,23 @@
         sdramExec = true;
       };
 
+      # Debug bitstream that bakes firmware/phase1/HelloAExt.hs into
+      # imem. Probes whether 'Riski5.Core.FU.Amo' (the new RV32A FSM)
+      # works against the real SRAM controller on silicon. Expected
+      # JTAG-UART output: a periodic @BLSAX BLSAX …@ stream.
+      riski5-core-aexttest = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        aExtTest = true;
+      };
+
+      # Debug bitstream that bakes firmware/phase1/HelloTimerIrq.hs
+      # into imem. Probes the full CLINT → mip.MTIP → trap → handler
+      # chain on real hardware. Expected output: @B......T......T…@.
+      riski5-core-timerirqtest = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        timerIrqTest = true;
+      };
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
@@ -137,6 +154,18 @@
         riski5-core = self'.packages.riski5-core-sdramexec;
       };
 
+      # Flasher for the A-extension silicon test bitstream.
+      flash-riski5-aexttest = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-aexttest;
+      };
+
+      # Flasher for the timer-interrupt silicon test bitstream.
+      flash-riski5-timerirqtest = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-timerirqtest;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -160,6 +189,14 @@
       flash-riski5-sdramexec = {
         type = "app";
         program = "${self'.packages.flash-riski5-sdramexec}/bin/flash-riski5";
+      };
+      flash-riski5-aexttest = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-aexttest}/bin/flash-riski5";
+      };
+      flash-riski5-timerirqtest = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-timerirqtest}/bin/flash-riski5";
       };
       console = {
         type = "app";
