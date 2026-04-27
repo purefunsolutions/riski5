@@ -124,6 +124,58 @@ rules around maintaining it.
   so the wide-probe approach (read all 4 captured cycles in
   one transaction) is the working pattern.
 
+- **Hardware-side WSPACE polling — `Riski5.JtagUartAdapter` (LANDED
+  2026-04-27, commit `6098f76`).** The firmware-side WSPACE poll
+  in `1bd7a41` worked but was a workaround at the wrong level —
+  every UART-using firmware variant had to know about the IP's
+  bug and burn 3+ instructions per byte polling the CONTROL
+  register. New `Riski5.JtagUartAdapter` Clash module wraps the
+  Altera IP with a "polite" Avalon-MM proxy: tracks a 7-bit
+  @freeBytes@ counter (init 64), holds the master with
+  @waitrequest=1@ when @freeBytes==0@, polls the IP at the bus
+  rate while held to detect drain, releases the master when a
+  slot opens. Master-side firmware now sees standard Avalon-MM
+  semantics — back-to-back @sw@s to the UART data register just
+  work.
+
+  Implementation notes:
+   - Per-byte commit detection uses the falling edge of
+     @mIsDataWriteS@ (the cycle after @uartAcceptedS@ engages),
+     which is reliable across both the Altera-IP-faithful sim
+     (combinational @ipReady@) and silicon (toggle protocol).
+     CMTC=2.000/iter on silicon (verified pre-adapter via the
+     freeze-trigger probes) confirms the SoC's existing
+     @uartAcceptedS@ gate produces exactly one IP commit per
+     master assertion, so the falling edge is a lossless event
+     stream.
+   - @JaIdle@-with-@masterHeld=True@ also gates the @ipBus@ to
+     idle (not just signals @waitrequest=1@ to the master) — the
+     master's combinational bus signals would otherwise still
+     reach the IP for one cycle before the @JaPoll@ transition,
+     producing a "phantom" commit the adapter doesn't track.
+   - WSPACE-validity in @JaPoll@ uses a level + cycle-count gate
+     (@ipReady && pollCnt >= 1@) rather than an
+     @ipAcceptS@-rising-edge: the rising-edge approach works
+     against silicon but not against the combinational
+     @jtagUartAlteraSim@ (which never toggles @ipReady@).
+
+  Silicon verification (12-second JTAG-UART capture of
+  `riski5-core-sdramexec` post-adapter): __1.19 M bytes at
+  594,911 length-1 B-runs / 594,913 length-1 S-runs__ — 3
+  multi-byte anomalies total (1 BB, 1 BBB, 1 SS, all clustered
+  near startup). 0.00025 % anomaly rate vs 1bd7a41's 0.03 %
+  with firmware-side polling. Adapter is strictly tighter on
+  silicon than the firmware-side workaround.
+
+  `firmware/phase1/HelloSdramExec.hs` simplified accordingly:
+  the hand-encoded WSPACE-poll preamble in the SDRAM-resident
+  routine is gone, the BRAM-side @B@-write loses its 3-instr
+  poll, and the firmware reads as the architectural intent
+  (just @sw@s, no MMIO-protocol kludges). CoreMark unchanged
+  (44.57 / 1.114 — adapter doesn't sit on the CoreMark hot
+  loop). UartBackpressureSpec polled-FIFO test passes through
+  the adapter in CI.
+
 ## Next up
 
 - *(currently nothing pending — phase 1 SDRAM-exec arc is
