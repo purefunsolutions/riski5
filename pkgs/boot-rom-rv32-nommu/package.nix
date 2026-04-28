@@ -71,10 +71,24 @@ in
       head -30 generated/start.c
 
       # Step 2: cross-compile start.c + the generated step source.
+      # -O2 (not -Os) so GCC inlines Copilot's per-stream
+      # `s*_get` / `s*_gen` / `*_guard` / `*_arg*` helpers into
+      # step(). At -Os each was a separate function with full
+      # call/save/restore prologue+epilogue (~10-20 cycles per
+      # call); step() invoked ~24 such helpers per byte, costing
+      # several hundred wasted cycles per byte and flooring
+      # silicon throughput at ~2 KB/s. -O2 collapses the call
+      # tree into one straight-line step() and lifts throughput
+      # to JTAG-UART-limited (~100 KB/s).
+      #
+      # `_start`'s `section(".text.entry")` + linker
+      # `KEEP(*(.text.entry))` already pin it at offset 0 of
+      # .text regardless of -O level, so the order-sensitivity
+      # that motivated -Os is moot.
       ${cc}gcc \
         -march=rv32ima -mabi=ilp32 \
         -nostartfiles -nostdlib -ffreestanding -fno-builtin \
-        -fno-pic -no-pie -static -Os -Wall -Wextra -mno-relax \
+        -fno-pic -no-pie -static -O2 -Wall -Wextra -mno-relax \
         -Wl,--build-id=none \
         -Igenerated \
         -T linker.ld \
