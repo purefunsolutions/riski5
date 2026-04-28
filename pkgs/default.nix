@@ -281,6 +281,22 @@
         inherit (self'.packages) riski5-load-stream linux-rv32-nommu riski5-dtb;
       };
 
+      # `nix run .#boot-linux` — single-shot Linux silicon
+      # bring-up: clears stale jtagd/nios2-terminal, flashes the
+      # linuxBoot bitstream (FPGA reconfig = reset, replaces the
+      # old "press KEY0" step), streams kernel + DTB, then
+      # forwards keystrokes to the running kernel. Replaces the
+      # flaky `flash-riski5-linux + load-linux` two-step.
+      boot-linux = pkgs.callPackage ../apps/boot-linux.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages)
+          riski5-core-linux
+          riski5-load-stream
+          linux-rv32-nommu
+          riski5-dtb
+          ;
+      };
+
       # `nix run .#load-sdram-jtag -- <bin-path>` — host-side
       # counterpart to the L-3b SdramLoader bitstream. Sends a
       # length-prefixed binary blob via JTAG-UART; the on-board
@@ -335,6 +351,10 @@
       load-linux = {
         type = "app";
         program = "${self'.packages.load-linux}/bin/load-linux";
+      };
+      boot-linux = {
+        type = "app";
+        program = "${self'.packages.boot-linux}/bin/boot-linux";
       };
       load-sdram-jtag = {
         type = "app";
