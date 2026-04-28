@@ -23,6 +23,7 @@ import CoreSimSpec qualified
 import CoreSpec qualified
 import DecodeSpec qualified
 import HelloSpec qualified
+import IFetchSpec qualified
 import JalrStackSpec qualified
 import LcdSpec qualified
 import PipelineSpec qualified
@@ -75,6 +76,7 @@ main =
       , SdramSpec.tests
       , SdramExecSpec.tests
       , HelloSpec.tests
+      , IFetchSpec.tests
       , JalrStackSpec.tests
       , UartBackpressureSpec.tests
       , SocHwSim.tests
