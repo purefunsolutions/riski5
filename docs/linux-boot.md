@@ -208,72 +208,92 @@ Tests: a new `JtagLoadSpec` writes a known pattern via the
 `siJtagLoad*` inputs to the simulated SDRAM model, then reads
 it back via the regular core path, asserts equality.
 
-#### L-3b. Wrapper-side altsource_probe instances
+#### Constraint discovered: multi-bit altsource_probe sources don't work
 
-Extend `riski5_top.v` (in `pkgs/riski5-core/package.nix`) with
-new altsource_probe instances:
+While planning L-3b we hit a wall the existing wrapper had
+already warned about. The `OFFS` probe (line ~860 of
+`pkgs/riski5-core/package.nix`) documents:
 
-| Instance ID | Width | Direction       | Maps to                |
-|-------------|------:|-----------------|------------------------|
-| `JLMD`      | 1     | source → fabric | `JTAG_LOAD_MODE`       |
-| `JLAD`      | 32    | source → fabric | `JTAG_LOAD_ADDR`       |
-| `JLDW`      | 32    | source → fabric | `JTAG_LOAD_WDATA`      |
-| `JLWE`      | 1     | source → fabric | `JTAG_LOAD_WE`         |
-| `JLRD`      | 1     | source → fabric | `JTAG_LOAD_RD`         |
-| `JLRR`      | 32    | probe → JTAG    | `JTAG_LOAD_RDATA`      |
-| `JLBS`      | 1     | probe → JTAG    | `JTAG_LOAD_BUSY`       |
+> multi-bit altsource_probe sources don't propagate reliably
+> through Quartus 13.0sp1's JTAG hub on this design
 
-Each wrapper-side source uses `clk30` as `source_clk` so the
-write is synchronous to the SoC. The Tcl script's
-`write_source_data -instance_id <ID> -value <hex>` then drives
-the corresponding `siJtagLoad*` input on the next core clock
-edge.
+`OFFS` was a 2-bit source intended to multiplex the freeze-on-
+trigger snapshot offsets; it was replaced by the wide-probe
+approach because the source values weren't actually reaching
+the fabric. Wide probes (FPGA → JTAG) are fine; multi-bit
+sources (JTAG → FPGA) are the problematic direction.
 
-Cost: ~10 LEs per source (storage register) + a few muxes. Total
-< 100 LEs — small enough that CoreMark should stay at the
-44.57 / 1.114 baseline.
+So `JLAD` (32-bit address) and `JLDW` (32-bit data) **cannot**
+be straightforward altsource_probe sources. We have three
+viable replacements:
 
-#### L-3c. `scripts/load-sdram-jtag.tcl`
+#### L-3b option A. Altera JTAG-to-Avalon-Master IP (chosen)
 
-Tcl script matching the shape of `freeze-trigger-probe.tcl`:
+Use the `altera_avalon_jtag_to_avalon_mm_master_bridge` IP
+(generated via `ip-generate` the same way we already produce
+the JTAG-UART and SDRAM IPs in `pkgs/riski5-core/package.nix`).
+The IP exposes a clean Avalon-MM master that Quartus's
+**System Console** drives via `master_write_*` /
+`master_read_*` Tcl commands.
+
+Wiring: the IP's `m_*` Avalon master signals plug into the
+L-3a-prepared `JTAG_LOAD_*` inputs on the Clash module — so
+the L-3a SoC mux machinery is reused untouched. The IP becomes
+the new driver of the multi-bit `JTAG_LOAD_ADDR` /
+`JTAG_LOAD_WDATA` lines, sidestepping the source-probe
+constraint.
+
+Cost: ~300–500 LEs for the IP (registers + JTAG-hub state
+machine), plus the existing L-3a mux cost. Total fits inside
+the EP2C35 with comfortable margin.
+
+#### L-3b option B. Firmware-driven JTAG-UART loader (fallback)
+
+If option A's IP causes timing or fitter trouble, fall back to
+a small Asm boot stub that polls the JTAG-UART RX FIFO and
+writes each received byte to incrementing SDRAM addresses, then
+JALRs to the load base. Throughput ~100 KB/s (the Altera
+JTAG-UART IP's RX rate); 8 MB load = ~80 s.
+
+This is a pure-firmware path; the L-3a SoC mux is not used.
+
+#### L-3b option C. Serial-shifted sources (rejected)
+
+Attempted-and-rejected: a single 1-bit `JLDA` (data) + 1-bit
+`JLCK` (clock) source pair, with a 32-bit shift register in
+the fabric, plus a single `JLCM` (commit) pulse. ~32 toggle
+cycles per word at JTAG-hub speed (~1 ms/toggle on
+USB-Blaster) = ~32 ms/word = ~36 hours for 8 MB. Far too
+slow.
+
+#### L-3c. Tcl script
+
+Once option A lands, the script becomes thin: System Console's
+built-in `master_write_8` / `master_write_16` / `master_write_32`
+do the actual transactions. Argument shape:
 
 ```tcl
-set ids [find_probe_instances]
-write_source_data -instance_id [dict get $ids JLMD] -value 1
-foreach {addr word} $payload {
-  write_source_data -instance_id [dict get $ids JLAD] -value $addr
-  write_source_data -instance_id [dict get $ids JLDW] -value $word
-  write_source_data -instance_id [dict get $ids JLWE] -value 1
-  write_source_data -instance_id [dict get $ids JLWE] -value 0
-  while {[read_probe_data -instance_id [dict get $ids JLBS]] eq "1"} {}
-}
-write_source_data -instance_id [dict get $ids JLMD] -value 0
+quartus_stp -t scripts/load-sdram-jtag.tcl <bin-path> <base-addr>
 ```
 
-Argument shape: `quartus_stp -t scripts/load-sdram-jtag.tcl
-<bin-path> <base-addr>`. Reads `<bin-path>` as little-endian
-32-bit words and writes them starting at `<base-addr>`.
+Reads `<bin-path>` as little-endian 32-bit words and issues
+one `master_write_32` per word starting at `<base-addr>`. A
+final `master_read_32` of the first and last word
+sanity-checks the load.
 
-Sanity-check: read-back at the end via `JLRD`/`JLRR` for the
-first and last words — abort with a clear error if they don't
-match what was written.
+#### Throughput expectation
 
-**Throughput estimate.** quartus_stp's JTAG hub commits sources
-at ~1k transactions/s on USB-Blaster (slow JTAG TCK). Each
-SDRAM word is 4 source writes + 1 probe read = 5 transactions =
-~5 ms per word = ~200 KB/s for an 8 MB kernel. ~40 s per load
-— acceptable for development. Compare against the firmware-
-driven JTAG-UART loader which would be ~10 s/MB at the IP's
-~100 KB/s, so similar order of magnitude either way.
+System Console + IP-master via JTAG hub: ~1000 transactions/s
+typical on USB-Blaster (the JTAG hub is the bottleneck, not
+the IP). 8 MB / 4 = 2M transactions = ~2000 s = ~33 min. Slow,
+but a one-time cost per kernel-image change. If this becomes
+painful (it might during kernel iteration), the option-B
+firmware path is the speed-up — 80 s vs 33 min.
 
-**Why this approach over a JTAG-to-Avalon Master IP.** Quartus II
-13.0sp1 ships an `altera_avalon_jtag_to_avalon_mm_master_bridge`
-IP, but it (a) requires Qsys-generated Verilog plus our wrapper
-adapter, (b) eats more LEs than a small altsource_probe set,
-(c) gives the same ~200 KB/s throughput in practice (the JTAG
-hub is the bottleneck, not the master port). Reusing
-altsource_probe matches the existing debug toolchain and keeps
-the wrapper a single source of truth.
+The two options are not mutually exclusive: ship option A first
+(reuses L-3a's mux infrastructure, makes the JTAG-load path
+testable), and add option B as a separate `riski5-core-sdramload`
+firmware variant later if needed.
 
 ### L-4. DTS + DTB
 
