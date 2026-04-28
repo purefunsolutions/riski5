@@ -46,8 +46,20 @@ rules around maintaining it.
     identical baseline. Standing rule for future peripheral
     IRQs joining `plicExtIrqsS`: register at the SoC boundary,
     never combinationally feed an IP signal into the PLIC tree.
-  - **L-2..L-9** pending — see plan doc for the full sequence
-    (BRAM bump, SDRAM JTAG-load, boot stub + DTS, cross-toolchain,
+  - **L-2. ✓ deferred** — the plan's "4 KB → 16-32 KB" title was
+    based on a misreading of `ProgSize`. Current `ProgSize = 4096`
+    words = 16 KB BRAM, already enough for any reasonable boot
+    stub (< 1 KB). A bump attempt to 8192 hit Quartus II 13.0sp1's
+    hard-coded 5000-iteration loop limit on the imem initialiser
+    (`Error 10106`); the assignment that lifts this in later
+    Quartus versions doesn't exist in 13.0sp1. If we ever need
+    >16 KB BRAM, the path is MIF-backed init (`.mif` file +
+    `RAMSTYLE = "M4K"` attribute) — but phase-2 Linux only needs
+    the boot stub in BRAM, so this stays deferred. See
+    [docs/linux-boot.md](./docs/linux-boot.md) §L-2 for the
+    full reasoning.
+  - **L-3..L-9** pending — see plan doc for the full sequence
+    (SDRAM JTAG-load, boot stub + DTS, cross-toolchain,
     kernel build, initramfs, flash app, silicon bring-up).
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.

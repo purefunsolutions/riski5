@@ -126,11 +126,37 @@ Validated by a small firmware that enables `CONTROL.RE`, types
 into `nios2-terminal`, watches a sentinel byte from a
 PLIC-driven handler.
 
-### L-2. BRAM bump 4 KB → 16-32 KB
+### L-2. BRAM size — deferred (current 16 KB is already enough)
 
-`app/Top.hs`: `ProgSize = 4096` → `8192` or `16384`. Watch
-fit-report's "Total memory bits"; `CLAUDE.md` reserves
-~50 M4Ks for future caches. Verify CoreMark stable.
+The plan title's "4 KB → 16-32 KB" was based on a misreading of
+`ProgSize`. The current value is `ProgSize = 4096` *words* =
+**16 KB BRAM** (`Vec 4096 (BitVector 32)` = 4096 × 4 bytes).
+That's already comfortably above the boot-stub footprint
+(< 1 KB of asm to set up SP, jump-into-SDRAM, and let the
+JTAG-loaded kernel take over).
+
+A bump attempt to `ProgSize = 8192` (32 KB) was made and
+**reverted**: Quartus II 13.0sp1 hard-caps Verilog elaboration
+loops at 5000 iterations (`Error 10106: loop must terminate
+within 5000 iterations`), and Clash emits the imem
+initialiser as one big `for (i=0; i < ProgSize; ...)`
+unroll. The QSF assignment that lifts this limit in newer
+Quartus versions doesn't exist in 13.0sp1.
+
+**Two paths if we need >16 KB BRAM later** (neither needed for
+phase-2 Linux bring-up):
+
+1. **MIF-backed init.** Generate a `.mif` (Memory Initialization
+   File) at build time from the firmware bytes, attribute the
+   `blockRam` with `RAMSTYLE = "M4K"` and a MIF reference. No
+   Verilog `for`-loop needed; Quartus loads the MIF directly.
+2. **Split into multiple smaller blockRams.** Each below the 5000
+   loop cap. Software pretends it's one bigger array via
+   address-bit selection.
+
+For phase-2 Linux, BRAM is only the small boot stub — kernel +
+initramfs land in SDRAM via L-3's JTAG-load path. So we keep the
+current 16 KB and proceed straight to L-3.
 
 ### L-3. JTAG-loadable SDRAM via `quartus_stp` Tcl
 
