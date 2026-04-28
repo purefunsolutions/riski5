@@ -67,6 +67,14 @@
   # the full CLINT → @mip.MTIP@ → @interruptPending@ → trap →
   # handler → @mret@ chain on real hardware.
   timerIrqTest ? false,
+  # L-3b: build the JTAG-UART → SDRAM loader variant. Overlay
+  # @SdramLoader.sdramLoaderFirmwareWords@ into the imem. Boot
+  # firmware reads a length-prefixed binary blob from
+  # JTAG-UART RX, writes it to @0x8000_0000+@, then JALRs to
+  # @0x8000_0000@. Expected silicon stream: 'L' (loader ready)
+  # + 'D' (load complete) + whatever the loaded program prints.
+  # See @scripts/load-sdram-jtag.sh@ for the host-side workflow.
+  sdramLoad ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -81,6 +89,7 @@
   isSdramExec = sdramExec && !isCoremark && !isSramExec;
   isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec;
   isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
 in
   stdenv.mkDerivation {
     pname =
@@ -89,6 +98,7 @@ in
       else if isSdramExec then "riski5-core-sdramexec"
       else if isAExtTest then "riski5-core-aexttest"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
+      else if isSdramLoad then "riski5-core-sdramload"
       else "riski5-core";
     version = "0.1.0";
 
@@ -327,6 +337,39 @@ in
               cat firmware/phase1/CoreMark.hs
             ''}
 
+            ${lib.optionalString isSdramLoad ''
+              # L-3b SDRAM-load variant. Overlay CoreMark.hs with
+              # SdramLoader's words; FetchPolicy stays at the BRAM-only
+              # default (the loader executes from BRAM and only writes
+              # to SDRAM via data accesses, so enableSdramFetch=False
+              # is correct).
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramLoad Nix build: re-exports
+              -- SdramLoader's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the JTAG-UART → SDRAM loader into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import SdramLoader (sdramLoaderFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = sdramLoaderFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sdramLoad variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -343,7 +386,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

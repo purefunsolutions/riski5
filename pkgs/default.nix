@@ -128,6 +128,20 @@
         timerIrqTest = true;
       };
 
+      # L-3b: SDRAM-load bitstream. Bakes firmware/phase1/SdramLoader.hs
+      # into imem. Boot firmware reads a length-prefixed binary blob
+      # from the JTAG-UART RX FIFO, writes it to SDRAM at 0x80000000+,
+      # then JALRs to 0x80000000. Use scripts/load-sdram-jtag.sh as
+      # the host-side workflow:
+      #     nix run .#flash-riski5-sdramload
+      #     scripts/load-sdram-jtag.sh path/to/kernel.bin
+      # Expected JTAG-UART output: 'L' (loader ready) → 'D' (load
+      # complete) → kernel output.
+      riski5-core-sdramload = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sdramLoad = true;
+      };
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
@@ -166,6 +180,12 @@
         riski5-core = self'.packages.riski5-core-timerirqtest;
       };
 
+      # Flasher for the L-3b SDRAM-load bitstream.
+      flash-riski5-sdramload = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sdramload;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -197,6 +217,10 @@
       flash-riski5-timerirqtest = {
         type = "app";
         program = "${self'.packages.flash-riski5-timerirqtest}/bin/flash-riski5";
+      };
+      flash-riski5-sdramload = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sdramload}/bin/flash-riski5";
       };
       console = {
         type = "app";
