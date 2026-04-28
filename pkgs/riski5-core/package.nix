@@ -82,6 +82,13 @@
   # send a kernel + DTB pair via JTAG-UART. After 'D' marker,
   # kernel printk output streams via the same JTAG-UART tap.
   linuxBoot ? false,
+  # L-3b option A: minimal "wait-for-go" boot stub paired with the
+  # JTAG-to-Avalon-Master upload path (commit 57a9d88). Boot ROM is
+  # `firmware/phase1/LinuxBootMaster.hs` — ~12 instructions that
+  # spin on SRAM[+4] until the host writes a non-zero sentinel,
+  # then jump to 0x80000000 with a0=0, a1=0x80000000+kbytes,
+  # sp=0x20080000. Used together with `nix run .#load-sdram-master`.
+  linuxBootMaster ? false,
   # B-* (Copilot Boot ROM): the riski5-boot-rom-rv32-nommu
   # derivation. Required iff `linuxBoot = true`. Provides a
   # ready-made CoreMark.hs the linuxBoot variant drops into
@@ -105,6 +112,7 @@
   isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest;
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
 in
   stdenv.mkDerivation {
     pname =
@@ -115,6 +123,7 @@ in
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
+      else if isLinuxBootMaster then "riski5-core-linux-master"
       else "riski5-core";
     version = "0.1.0";
 
@@ -408,6 +417,42 @@ in
               grep -c "^  ," firmware/phase1/CoreMark.hs
             ''}
 
+            ${lib.optionalString isLinuxBootMaster ''
+              # L-3b option A: minimal "wait-for-go" boot stub paired
+              # with the JTAG-to-Avalon-Master upload path. Boot ROM
+              # comes from firmware/phase1/LinuxBootMaster.hs — same
+              # CoreMark.hs overlay mechanism every variant uses, but
+              # we re-export `linuxBootMasterFirmwareWords` under the
+              # `coreMarkFirmwareWords` name so app/Top.hs's existing
+              # -DFIRMWARE_COREMARK code path bakes it into imem.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the linuxBootMaster Nix build: re-exports
+              -- LinuxBootMaster's wait-for-go stub under the CoreMark
+              -- name so the unchanged -DFIRMWARE_COREMARK path in
+              -- app/Top.hs bakes the L-3b-option-A bootloader into
+              -- imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import LinuxBootMaster (linuxBootMasterFirmwareWords)
+              import Clash.Prelude (BitVector)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = linuxBootMasterFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### linuxBootMaster variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -424,7 +469,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

@@ -271,6 +271,19 @@
         riski5-core = self'.packages.riski5-core-linux;
       };
 
+      # L-3b option A: minimal wait-for-go boot stub for the
+      # JTAG-Master upload path. Pair with `nix run
+      # .#load-sdram-master` for direct-to-SDRAM uploads bypassing
+      # JTAG-UART.
+      riski5-core-linux-master = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        linuxBootMaster = true;
+      };
+      flash-riski5-linux-master = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-linux-master;
+      };
+
       # `nix run .#load-linux` — sends kernel + DTB to the
       # already-flashed linux-boot bitstream and attaches
       # nios2-terminal. With no args, uses the flake-built
@@ -357,6 +370,10 @@
       flash-riski5-linux = {
         type = "app";
         program = "${self'.packages.flash-riski5-linux}/bin/flash-riski5";
+      };
+      flash-riski5-linux-master = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-linux-master}/bin/flash-riski5";
       };
       load-linux = {
         type = "app";
