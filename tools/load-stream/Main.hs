@@ -61,8 +61,8 @@ generator that lands later shares this Haskell host environment.
 -}
 module Main (main) where
 
-import Control.Exception (bracket_)
-import Control.Monad (when)
+import Control.Exception (IOException, bracket_, catch)
+import Control.Monad (unless, when)
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as BB
 import qualified Data.ByteString.Lazy as BSL
@@ -81,18 +81,21 @@ import System.IO
   ( BufferMode (..)
   , Handle
   , IOMode (..)
-  , hClose
   , hFlush
+  , hIsEOF
+  , hIsTerminalDevice
   , hPutStr
   , hPutStrLn
   , hSetBinaryMode
   , hSetBuffering
   , stderr
+  , stdin
   , withBinaryFile
   )
 import System.Process
   ( CreateProcess (..)
   , StdStream (CreatePipe, Inherit)
+  , callProcess
   , proc
   , waitForProcess
   , withCreateProcess
@@ -152,12 +155,24 @@ control; its stdout and stderr inherit the parent's so any
 @nios2-terminal@ messages and the JTAG-UART TX bytes the
 on-board firmware emits land directly in the user's shell.
 
-After @action@ returns we close our end of the stdin pipe (so
-@nios2-terminal@ stops waiting for more load bytes) and then
-@waitForProcess@ blocks until the user presses Ctrl-C —
-@nios2-terminal@ stays attached as a passive viewer in the
-meantime, streaming kernel output. @withCreateProcess@ ensures
-the subprocess is reaped even if we're killed mid-stream.
+Two phases:
+
+  1. Load. @action@ writes the kernel + DTB (or generic blob) to
+     @hin@ with the live progress bar from 'streamWithProgress'.
+  2. Interactive forwarding. After the load finishes we keep
+     @hin@ open and pump our stdin → @hin@ in a tight loop, so
+     keystrokes the user types reach the running kernel as
+     JTAG-UART RX bytes. The terminal is put into cbreak mode
+     (-icanon -echo) for the duration so each keystroke flows
+     immediately and the kernel-side tty layer owns echo, but
+     ISIG stays on so Ctrl-C still delivers SIGINT and tears the
+     loop down cleanly.
+
+@withCreateProcess@ ensures the subprocess is reaped even if
+we're killed mid-stream. The cbreak-mode @stty@ is balanced by
+a @stty sane@ in 'bracket_', so the terminal is always restored
+to a usable state on exit (including SIGINT — the runtime turns
+it into an async exception that the bracket catches).
 -}
 runWithTerminal :: (Handle -> IO ()) -> IO ()
 runWithTerminal action =
@@ -172,20 +187,90 @@ runWithTerminal action =
         Just hin -> do
           hSetBinaryMode hin True
           hSetBuffering hin NoBuffering
-          -- Run the load. After it returns, close the stdin pipe
-          -- so nios2-terminal stops trying to read; it then keeps
-          -- printing JTAG-UART TX (kernel output) until the user
-          -- presses Ctrl-C.
-          bracket_ (pure ()) (hClose hin) (action hin)
+          -- Phase 1: load.
+          action hin
           hPutStrLn stderr ""
           hPutStrLn
             stderr
-            "Load complete. nios2-terminal stays attached — Ctrl-C to detach."
+            "Load complete. Forwarding keyboard → kernel; Ctrl-C to detach."
+          hPutStrLn stderr ""
+          -- Phase 2: interactive stdin → kernel forwarding. cbreak
+          -- mode + no echo for per-keystroke flow with the kernel's
+          -- tty layer doing the visible echoing. ISIG stays on so
+          -- Ctrl-C still works.
+          withCbreakMode (interactiveForward hin ph)
           waitForProcess ph >>= \case
             ExitSuccess -> pure ()
             ec -> exitWith ec
         Nothing ->
           die "internal: failed to acquire nios2-terminal stdin handle"
+
+-- ------------------------------------------------------------------
+-- Interactive forwarding
+-- ------------------------------------------------------------------
+
+{- |
+Read bytes from our stdin and write them to the @nios2-terminal@
+stdin pipe, one chunk at a time, until either side closes. The
+pipe stays open after stdin EOFs so @nios2-terminal@ keeps
+streaming JTAG-UART TX (i.e. kernel printk and any prompt the
+on-board software prints) until the user presses Ctrl-C.
+
+Pipe-write 'IOException's (e.g. SIGPIPE because @nios2-terminal@
+exited first) are caught and treated as a clean exit signal —
+no point continuing to forward into a closed pipe.
+-}
+interactiveForward :: Handle -> a -> IO ()
+interactiveForward hin _ = do
+  hSetBuffering stdin NoBuffering
+  hSetBinaryMode stdin True
+  let loop = do
+        eof <- hIsEOF stdin
+        unless eof $ do
+          bs <- BS.hGetSome stdin 1024
+          unless (BS.null bs) $ do
+            BS.hPut hin bs
+            hFlush hin
+            loop
+  loop `catch` \(_ :: IOException) -> pure ()
+
+{- |
+Put the controlling tty into cbreak mode for the duration of
+@action@, then unconditionally restore it via 'stty sane'. We
+shell out to @stty@ rather than pulling in @unix@ for
+@tcsetattr@: stty is in coreutils (in PATH on every Nix profile),
+the call cost is paid once per invocation, and the cleanup
+balance survives async exceptions via 'bracket_'.
+
+Settings:
+
+  * @-icanon@ — disable canonical (line-buffered) input so each
+    keystroke flows immediately into our stdin.
+  * @-echo@ — disable the local tty's echo. The remote kernel's
+    tty layer does the echoing on its end of the JTAG-UART link.
+  * @min 1@ — wake @read(2)@ as soon as one byte is available
+    rather than waiting for VTIME ticks.
+
+ISIG (the bit that turns Ctrl-C into SIGINT) is left on by
+default, so Ctrl-C still tears down the loop cleanly.
+
+When stdin isn't actually a tty (CI, redirection from a file)
+we no-op: stty would print a "Inappropriate ioctl for device"
+warning and the cbreak settings wouldn't apply anyway.
+-}
+withCbreakMode :: IO a -> IO a
+withCbreakMode action = do
+  isTty <- hIsTerminalDevice stdin
+  if isTty
+    then bracket_ enable restore action
+    else action
+ where
+  enable =
+    callProcess "stty" ["-icanon", "-echo", "min", "1"]
+      `catch` \(_ :: IOException) -> pure ()
+  restore =
+    callProcess "stty" ["sane"]
+      `catch` \(_ :: IOException) -> pure ()
 
 -- ------------------------------------------------------------------
 -- Subcommand bodies
