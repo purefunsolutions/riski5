@@ -1,0 +1,117 @@
+/*
+ * SPDX-FileCopyrightText: 2026 Mika Tammi
+ * SPDX-License-Identifier: MIT OR BSD-3-Clause
+ *
+ * Device tree for the riski5 SoC on the Altera DE2 (Cyclone II
+ * EP2C35F672C6) board.
+ *
+ * Reflects the SoC layout after the L-0 CLINT refactor:
+ *
+ *   - One RV32IMA + Zicsr + Zifencei hart, no MMU (nommu Linux).
+ *   - 8 MB SDRAM @ 0x8000_0000 (only RAM region).
+ *   - SiFive CLINT @ 0x0200_0000 (mtime / mtimecmp / msip).
+ *   - SiFive PLIC @ 0x4000_0000 (8 sources, 1 hart context).
+ *   - Altera JTAG-UART @ 0x1000_0000 (16 B MMIO window),
+ *     IRQ 1 on the PLIC (set in Riski5.Soc.plicExtIrqsS).
+ *   - 40 MHz core clock.
+ *
+ * Compatible-strings + reg sizes match the upstream Linux drivers
+ * we're targeting:
+ *
+ *   - drivers/clocksource/timer-clint.c — "sifive,clint0"
+ *   - drivers/irqchip/irq-sifive-plic.c — "sifive,plic-1.0.0"
+ *   - drivers/tty/serial/altera_jtaguart.c — "altr,juart-1.0"
+ *
+ * The L-3b SDRAM-loader places the kernel image at the bottom of
+ * SDRAM (0x8000_0000) and the cpio initramfs at +4 MB
+ * (0x8040_0000). The kernel's expected layout for nommu boot is:
+ *
+ *   [0x8000_0000 .. 0x8040_0000)   kernel image (4 MB max)
+ *   [0x8040_0000 .. 0x8080_0000)   initramfs cpio (4 MB max)
+ *
+ * If either grows past 4 MB the boundaries need to move; track
+ * that in docs/linux-boot.md.
+ */
+
+/dts-v1/;
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+	compatible = "riski5,nommu";
+	model = "riski5-de2";
+
+	chosen {
+		bootargs = "console=ttyJ0,115200n8 earlycon=jtag-uart,mmio,0x10000000 keep_bootcon rdinit=/init";
+		/*
+		 * initrd window — the L-3b loader writes the cpio
+		 * starting at base + 4 MB, so it spans [0x80400000,
+		 * 0x80800000). Adjust if the cpio outgrows 4 MB.
+		 */
+		linux,initrd-start = <0x80400000>;
+		linux,initrd-end   = <0x80800000>;
+	};
+
+	cpus {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		/* Core clock: 40 MHz. mtime increments at the same
+		 * rate (CLINT runs on the core clock; phase 2D PLLs
+		 * may decouple them). */
+		timebase-frequency = <40000000>;
+
+		cpu@0 {
+			device_type = "cpu";
+			reg = <0>;
+			compatible = "riscv";
+			riscv,isa = "rv32ima_zicsr_zifencei";
+			mmu-type = "riscv,none";
+			status = "okay";
+
+			cpu0_intc: interrupt-controller {
+				#address-cells = <0>;
+				#interrupt-cells = <1>;
+				interrupt-controller;
+				compatible = "riscv,cpu-intc";
+			};
+		};
+	};
+
+	memory@80000000 {
+		device_type = "memory";
+		reg = <0x80000000 0x800000>;  /* 8 MB */
+	};
+
+	soc {
+		#address-cells = <1>;
+		#size-cells = <1>;
+		compatible = "simple-bus";
+		ranges;
+
+		clint@2000000 {
+			compatible = "sifive,clint0", "riscv,clint0";
+			reg = <0x02000000 0x10000>;
+			interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+		};
+
+		plic: plic@40000000 {
+			compatible = "sifive,plic-1.0.0";
+			reg = <0x40000000 0x400000>;  /* 4 MB */
+			interrupt-controller;
+			#interrupt-cells = <1>;
+			#address-cells = <0>;
+			interrupts-extended = <&cpu0_intc 11>;
+			riscv,ndev = <8>;  /* 8 sources max */
+		};
+
+		uart0: uart@10000000 {
+			compatible = "altr,juart-1.0";
+			reg = <0x10000000 0x10>;
+			interrupt-parent = <&plic>;
+			interrupts = <1>;
+		};
+	};
+
+	aliases {
+		serial0 = &uart0;
+	};
+};

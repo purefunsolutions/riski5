@@ -142,6 +142,14 @@
         sdramLoad = true;
       };
 
+      # L-4: compiled device tree (DTB) for the riski5 SoC.
+      # firmware/phase2/dts/riski5.dts → riski5.dtb via `dtc`.
+      # Consumed by the Linux kernel build (L-6) which embeds it
+      # into the kernel image as the "appended DTB", and by the
+      # L-3b SDRAM-loader workflow when we eventually pad the
+      # kernel image with the DTB at a known offset.
+      riski5-dtb = pkgs.callPackage ./riski5-dtb/package.nix {};
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
