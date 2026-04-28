@@ -3,323 +3,399 @@ SPDX-FileCopyrightText: 2026 Mika Tammi
 SPDX-License-Identifier: MIT OR BSD-3-Clause
 -->
 
-# Booting Linux on riski5 — the M-mode roadmap
+# Booting Linux on riski5 — the M-mode roadmap (v2)
+
+**Strategy decisions (from 2026-04-28 planning Q&A):**
+
+  * **Path A first** (`CONFIG_RISCV_M_MODE=y`, no MMU, no
+    OpenSBI), then Path B (S-mode + Sv32 + OpenSBI) as its own
+    dedicated phase.
+  * **Reuse riski5cuda's recipe** as the build template:
+    `nommu_virt_defconfig + 32-bit.config + a riski5-specific
+    overlay`, cross-compiled via `pkgsCross.riscv64.buildPackages.gcc`,
+    output `vmlinux + Image + vmlinux.bin`. Pin the kernel to whatever
+    nixpkgs's `pkgsCross.riscv64.linux` ships (currently 6.18 — fine).
+  * **UART**: keep the Altera JTAG-UART IP and use upstream
+    Linux's `altera_jtaguart` driver
+    (`drivers/tty/serial/altera_jtaguart.c`, DT-compatible
+    `"altr,juart-1.0"`, kernel since 2.6.36). No 16550 shim.
+  * **CLINT memory-map refactor**: move CLINT from the packed
+    custom slot at `0x1000_0060` to the SiFive-standard
+    `0x0200_0000` with the SiFive register layout
+    (`msip` @ 0x0000, `mtimecmp[hart]` @ 0x4000, `mtime`
+    @ 0xBFF8) so upstream `sifive,clint0` driver binds without
+    custom kernel work.
+  * **Aggressive size-cut**: 8 MB SDRAM is the hard ceiling.
+    Strip every kernel feature not needed for "kernel banner +
+    /init prints + exit" (no networking, no FS but initramfs,
+    no debug info, no kallsyms, etc.). Add features back as
+    needed.
+  * **`/init`**: hand-crafted RV32 asm, BFLT-wrapped, prints
+    a banner via MMIO + syscall write(1) + exit(0). Real
+    busybox shell deferred (needs an FDPIC-capable toolchain
+    which `pkgsCross.riscv32-embedded` doesn't ship today).
+  * **Load mechanism**: JTAG-load the kernel image into SDRAM
+    via `quartus_stp`'s Avalon-MM master Tcl primitives.
+    SD-card support deferred.
 
 ## Where we are (2026-04-28)
 
-The riski5 silicon has the architectural pieces a no-MMU
-(`CONFIG_RISCV_M_MODE=y` + `CONFIG_MMU=n`) Linux kernel needs:
+The phase-2A silicon delivers everything Linux needs for a
+nommu-M-mode boot **except** UART RX irqs at the silicon
+boundary and the CLINT memory-map refactor:
 
 | Piece | Status | Where |
 |---|---|---|
-| RV32IMA core (5-stage pipelined) | ✓ silicon-validated | `Riski5.Core` |
-| 64-bit `mtime` / `mtimecmp` (CLINT) | ✓ silicon | `Riski5.Clint` at `0x1000_0060` |
-| Machine-timer trap path (MTI) | ✓ silicon | `Riski5.CSR.interruptPending`, `TimerIrqSpec` |
-| SiFive-PLIC-1.0.0 (8 sources) | ✓ silicon-ready | `Riski5.Plic` at `0x4000_0000` |
-| Machine-external trap path (MEI) | ✓ silicon-ready | `Riski5.CSR.interruptPending`, `ExtIrqSpec`, `PlicSocSpec` |
-| JTAG-UART (Altera IP, polite Avalon adapter) | ✓ silicon | `Riski5.JtagUart` at `0x1000_0000` |
+| RV32IMA core (5-stage pipelined) | ✓ silicon | `Riski5.Core` |
+| 64-bit `mtime` / `mtimecmp` | ✓ silicon | `Riski5.Clint` (compact layout) |
+| Machine-timer trap (MTI) | ✓ silicon | `Riski5.CSR.interruptPending` |
+| SiFive-PLIC-1.0.0 | ✓ silicon-ready | `Riski5.Plic` at `0x4000_0000` |
+| Machine-external trap (MEI) | ✓ silicon-ready | `PlicSocSpec` |
+| JTAG-UART (Altera IP) | ✓ silicon | `Riski5.JtagUart` at `0x1000_0000` |
 | 8 MB SDRAM (Altera IP) | ✓ silicon | `Riski5.Sdram` at `0x8000_0000` |
 | 512 KB SRAM | ✓ silicon | `Riski5.Sram` at `0x2000_0000` |
 | SDRAM execution from PC | ✓ silicon | `HelloSdramExec` |
+| **CLINT at SiFive-standard `0x0200_0000`** | ✗ | refactor needed (see L-0) |
+| **JTAG-UART av_irq through wrapper** | ✗ | wire missing (see L-1) |
 
-What's **missing** for M-mode Linux:
+## Memory map (post-refactor)
 
-  1. A way to **load** a kernel image into SDRAM at boot.
-  2. A **kernel image** — i.e. a working
-     RV32IMA `vmlinux.bin` cross-compiled for our SoC's memory
-     map and peripheral set.
-  3. A **device tree blob** describing the SoC so the kernel's
-     irqchip / timer / serial drivers bind correctly.
-  4. A **boot stub** in BRAM that hands control to the kernel
-     entry in SDRAM with `a1 = dtb` per the SBI/Linux RISC-V ABI.
-  5. **Driver coverage** in the kernel for the JTAG-UART (or a
-     16550-shim adapter — see T-LI2 in `TODO.md`).
+```
+0x0000_0000 .. 0x0000_3FFF   BRAM       (16-32 KB; phase L-2 bumps from 4 KB)
+0x0200_0000 .. 0x0200_FFFF   CLINT      (SiFive layout, 64 KB window — phase L-0)
+0x1000_0000 .. 0x1000_000F   JTAG-UART  (Altera IP, 16 B)
+0x1000_0020 .. 0x1000_003F   GPIO       (32 B, unused by Linux but harmless)
+0x1000_0040 .. 0x1000_005F   LCD        (32 B, unused by Linux but harmless)
+0x2000_0000 .. 0x2007_FFFF   SRAM       (512 KB, kernel may use as scratch later)
+0x4000_0000 .. 0x403F_FFFF   PLIC       (SiFive-1.0.0 layout, 4 MB)
+0x8000_0000 .. 0x807F_FFFF   SDRAM      (8 MB, kernel + initramfs land here)
+```
 
-A working **PLIC + UART RX** path on real silicon needs
-the Altera JTAG-UART IP's `av_irq` output threaded through
-`riski5_top.v`'s wrapper. Today `app/Top.hs` ties
-`siUartIrq = False`; a follow-up commit will route the IP's
-interrupt pin to a top-level input and forward it through.
+Decoder updates (`Riski5.MemMap.slaveOf`):
 
-## Strategic decision: `CONFIG_RISCV_M_MODE=y` first, S-mode later
-
-There are two paths to Linux on a custom RV32 SoC:
-
-  - **Path A — nommu Linux in M-mode.** Skip OpenSBI; the kernel
-    runs at the highest privilege level. No MMU, no privilege
-    separation, no virtual memory. Drivers map peripherals
-    directly. Process isolation is by convention. Faster bring-up;
-    sufficient for embedded use cases (telemetry, control loops,
-    busybox shell).
-  - **Path B — full Linux with S-mode + Sv32 MMU + OpenSBI.**
-    M-mode runs OpenSBI as the SBI provider; S-mode runs Linux;
-    user processes get the full virtual-memory experience. The
-    "real" Linux deployment.
-
-riski5 commits to **Path A first**, then **Path B as a follow-on
-phase**. Reasoning:
-
-  - Our 8 MB SDRAM is the binding constraint. A `CONFIG_NOMMU=y`
-    rootfs on Initramfs fits in ~3-4 MB; the kernel itself
-    typically ≤ 1.5 MB. Comfortable. A full S-mode + Sv32 +
-    page-cached userspace + OpenSBI starts to crowd 8 MB.
-  - We don't yet have an MMU or privilege-mode logic in the
-    core. Adding S-mode + Sv32 is its own multi-week phase
-    (`docs/core-family.md` sketches the shape: new CSRs
-    `sscratch`/`sepc`/`scause`/`stval`/`satp`, mode-aware
-    decode, the TLB lookup machinery in load/store + IF). Doing
-    nommu first lets us validate the rest of the stack
-    (driver bring-up, kernel build, boot mechanism) against a
-    simpler core.
-  - Linux's nommu RISC-V port is mature
-    (`arch/riscv/configs/nommu_*_defconfig` upstream).
-    `CONFIG_RISCV_M_MODE=y` skips the SBI calls entirely, so we
-    don't need to write or port a SBI provider before getting
-    a shell.
-
-After Path A is silicon-validated, Path B is its own dedicated
-arc with its own milestones.
+  * `top4 = 0x0`: sub-decode bits[27:24] —
+    `0x0` → BRAM, `0x2` → SlaveClint, otherwise SlaveNone.
+  * `top4 = 0x1`: peripheral cluster (unchanged).
+  * `top4 = 0x2`: SRAM.
+  * `top4 = 0x4`: PLIC.
+  * `top4 = 0x8`: SDRAM.
 
 ## Sub-task plan (Path A)
 
-The chunks below land **incrementally** — each is a
-self-contained commit (or short series) that ships a green
-silicon validation of its piece. The order minimises blocking
-work: each task's deliverable enables the next without depending
-on later ones being ready.
+Each L-x is a self-contained commit (or short series). Order
+minimises cross-dependencies; some pairs run in parallel.
+
+### L-0. CLINT refactor: SiFive-standard layout @ `0x0200_0000`
+
+Today's `Riski5.Clint` packs `mtime` / `mtimecmp` / `msip` into
+a 64-byte window with custom offsets. Upstream Linux's
+`drivers/clocksource/timer-riscv.c` + `timer-clint.c` expect the
+SiFive layout exactly. Refactor:
+
+  - **`Riski5.Clint`**: register layout becomes
+    `msip[hart]@0x0000` (4 B per hart), `mtimecmp[hart]@0x4000`
+    (8 B per hart), `mtime@0xBFF8` (8 B).
+  - **`Riski5.MemMap.clintBase`**: `0x1000_0060` → `0x0200_0000`.
+    Decoder grows a sub-decode for `top4=0x0`.
+  - **`Riski5.Soc`**: rebind `clintSelS` against the new base.
+  - **`firmware/phase1/HelloTimerIrq.hs`**: change CLINT base
+    + use new offsets (`mtimecmp[0]` at 0x4000 instead of 0x08).
+  - **`test/ClintSpec.hs`** + **`test/TimerIrqSpec.hs`**: update
+    addresses + register layout.
+  - **CoreMark verify** — should be transparent (the firmware
+    doesn't touch CLINT during the timed loop).
+
+Outcome: upstream `sifive,clint0` driver binds via DTS without
+patching.
 
 ### L-1. JTAG-UART IRQ pin reaches `siUartIrq` on silicon
 
-Today the IP's `av_irq` output isn't connected to anything; the
-wrapper drops it. `app/Top.hs` ties `siUartIrq = False`
-unconditionally. Both endpoints exist (the Altera IP exposes
-`av_irq`; `Riski5.Soc` consumes `siUartIrq` and routes it into
-PLIC source 1) — the wire just needs threading through:
+Same as the original L-1 plan. Today `app/Top.hs` ties
+`siUartIrq = False` because the Altera JTAG-UART IP's
+`av_irq` output isn't routed through `riski5_top.v`. Change:
 
   - `pkgs/riski5-core/altera-ip/jtag_uart/`: confirm the
-    generated Verilog instance exposes `av_irq` (the default
-    Qsys generation does; if not, regenerate with the IRQ pin
-    enabled).
-  - `pkgs/riski5-core/Riski5.qsf`: add a top-level input pin for
-    the IRQ if the wrapper currently drops it; otherwise just a
-    wire.
-  - `app/Top.hs`: add a `uartIrqS` input alongside `uartRdataS` /
-    `uartReadyS`; pass through to `SocIn.siUartIrq`.
+    generated Verilog instance exposes `av_irq` (it does by
+    default).
+  - `pkgs/riski5-core/Riski5.qsf` + `riski5_top.v`: thread the
+    IP's IRQ output through to a top-level wire.
+  - `app/Top.hs`: replace `siUartIrq = False` with the live
+    pin.
 
-Outcome: a firmware that enables `CONTROL.RE` on the IP sees
-`mip.MEIP` rise on RX FIFO non-empty. Validated by typing into
-`nios2-terminal` and watching a sentinel byte from a small
-handler firmware. Same shape as `HelloTimerIrq` but driven by
-RX rather than `mtime`.
+Validated by a small firmware that enables `CONTROL.RE`, types
+into `nios2-terminal`, watches a sentinel byte from a
+PLIC-driven handler.
 
-### L-2. Bigger BRAM
+### L-2. BRAM bump 4 KB → 16-32 KB
 
-The kernel itself lives in SDRAM, but the **boot stub** plus
-device-tree blob plus initial stack lives in BRAM. Today's 4 KB
-(4096 × 32-bit) is tight for that. Bumping to 16 KB or 32 KB
-gives breathing room without crowding the M4K pool too much
-(Cyclone II EP2C35 has 105 M4Ks total = ~59 KB; a 32 KB BRAM
-costs ~57 M4Ks, just over the 50 % phase-1 cap from `CLAUDE.md`).
+`app/Top.hs`: `ProgSize = 4096` → `8192` or `16384`. Watch
+fit-report's "Total memory bits"; `CLAUDE.md` reserves
+~50 M4Ks for future caches. Verify CoreMark stable.
 
-  - `app/Top.hs`: bump `ProgSize` from 4096 to 8192 (32 KB) or
-    16384 (64 KB).
-  - `pkgs/riski5-core/Riski5.qsf` SDC: confirm timing still
-    closes at 40 MHz with the larger M4K cone.
-  - Watch the fit report's "Total memory bits" — `CLAUDE.md`
-    reserves ~50 M4Ks for future I$/D$ caches, so we shouldn't
-    exceed ~50 M4Ks total today. A 32 KB BRAM × 32-bit typically
-    fits in ~32 M4Ks (using 256×18 mode + dual-port),
-    leaving ~20 M4Ks for the regfile-on-M4K refactor + caches.
+### L-3. JTAG-loadable SDRAM via `quartus_stp` Tcl
 
-Outcome: room for a ≥ 1 KB DTB + a small loader stub + ample
-stack.
+`scripts/load-sdram-jtag.tcl` taking `<bin-path>` + `<base>`.
+Reuses the `quartus_stp` runtime our altsource_probe debug
+already lives in. Avalon-MM master writes through the SDRAM
+controller IP. Sanity-check: read-back-after-write a known
+pattern.
 
-### L-3. JTAG-loadable SDRAM
+### L-4. DTS + DTB
 
-To put a kernel image in SDRAM we need an out-of-band path. The
-DE2 has no NOR Flash interface wired in our SoC yet (phase-1F
-work) and SD-card support is also future. The most expedient
-path uses the existing JTAG hub:
+New `firmware/phase2/dts/riski5.dts` describing our SoC after
+the L-0 refactor:
 
-  - Expose the SDRAM Avalon-MM master through Quartus's System
-    Console / `quartus_stp`'s `master_write_*` /
-    `master_read_*` Tcl primitives. This is the Avalon-MM
-    JTAG-master pattern most Altera reference designs use.
-  - Tcl script that reads a `kernel.bin` blob, breaks it into
-    32-bit words, and writes them into SDRAM at the kernel
-    base address (e.g., `0x8000_0000`).
+```dts
+/dts-v1/;
+/ {
+    #address-cells = <1>;
+    #size-cells = <1>;
+    compatible = "riski5,nommu";
+    model = "riski5-de2";
 
-  Concrete deliverable: `scripts/load-sdram-jtag.tcl` that
-  takes `<bin-path>` and writes it via JTAG to a fixed SDRAM
-  base. Reuses the existing `quartus_stp` runtime our
-  altsource_probe debug already depends on (per the
-  freeze-trigger probe story in `1bd7a41`).
+    chosen {
+        bootargs = "console=ttyJ0,115200n8 earlycon=jtag-uart,mmio,0x10000000 keep_bootcon rdinit=/init";
+        // initrd window — our loader places the cpio at
+        // 0x8040_0000 (= base + 4 MB) and sizes to fit the
+        // remaining 4 MB.
+        linux,initrd-start = <0x80400000>;
+        linux,initrd-end   = <0x80800000>;
+    };
 
-Alternative if the JTAG-master path turns out flaky: bake the
-kernel into BRAM as Asm-eDSL bytes (the `sdramExec` /
-`coremarkExec` overlay pattern), have the boot stub copy
-BRAM → SDRAM at startup. Limited by BRAM size (so kernel must
-be < 32 KB compressed, then decompressed). Probably too small
-for real Linux but useful for testing the boot mechanism.
+    cpus {
+        #address-cells = <1>;
+        #size-cells = <0>;
+        timebase-frequency = <40000000>;  // 40 MHz core clock
 
-### L-4. Boot stub + DTB
+        cpu@0 {
+            device_type = "cpu";
+            reg = <0>;
+            compatible = "riscv";
+            riscv,isa = "rv32ima_zicsr_zifencei";
+            mmu-type = "riscv,none";
+            status = "okay";
 
-A small Asm-eDSL stub in BRAM that:
+            cpu0_intc: interrupt-controller {
+                #address-cells = <0>;
+                #interrupt-cells = <1>;
+                interrupt-controller;
+                compatible = "riscv,cpu-intc";
+            };
+        };
+    };
 
-  - Sets up the M-mode trap vector (`mtvec`).
-  - Configures the stack (`sp = top of SRAM` or `top of SDRAM`).
-  - Loads `a0 = hartid = 0` and `a1 = &dtb` per the RISC-V
-    Linux boot ABI.
-  - Jumps to the kernel entry in SDRAM.
+    memory@80000000 {
+        device_type = "memory";
+        reg = <0x80000000 0x800000>;  // 8 MB
+    };
 
-The DTB is a binary blob describing the SoC, generated from a
-DTS file under `firmware/phase2/dts/riski5.dts`. Compiles with
-`dtc`. Embedded in BRAM at a known offset.
+    soc {
+        #address-cells = <1>;
+        #size-cells = <1>;
+        compatible = "simple-bus";
+        ranges;
 
-  Deliverables:
-    - `firmware/phase2/dts/riski5.dts` — node tree describing
-      `cpus`, `clint@10000060`, `plic@40000000`, `jtag-uart@10000000`,
-      `memory@80000000` (8 MB), `sram@20000000` (512 KB).
-    - Nix derivation `pkgs/riski5-dtb/package.nix` running
-      `dtc -O dtb -o riski5.dtb riski5.dts`.
-    - `firmware/phase2/boot-stub.S` (or its Asm-eDSL twin) with
-      the boot ABI sequence.
+        clint@2000000 {
+            compatible = "sifive,clint0\0riscv,clint0";
+            reg = <0x2000000 0x10000>;
+            interrupts-extended = <&cpu0_intc 3 &cpu0_intc 7>;
+        };
 
-### L-5. Cross-toolchain for kernel build
+        plic: plic@40000000 {
+            compatible = "sifive,plic-1.0.0";
+            reg = <0x40000000 0x400000>;  // 4 MB
+            interrupt-controller;
+            #interrupt-cells = <1>;
+            #address-cells = <0>;
+            interrupts-extended = <&cpu0_intc 11>;
+            riscv,ndev = <8>;  // 8 sources max in our PLIC
+        };
 
-We have `pkgsCross.riscv32-embedded.buildPackages.binutils` in
-the devshell. For kernel builds we also want
-`pkgsCross.riscv32-unknown-linux-musl.buildPackages.gcc` (or
-`riscv32-unknown-linux-gnu` with the kernel's standard toolchain
-expectations). nixpkgs has `riscv32-unknown-linux-musl-binutils`
-in the store today; check whether GCC is also pre-built or
-whether we need to wire it via `pkgsCross.riscv32-linux-musl`.
-
-  Deliverable: `nix/devshell.nix` adds the `riscv32-linux` GCC
-  alongside `riscv32-embedded.binutils`. Confirm via
-  `riscv32-unknown-linux-musl-gcc --version` in the devshell.
-
-### L-6. Linux kernel build derivation
-
-Nix derivation `pkgs/linux-rv32-nommu/package.nix` that:
-
-  - Fetches a pinned Linux kernel release (start with 6.6 LTS
-    or whatever has stable RV32 nommu support — verify against
-    `arch/riscv/configs/nommu_*_defconfig`).
-  - Applies a tiny patch (or `make`-overrides) for our specific
-    SoC: clock frequency, peripheral base addresses, etc., if
-    the device-tree alone isn't sufficient.
-  - Configures via `nommu_virt_defconfig` as a starting point;
-    customises with our peripheral choices
-    (`CONFIG_RISCV_M_MODE=y`, `CONFIG_OF=y`,
-    `CONFIG_SIFIVE_PLIC=y`,
-    `CONFIG_SERIAL_8250_OF=y` if we go 16550-shim, or
-    `CONFIG_HVC_RISCV_SBI=n` since no SBI).
-  - Cross-compiles to `arch/riscv/boot/Image` (or `vmlinux.bin`)
-    + DTB.
-  - Output: `$out/Image`, `$out/vmlinux`, `$out/riski5.dtb`.
-
-  Deliverable: `nix build .#linux-rv32-nommu` produces a
-  bootable kernel image of size < 8 MB. First milestone:
-  it builds. Second milestone: it boots in Spike against
-  a stub DTB matching our SoC.
-
-### L-7. Initramfs
-
-A minimal initramfs with `busybox-mini` (or `toybox`) + a
-shell + a couple of test utilities (`echo`, `cat`, `ls`).
-Total size budget: ≤ 4 MB so kernel + initramfs + heap +
-stack fits in 8 MB.
-
-  Deliverable: `pkgs/riski5-initramfs/package.nix` building
-  a `cpio.gz` initramfs of the right size, embeddable into
-  the kernel via `CONFIG_INITRAMFS_SOURCE=...`.
-
-### L-8. `riski5-core-linux` Nix variant
-
-Same overlay pattern as the `riski5-core-coremark` /
-`riski5-core-sramexec` etc. variants:
-
-  - `pkgs/default.nix` adds a `riski5-core-linux` derivation
-    that overlays `firmware/phase1/CoreMark.hs` with the
-    boot-stub-words byte stream.
-  - `flash-riski5-linux` app flashes the bitstream;
-    `console` opens nios2-terminal.
-  - Out-of-band: `nix run .#load-sdram-jtag --
-    result-of-linux-kernel/Image` writes the kernel into
-    SDRAM via JTAG.
-
-### L-9. Silicon bring-up
-
-Run on the DE2:
-
-  1. `nix build .#riski5-core-linux && nix run .#flash-riski5-linux`.
-  2. `nix run .#load-sdram-jtag -- $(nix build --print-out-paths .#linux-rv32-nommu)/Image`.
-  3. `nix run .#console`.
-  4. Watch for the kernel banner ("Linux version …") to land
-     on the JTAG-UART.
-
-  Expected first observable output: the kernel boot banner.
-  After that: device-tree probe messages, init=/init invocation,
-  the busybox shell prompt.
-
-## Open questions / known unknowns
-
-  - **JTAG-UART vs 16550 shim**: the existing JTAG-UART IP
-    doesn't match any upstream Linux driver layout. Options:
-    (a) write a small custom kernel driver (~100 LOC of
-    `drivers/tty/serial/riski5_uart.c`); (b) implement a
-    16550-layout adapter in Clash that wraps the JTAG-UART
-    Avalon master (T-LI2 in `TODO.md`). (b) means zero new
-    kernel driver code at the cost of more Clash hardware.
-    Prefer (b) once T-LI2 lands; (a) as a quick-and-dirty
-    fallback to get to the boot banner.
-
-  - **SDRAM controller exposed to the kernel**: the Altera IP
-    is opaque, but the kernel only needs to know the RAM is
-    there. DTS `memory@80000000` covers it; no driver bind
-    needed.
-
-  - **Cache coherence**: we have no caches today, so no
-    coherence question. When phase-2C/D adds L1 I$ + D$, the
-    RV32 nommu kernel needs `dma_alloc_coherent` to do the
-    right thing — typically routed through a noncoherent DMA
-    pool, which is fine for our hardware (no DMA engines yet).
-
-  - **Clock frequency**: kernel needs to know the timer
-    frequency so `mtime` ticks count correctly. DTS exposes it
-    as `timebase-frequency`. Today our PLL gives 40 MHz; the
-    DTS will declare `40000000`.
-
-## Dependencies between sub-tasks
-
-```
-L-1 (UART IRQ silicon) ─────────────┐
-                                     ├── L-9 (silicon Linux bring-up)
-L-2 (bigger BRAM) ───────────────────┤
-                                     │
-L-3 (JTAG-load SDRAM) ───────────────┤
-                                     │
-L-4 (boot stub + DTB) ───┐           │
-                          │           │
-L-5 (toolchain) ──┐       │           │
-                   │       │           │
-L-6 (kernel build) ┼───────┤           │
-                   │       │           │
-L-7 (initramfs) ───┘       │           │
-                            │           │
-L-8 (Nix variant) ──────────┴───────────┘
+        uart@10000000 {
+            compatible = "altr,juart-1.0";
+            reg = <0x10000000 0x10>;
+            interrupt-parent = <&plic>;
+            interrupts = <1>;
+        };
+    };
+};
 ```
 
-Roughly: L-1 / L-2 / L-3 in parallel (independent infrastructure
-work), then L-4 / L-5 (toolchain + boot ABI), then L-6 / L-7
-(actual kernel + rootfs), then L-8 packages everything, and L-9
+Compile via `pkgs/riski5-dtb/package.nix` running `dtc -O dtb`.
+
+### L-5. `riscv32-linux` cross-toolchain
+
+`nix/devshell.nix`: add `pkgs.pkgsCross.riscv64.buildPackages.gcc`
+(handles 32-bit via `-march=rv32ima -mabi=ilp32` per
+riski5cuda's recipe — no separate `riscv32-linux` GCC needed).
+Confirm `riscv64-unknown-linux-gnu-gcc -march=rv32ima -mabi=ilp32 --version` works.
+
+### L-6. Linux kernel build via Nix
+
+`pkgs/linux-rv32-nommu/package.nix` lifted from riski5cuda's
+recipe with riski5-specific overlay:
+
+```nix
+# Overlay on top of nommu_virt_defconfig + 32-bit.config:
+{
+  echo 'CONFIG_CMDLINE_EXTEND=y'
+  echo '# CONFIG_CMDLINE_FORCE is not set'
+  echo 'CONFIG_CMDLINE="console=ttyJ0 earlycon=jtag-uart,mmio,0x10000000 rdinit=/init"'
+  echo '# CONFIG_RISCV_ISA_C is not set'
+
+  # === Q1: Altera JTAG-UART driver (in kernel since 2.6.36)
+  echo 'CONFIG_SERIAL_ALTERA_JTAGUART=y'
+  echo 'CONFIG_SERIAL_ALTERA_JTAGUART_CONSOLE=y'
+
+  # === Q2: aggressive size cuts ===
+  echo '# CONFIG_DEBUG_INFO is not set'
+  echo '# CONFIG_DEBUG_KERNEL is not set'
+  echo '# CONFIG_KALLSYMS is not set'
+  echo '# CONFIG_NET is not set'                    # add later when needed
+  echo '# CONFIG_SOUND is not set'
+  echo '# CONFIG_USB_SUPPORT is not set'
+  echo '# CONFIG_MMC is not set'
+  echo '# CONFIG_INPUT is not set'
+  echo '# CONFIG_VT is not set'
+  echo '# CONFIG_DRM is not set'
+  echo '# CONFIG_FB is not set'
+  echo '# CONFIG_BLOCK is not set'                  # we don't need block layer
+  echo '# CONFIG_VIRTIO_BLK is not set'
+  echo '# CONFIG_VIRTIO_NET is not set'
+  echo '# CONFIG_VIRTIO_MMIO is not set'
+  echo 'CONFIG_CC_OPTIMIZE_FOR_SIZE=y'
+
+  # === PLIC + CLINT bind ===
+  echo 'CONFIG_SIFIVE_PLIC=y'
+  echo 'CONFIG_RISCV_TIMER=y'                       # uses CLINT
+}
+```
+
+First milestone: it builds. Second milestone: `vmlinux.bin`
+size + a 1-2 MB initramfs fits comfortably in 8 MB. Third
+milestone: it boots in Spike against the riski5 DTB with the
+CLINT layout matching our hardware.
+
+### L-7. Hello-world `/init` (BFLT)
+
+`firmware/phase2/init-rv32-nommu/init.S` — riski5cuda's pattern,
+ported to use our UART base:
+
+```asm
+.equ MSGLEN, 38
+.equ UART_DATA, 0x10000000   # Altera JTAG-UART DATA reg
+
+_start:
+    # Stage 1: direct MMIO write (works pre-tty-init)
+    la    t0, msg
+    li    t1, MSGLEN
+    li    t2, UART_DATA
+1:  beqz  t1, 2f
+    lbu   t3, 0(t0)
+    sw    t3, 0(t2)         # JTAG-UART DATA: word-write of byte
+    addi  t0, t0, 1
+    addi  t1, t1, -1
+    j     1b
+2:
+    # Stage 2: syscall write(1, ...) — proves syscall + user→kernel transition
+    li    a7, 64
+    li    a0, 1
+    la    a1, msg
+    li    a2, MSGLEN
+    ecall
+    # exit(0)
+    li    a7, 93
+    li    a0, 0
+    ecall
+3:  j     3b
+
+msg:
+    .ascii "[init] hello from riski5 nommu Linux!\n"
+```
+
+Build pipeline: `riscv32-none-elf-gcc → init.elf → init.bin`,
+then a Python script wraps it in a 64-byte BFLT header
+(riski5cuda's `build_init_bflt.py` works as-is).
+
+`pkgs/init-rv32-nommu/package.nix` produces `$out/init` (BFLT).
+
+### L-8. Initramfs
+
+Lift riski5cuda's `pkgs/initramfs-rv32-nommu/package.nix`
+verbatim — a tiny cpio.gz with `/init` (the BFLT from L-7) plus
+empty `/proc /sys /dev` mount-point dirs.
+
+### L-9. `riski5-core-linux` Nix variant + `flash-` + `load-sdram-` apps
+
+`pkgs/default.nix` adds:
+
+  - `riski5-core-linux`: same `pkgs/riski5-core/package.nix`
+    machinery as `riski5-core-coremark`, but the firmware overlay
+    bakes in the **boot-stub** — a small Asm-eDSL stub that:
+      - sets up `sp = top of SRAM` (stack lives in SRAM, not
+        SDRAM, so the boot stub's stack doesn't collide with
+        the kernel image),
+      - configures `mtvec` to a trap shim,
+      - puts `a0 = 0` (hartid), `a1 = &dtb` per RISC-V Linux
+        boot ABI,
+      - jumps to the kernel entry (`0x8000_0000`).
+    The DTB is concatenated at a fixed BRAM offset (e.g.
+    `0x800` = word 512) and `&dtb` points there.
+  - `flash-riski5-linux`: shells out to `quartus_pgm` + the
+    `riski5-core-linux` `.sof`.
+  - `load-linux`: shells out to `scripts/load-sdram-jtag.tcl`
+    with the `linux-rv32-nommu`'s `Image` + an offset
+    parameter for the initramfs.
+  - `console`: existing `nios2-terminal` wrapper.
+
+### L-10. Silicon bring-up
+
+Sequence:
+
+  1. `nix run .#flash-riski5-linux` — flash bitstream + boot stub.
+  2. `nix run .#load-linux` — JTAG-load kernel into SDRAM at
+     `0x8000_0000`, initramfs at `0x8040_0000`.
+  3. `nix run .#console` — opens nios2-terminal.
+  4. Watch the JTAG-UART for:
+     - boot stub's `B` byte (already implemented by the
+       sramexec / sdramexec firmwares; reuse pattern).
+     - kernel's `[    0.000000] Linux version ...` banner.
+     - device-tree probe messages.
+     - `[init] hello from riski5 nommu Linux!` from `/init`.
+     - kernel panic (PID-1 exit) — expected, validates the
+       full chain.
+
+## Dependency graph
+
+```
+L-0 (CLINT refactor) ──┐
+                        ├─→ L-4 (DTS) ─┐
+L-1 (UART IRQ wire) ────┤               │
+                        │               ├─→ L-9 (Nix variant) ─→ L-10 (silicon)
+L-2 (BRAM bump) ────────┤               │
+                        │               │
+L-3 (JTAG-load SDRAM) ──┘               │
+                                         │
+L-5 (toolchain) ──┐                      │
+                   ├─→ L-6 (kernel build) ┤
+                   ├─→ L-7 (init BFLT) ──┤
+                   └─→ L-8 (initramfs) ──┘
+```
+
+L-0, L-1, L-2, L-3, L-5 run in parallel. L-4 needs L-0 (for the
+new CLINT base). L-6/L-7/L-8 need L-5. L-9 needs everything; L-10
 is the silicon validation.
 
-## When to start
+## Open follow-ups (not blocking Path A)
 
-Path A's foundation is **silicon-ready today** — every piece in
-the "Where we are" table above is silicon-validated and held
-green at CoreMark 44.57 / 1.114 across the entire phase-2A arc.
-The path forward is incremental, with each L-x task landing as
-its own commit (or short series). No big-bang refactor required.
+  - **Real busybox shell**. Needs an FDPIC-capable toolchain
+    or a flat-binary userspace build. Defer to Phase B (full
+    S-mode Linux) where standard toolchains apply.
+  - **Networking**. Phase B; needs ethernet MAC (DM9000 wrap
+    per `TODO.md` T-LI5) plus kernel net subsystem
+    re-enabled.
+  - **Block storage / FS**. Phase B; needs SD-card or NOR
+    flash controller plus kernel block + FS subsystems.
+  - **Path B**: S-mode + Sv32 MMU + OpenSBI + full distro.
+    Its own dedicated phase plan in
+    `docs/core-family.md`.
