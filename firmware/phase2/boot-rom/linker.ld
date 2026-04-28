@@ -28,19 +28,43 @@ MEMORY
 SECTIONS
 {
     .text : ALIGN(4) {
+        /* _start MUST land at offset 0 of .text (= address 0,
+         * the riski5 reset PC). GCC, with -Os and naked
+         * functions, freely reorders functions within a single
+         * .o; without an explicit input-section spec, _start
+         * commonly ends up at the end of start.o's .text and
+         * the FPGA crashes on cycle 0. The codegen tags
+         * _start with `__attribute__((section(".text.entry")))`
+         * so we can pull it out here and place it first.
+         */
+        KEEP(*(.text.entry))
         *(.text .text.*)
         *(.rodata .rodata.*)
     } > BRAM
 
-    /* No .data / .bss — boot ROM is fully in registers + SRAM
-     * stack. If a future Copilot spec needs persistent state
-     * across step() calls, copilot-c99 emits it as static-storage
-     * uint*_t arrays in .bss; we'd add a .bss section here that
-     * also lives in BRAM (read-only after init — Copilot's state
-     * arrays are written by step() which is OK because BRAM is
-     * read-write from the core's perspective, just imem-loaded
-     * via the bitstream).
-     */
+    /* .data + .sdata. Catch both regular and "small" data
+     * (RV32 GCC puts static initialisers ≤ -G threshold in
+     * .sdata for gp-relative addressing). objcopy -j .text
+     * -j .data -j .sdata pulls all three into the flat
+     * binary so non-zero static initialisers reach BRAM. */
+    .data : ALIGN(4) {
+        *(.data .data.*)
+        *(.sdata .sdata.*)
+    } > BRAM
+
+    /* .bss + .sbss. _start zeros [__bss_start, __bss_end)
+     * before tail-calling c_main — Copilot's per-step state
+     * indices (s0_idx etc.) and our boot_done / uart_data
+     * statics live here. Without zeroing they'd inherit
+     * the bitstream padding (0x00000013 NOP) and the state
+     * machine starts mid-tick on reset. */
+    .bss : ALIGN(4) {
+        __bss_start = .;
+        *(.bss .bss.*)
+        *(.sbss .sbss.*)
+        *(COMMON)
+        __bss_end = .;
+    } > BRAM
 
     /DISCARD/ : {
         *(.note*)

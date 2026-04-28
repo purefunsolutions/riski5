@@ -82,9 +82,18 @@ in
         generated/start.c generated/boot_rom_step.c
 
       ${cc}objdump -d boot_rom.elf > boot_rom.disasm
+      ${cc}objdump -h boot_rom.elf > boot_rom.sections
 
-      # Step 3: flat binary.
-      ${cc}objcopy -O binary -j .text boot_rom.elf boot_rom.bin
+      # Step 3: flat binary. Include .text + .data + .sdata
+      # (the last for RV32 GCC's gp-relative small-data area
+      # which catches static initialisers below the -G
+      # threshold). .bss / .sbss are excluded — _start zeros
+      # them explicitly via the linker-supplied
+      # __bss_start / __bss_end markers (the linker script
+      # collects both .bss and .sbss into one [start, end)
+      # range).
+      ${cc}objcopy -O binary -j .text -j .data -j .sdata \
+        boot_rom.elf boot_rom.bin
 
       echo "### boot_rom.bin: $(stat -c %s boot_rom.bin) bytes"
       echo "### boot_rom.disasm (first 40 lines):"
