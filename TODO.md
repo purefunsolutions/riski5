@@ -28,10 +28,27 @@ rules around maintaining it.
     261/261 cabal tests green. Foundation for the DT
     `compatible = "sifive,clint0"` binding the Linux clocksource
     driver expects.
-  - **L-1..L-9** pending — see plan doc for the full sequence
-    (UART-IRQ wiring, BRAM bump, SDRAM JTAG-load, boot stub + DTS,
-    cross-toolchain, kernel build, initramfs, flash app, silicon
-    bring-up).
+  - **L-1. ✓ JTAG-UART IRQ end-to-end + sync-register fix**
+    (**LANDED 2026-04-28**, commit `dd24486`). New `UART_IRQ`
+    input port on `app/Top.hs::topEntity`; `riski5_top.v` connects
+    the IP's `av_irq` output to that port. **Hardware fix
+    landed alongside the wiring**: a one-cycle synchronizer
+    register `uartIrqRegS = register False (siUartIrq <$> inS)`
+    sits between the IP's IRQ output and the PLIC's pending
+    vector. Without it, feeding `av_irq` (which is asserted
+    at boot whenever the IP's TX FIFO has space — default
+    behaviour) directly into the PLIC's combinational
+    pending-and-arbitrate cone produced a Quartus place-and-route
+    shift (10,136 LE → 10,258 LE) that broke BRAM fetches —
+    silicon hung at boot before printing any UART output across
+    three confirmed builds. The synchronizer cuts IP-IRQ fan-out
+    to one register input; CoreMark recovers to 44.57 / 1.114,
+    identical baseline. Standing rule for future peripheral
+    IRQs joining `plicExtIrqsS`: register at the SoC boundary,
+    never combinationally feed an IP signal into the PLIC tree.
+  - **L-2..L-9** pending — see plan doc for the full sequence
+    (BRAM bump, SDRAM JTAG-load, boot stub + DTS, cross-toolchain,
+    kernel build, initramfs, flash app, silicon bring-up).
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
