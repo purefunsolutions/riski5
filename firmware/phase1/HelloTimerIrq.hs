@@ -11,7 +11,8 @@ Probes the end-to-end machine-timer-interrupt path: CLINT's
 @mtipS@ strobe → @mip.MTIP@ → core's @interruptPending@ predicate
 → trap to @mtvec.base@ → handler → @mret@ → back to main. Same
 shape as the @TimerIrqSpec@ sim test, but running on real hardware
-through the real CLINT hardware block at @0x1000_0060@.
+through the real CLINT hardware block at the SiFive-standard base
+@0x0200_0000@ (mtimecmp[0] @ +0x4000).
 
 == UART script
 
@@ -73,14 +74,19 @@ helloTimerIrqFirmware = do
   -- arms an initial mtimecmp, then spins printing '.'.
   --
   -- Register allocation:
-  --   x10 — UART DATA address    (0x1000_0000)
-  --   x11 — CLINT base           (0x1000_0060)
+  --   x10 — UART DATA address       (0x1000_0000)
+  --   x11 — mtimecmp[0] base        (0x0200_4000) — points directly
+  --                                  at mtimecmp so SW imm0/imm4 are
+  --                                  in Signed-12 range.
   --   x12 — scratch / ABI a2
   --   x13 — scratch / ABI a3
   --   x14 — character byte
   --   x18 — periodic '.' delay counter
   li uartReg 0x1000_0000
-  li clintReg 0x1000_0060
+  -- mtimecmp[0] = clintBase + 0x4000 = 0x0200_4000. We point
+  -- 'mtimecmpReg' directly at it so the SW immediates can be 0 / 4
+  -- (both well inside the Signed-12 range).
+  li mtimecmpReg 0x0200_4000
 
   -- Print 'B' so the host sees boot completed before timer fires.
   addi x14 x0 0x42 -- 'B'
@@ -93,13 +99,13 @@ helloTimerIrqFirmware = do
   -- Arm initial mtimecmp = mtime + initial increment. The handler
   -- re-arms each subsequent firing.
   csrrs x12 x0 csrMcycle -- read current mcycle as a stand-in for mtime
-  -- mtime is also live at clintReg + 0x00; using mcycle here keeps
+  -- mtime is also live at clintBase + 0xBFF8; using mcycle here keeps
   -- the boot path fenceless and one CSR read.
   li x13 (P.fromIntegral mtimecmpIncrement)
   add x12 x12 x13
-  -- Write mtimecmp low half = computed value; mtimecmp high = 0.
-  sw clintReg x12 8
-  sw clintReg x0 12
+  -- Write mtimecmp[0] low = computed value; high = 0.
+  sw mtimecmpReg x12 0
+  sw mtimecmpReg x0 4
 
   -- mie.MTIE := 1 (bit 7).
   addi x12 x0 0x80
@@ -136,14 +142,14 @@ helloTimerIrqHandler = do
   -- doesn't rely on x12/x13/x14 across iterations.
 
   li uartReg 0x1000_0000
-  li clintReg 0x1000_0060
+  li mtimecmpReg 0x0200_4000
 
   -- mtimecmp_new := current mtime + increment.
   csrrs x12 x0 csrMcycle
   li x13 (P.fromIntegral mtimecmpIncrement)
   add x12 x12 x13
-  sw clintReg x12 8
-  sw clintReg x0 12
+  sw mtimecmpReg x12 0
+  sw mtimecmpReg x0 4
 
   -- Print 'T'.
   addi x14 x0 0x54
@@ -176,6 +182,6 @@ helloTimerIrqFirmwareWords =
             P.++ P.replicate gapLen 0x0000_0013
             P.++ handlerBytes
 
-uartReg, clintReg :: Reg
+uartReg, mtimecmpReg :: Reg
 uartReg = x10
-clintReg = x11
+mtimecmpReg = x11

@@ -93,14 +93,15 @@ runClint n sels addrs wdatas bes =
 -- on sample index @k+1@), mtime should equal @k@.
 case_mtimeIncrement :: Assertion
 case_mtimeIncrement = do
-  -- Read mtime low on cycle 5 (sample index 5). By then the register
-  -- has been updating for 4 cycles past reset (cycles 1..4 each
-  -- producing one increment). Expected mtime = 4.
+  -- Read mtime low (SiFive offset 0xBFF8) on cycle 5 (sample index
+  -- 5). By then the register has been updating for 4 cycles past
+  -- reset (cycles 1..4 each producing one increment). Expected
+  -- mtime = 4.
   let n = 8
       idleSels = P.replicate 5 P.False
       readSels = [P.True] P.++ P.repeat P.False
       sels = idleSels P.++ readSels
-      addrs = P.replicate 5 0 P.++ [clintBase + 0x00] P.++ P.repeat 0
+      addrs = P.replicate 5 0 P.++ [clintBase + 0xBFF8] P.++ P.repeat 0
       wdatas = P.repeat 0
       bes = P.repeat 0
       trace = runClint n sels addrs wdatas bes
@@ -112,11 +113,11 @@ case_mtimeIncrement = do
 case_writeMtimecmp :: Assertion
 case_writeMtimecmp = do
   -- Cycle 0: idle (reset window).
-  -- Cycle 1: write 100 to mtimecmp low.
+  -- Cycle 1: write 100 to mtimecmp low (SiFive offset 0x4000).
   -- Cycle 2: idle.
   -- Cycle 3: read mtimecmp low — should see the written 100.
   let sels = [P.False, P.True, P.False, P.True] P.++ P.repeat P.False
-      addrs = [0, clintBase + 0x08, 0, clintBase + 0x08] P.++ P.repeat 0
+      addrs = [0, clintBase + 0x4000, 0, clintBase + 0x4000] P.++ P.repeat 0
       wdatas = [0, 100, 0, 0] P.++ P.repeat 0
       bes = [0, 0xF, 0, 0] P.++ P.repeat 0
       trace = runClint 6 sels addrs wdatas bes
@@ -129,13 +130,13 @@ case_writeMtimecmp = do
 case_mtipRises :: Assertion
 case_mtipRises = do
   -- Cycle 0: idle (reset window).
-  -- Cycle 1: write 5 to mtimecmp low.
-  -- Cycle 2: write 0 to mtimecmp high (clear the high half so the
-  --          comparison can actually trip).
+  -- Cycle 1: write 5 to mtimecmp low (offset 0x4000).
+  -- Cycle 2: write 0 to mtimecmp high (offset 0x4004 — clear the
+  --          high half so the comparison can actually trip).
   -- Cycles 3..: idle. mtime is incrementing; once it crosses 5,
   --          mtipS goes True.
   let sels = [P.False, P.True, P.True] P.++ P.repeat P.False
-      addrs = [0, clintBase + 0x08, clintBase + 0x0C] P.++ P.repeat 0
+      addrs = [0, clintBase + 0x4000, clintBase + 0x4004] P.++ P.repeat 0
       wdatas = [0, 5, 0] P.++ P.repeat 0
       bes = [0, 0xF, 0xF] P.++ P.repeat 0
       trace = runClint 20 sels addrs wdatas bes

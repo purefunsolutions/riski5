@@ -21,14 +21,19 @@ See @CLAUDE.md@ for the human-readable table. Summary:
 
 @
   0x0000_0000 – 0x0000_0FFF   BRAM       (4 KB)
+  0x0200_0000 – 0x0200_FFFF   CLINT      (64 KB, SiFive CLINT v0 layout)
   0x1000_0000 – 0x1000_000F   JTAG UART  (16 B)
   0x1000_0020 – 0x1000_003F   GPIO       (32 B)
   0x1000_0040 – 0x1000_005F   LCD        (32 B)
-  0x1000_0060 – 0x1000_009F   CLINT      (64 B, phase 2+)
   0x2000_0000 – 0x2007_FFFF   SRAM       (512 KB, phase 1C)
   0x4000_0000 – 0x403F_FFFF   PLIC       (4 MB, phase 2+, SiFive-PLIC-1.0.0 layout)
   0x8000_0000 – 0x807F_FFFF   SDRAM      (8 MB, phase 1D)
 @
+
+The CLINT lives at the SiFive-standard base @0x0200_0000@ with
+registers at offsets @0x0000@ (msip), @0x4000@ (mtimecmp), and
+@0xBFF8@ (mtime). Upstream Linux's @drivers/clocksource/timer-clint.c@
+matches the block via DT @compatible = "sifive,clint0"@.
 
 The PLIC is allocated a full 256 MB top-4-bit chunk (top4 = 0x4)
 even though only the first ~2 MB carry registers. The SiFive-PLIC
@@ -86,7 +91,7 @@ Quartus maps it to a tiny 4-input LUT cone.
 -}
 slaveOf :: BitVector 32 -> SlaveId
 slaveOf addr = case top4 of
-  0x0 -> SlaveBram
+  0x0 -> classifyLowMem addr
   0x1 -> classifyPeripheral addr
   0x2 -> SlaveSram
   0x4 -> SlavePlic
@@ -96,6 +101,16 @@ slaveOf addr = case top4 of
   top4 :: BitVector 4
   top4 = slice d31 d28 addr
 
+-- | Sub-decode the @0x0xxx_xxxx@ low-memory window. BRAM lives at
+-- the bottom (@0x0000_xxxx@); CLINT lives at the SiFive-standard
+-- @0x0200_xxxx@ slot. Anything else in the top-4-bit-0 range is
+-- unmapped and falls through to a bus-fault.
+classifyLowMem :: BitVector 32 -> SlaveId
+classifyLowMem addr = case slice d27 d24 addr of
+  0x0 -> SlaveBram
+  0x2 -> SlaveClint
+  _ -> SlaveNone
+
 -- | Sub-decode the @0x1000_00xx@ peripheral window.
 classifyPeripheral :: BitVector 32 -> SlaveId
 classifyPeripheral addr = case slice d7 d0 addr of
@@ -103,7 +118,6 @@ classifyPeripheral addr = case slice d7 d0 addr of
     | lo < 0x10 -> SlaveJtagUart
     | lo < 0x40 -> SlaveGpio
     | lo < 0x60 -> SlaveLcd
-    | lo < 0xA0 -> SlaveClint
     | otherwise -> SlaveNone
 
 -- * Region bases --------------------------------------------------
@@ -120,8 +134,12 @@ gpioBase = 0x1000_0020
 lcdBase :: BitVector 32
 lcdBase = 0x1000_0040
 
+-- | SiFive CLINT base. Owns a 64 KB window at @0x0200_0000@ (the
+-- standard slot Linux's @drivers/clocksource/timer-clint.c@ expects).
+-- Inside that window: @msip[0]@@@0x0000@, @mtimecmp[0]@@@0x4000@,
+-- @mtime@@@0xBFF8@.
 clintBase :: BitVector 32
-clintBase = 0x1000_0060
+clintBase = 0x0200_0000
 
 -- | SiFive-PLIC base. Owns the full top-4-bit chunk @0x4000_0000@
 -- (256 MB) but the highest live address is @plicBase + 0x0020_0008@

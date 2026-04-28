@@ -27,32 +27,29 @@ needed for an OS-grade timer-interrupt source:
     which (when @mstatus.MIE && mie.MTIE@) fires a machine-timer
     interrupt the core's existing trap path consumes.
 
-Register layout inside the 64-byte MMIO window from
-'Riski5.MemMap.clintBase':
+== Register layout — SiFive CLINT v0 (1-hart subset)
+
+Memory-mapped at 'Riski5.MemMap.clintBase' = @0x0200_0000@. Layout
+matches the SiFive CLINT exactly, so upstream Linux's
+@drivers/clocksource/timer-riscv.c@ + @timer-clint.c@ recognise the
+block via DT @compatible = "sifive,clint0"@:
 
 @
-  offset 0x00 — mtime[31:0]      (RW)
-  offset 0x04 — mtime[63:32]     (RW)
-  offset 0x08 — mtimecmp[31:0]   (RW)
-  offset 0x0C — mtimecmp[63:32]  (RW)
-  offset 0x10 — msip             (RW, low bit only — software interrupt;
-                                  not wired to the trap path yet, reserved
-                                  for phase 2C+ when we add IPIs / multi-
-                                  hart work)
-  offset 0x14..0x3F — reserved
+  offset 0x0000 — msip[0]            (RW, low bit only)
+  offset 0x4000 — mtimecmp[0][31:0]  (RW)
+  offset 0x4004 — mtimecmp[0][63:32] (RW)
+  offset 0xBFF8 — mtime[31:0]        (RW)
+  offset 0xBFFC — mtime[63:32]       (RW)
 @
+
+The 64 KB CLINT window is sparse — only five 32-bit registers
+are live; reads of unmapped offsets return 0 and writes are
+ignored.
 
 Writes commit on the next clock edge; the increment of @mtime@ also
 happens on the clock edge, so a write that races a tick gets the
 write's value rather than the incremented one (priority: write
 wins).
-
-This is __not__ the full SiFive CLINT layout (which puts
-@mtimecmp@ at @0x4000@ and @mtime@ at @0xBFF8@). We compact the
-register file to fit the 64-byte slot the riski5 memory map
-already reserves; firmware that targets riski5 reads the addresses
-from 'Riski5.MemMap.clintBase' rather than hard-coding SiFive
-offsets.
 -}
 module Riski5.Clint (
   clint,
@@ -67,12 +64,12 @@ The CLINT block. @clint sel addr wdata be readEn@ returns
 
   * @sel@ — slave-select asserted by the bus decoder for the CLINT
     address window (true on cycles when @addr@ is inside
-    @clintBase..clintBase+0x3F@).
+    @clintBase..clintBase+0xFFFF@).
   * @addr@ / @wdata@ / @be@ / @readEn@ — the standard memory-bus
     fields the rest of the SoC slaves accept.
   * @rdataS@ — read data; word-aligned 32-bit slices of the CLINT
-    registers (mtime low, mtime high, mtimecmp low, mtimecmp high,
-    msip). Reads of unmapped offsets return zero.
+    registers (msip, mtimecmp low, mtimecmp high, mtime low, mtime
+    high). Reads of unmapped offsets return zero.
   * @mtipS@ — combinational @mtime >= mtimecmp@. Wired into the
     core's CSR @mip.MTIP@ bit by 'Riski5.Soc'.
 
@@ -139,8 +136,9 @@ clint selS addrS wdataS beS _readEnS = (rdataS, mtipS)
       <*> writeMtimecmpHiS
       <*> wdataS
 
-  -- Software-interrupt-pending bit. Reserved for phase 2C+ IPI work;
-  -- reads / writes the low bit of the word at offset 0x10.
+  -- Software-interrupt-pending bit (msip[0] @ 0x0000). Reserved for
+  -- phase 2C+ IPI work; reads / writes the low bit of the word at
+  -- offset 0x0000.
   msipS :: Signal dom (BitVector 32)
   msipS = register 0 msipNextS
   msipNextS =
@@ -159,11 +157,12 @@ clint selS addrS wdataS beS _readEnS = (rdataS, mtipS)
       <*> addrS
       <*> beS
 
-  writeMtimeLoS = isWriteTo 0x00
-  writeMtimeHiS = isWriteTo 0x04
-  writeMtimecmpLoS = isWriteTo 0x08
-  writeMtimecmpHiS = isWriteTo 0x0C
-  writeMsipS = isWriteTo 0x10
+  -- SiFive CLINT layout (single-hart subset).
+  writeMsipS = isWriteTo 0x0000
+  writeMtimecmpLoS = isWriteTo 0x4000
+  writeMtimecmpHiS = isWriteTo 0x4004
+  writeMtimeLoS = isWriteTo 0xBFF8
+  writeMtimeHiS = isWriteTo 0xBFFC
 
   -- Combinational reads. Reads of unmapped offsets return zero.
   rdataS :: Signal dom (BitVector 32)
@@ -171,11 +170,11 @@ clint selS addrS wdataS beS _readEnS = (rdataS, mtipS)
     ( \sel addr mt mtc msip ->
         if sel
           then case addr - clintBase of
-            0x00 -> slice d31 d0 mt
-            0x04 -> slice d63 d32 mt
-            0x08 -> slice d31 d0 mtc
-            0x0C -> slice d63 d32 mtc
-            0x10 -> msip
+            0x0000 -> msip
+            0x4000 -> slice d31 d0 mtc
+            0x4004 -> slice d63 d32 mtc
+            0xBFF8 -> slice d31 d0 mt
+            0xBFFC -> slice d63 d32 mt
             _ -> 0
           else 0
     )
