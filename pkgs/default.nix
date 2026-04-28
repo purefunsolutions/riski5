@@ -178,6 +178,15 @@
       # binary that the L-8 initramfs places at /init.
       init-rv32-nommu = pkgs.callPackage ./init-rv32-nommu/package.nix {};
 
+      # Host-side JTAG-UART loader: spawns nios2-terminal,
+      # writes kernel + DTB into its stdin pipe with a live
+      # progress bar on stderr, then leaves nios2-terminal
+      # attached so kernel printk streams to the user's shell.
+      # Used by `nix run .#load-linux` and `.#load-sdram-jtag`.
+      riski5-load-stream = pkgs.callPackage ./riski5-load-stream/package.nix {
+        ghc = pkgs.haskellPackages.ghcWithPackages (ps: [ps.bytestring ps.process]);
+      };
+
       # L-8: minimal cpio initramfs containing the L-7 BFLT init
       # plus empty /proc /sys /dev mount-point dirs. Output:
       # $out/initramfs.cpio.
@@ -242,7 +251,7 @@
       # via `nix run .#load-linux -- kernel.bin dtb`.
       load-linux = pkgs.callPackage ../apps/load-linux.nix {
         inherit quartus-ii-13;
-        inherit (self'.packages) linux-rv32-nommu riski5-dtb;
+        inherit (self'.packages) riski5-load-stream linux-rv32-nommu riski5-dtb;
       };
 
       # `nix run .#load-sdram-jtag -- <bin-path>` — host-side
@@ -253,6 +262,7 @@
       # `load-linux` above).
       load-sdram-jtag = pkgs.callPackage ../apps/load-sdram-jtag.nix {
         inherit quartus-ii-13;
+        inherit (self'.packages) riski5-load-stream;
       };
 
       console = pkgs.callPackage ../apps/console.nix {

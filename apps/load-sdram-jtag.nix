@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT OR BSD-3-Clause
 #
 # `nix run .#load-sdram-jtag -- <bin-path>` — host-side counterpart
-# to firmware/phase1/SdramLoader.hs. Sends a length-prefixed binary
-# blob over the JTAG-UART tap; the on-board SdramLoader writes it
-# to SDRAM at 0x80000000+ and JALRs there.
+# to firmware/phase1/SdramLoader.hs. Spawns nios2-terminal, sends
+# a length-prefixed binary blob into its stdin with a live progress
+# bar, then keeps the terminal attached so any post-load output
+# from the on-board firmware streams to the user's shell.
 #
 # Bitstream prerequisite (run once before each load):
 #
@@ -14,25 +15,28 @@
 #
 #     nix run .#load-sdram-jtag -- result/program.bin
 #
-# The shell-script equivalent at scripts/load-sdram-jtag.sh works
-# the same way without the Nix-app wrapper, useful for iterations
-# that don't want to re-resolve flake outputs.
+# Transport / progress / subprocess machinery lives in
+# `riski5-load-stream` (tools/load-stream/Main.hs).
 {
   writeShellApplication,
-  python3,
   quartus-ii-13,
+  riski5-load-stream,
 }:
 writeShellApplication {
   name = "load-sdram-jtag";
-  runtimeInputs = [quartus-ii-13 python3];
+  # quartus-ii-13 supplies nios2-terminal, which riski5-load-stream
+  # spawns as a subprocess and pipes the blob into.
+  runtimeInputs = [riski5-load-stream quartus-ii-13];
   text = ''
     set -euo pipefail
 
     if [[ $# -ne 1 ]]; then
-      echo "usage: nix run .#load-sdram-jtag -- <bin-path>" >&2
-      echo "" >&2
-      echo "  flash the loader bitstream first:" >&2
-      echo "    nix run .#flash-riski5-sdramload" >&2
+      cat >&2 <<EOF
+    usage: nix run .#load-sdram-jtag -- <bin-path>
+
+      flash the loader bitstream first:
+        nix run .#flash-riski5-sdramload
+    EOF
       exit 2
     fi
 
@@ -51,26 +55,6 @@ writeShellApplication {
 
     WORDS=$(( BYTES / 4 ))
 
-    echo "Loading $BIN_PATH:"
-    echo "  bytes:       $BYTES"
-    echo "  word count:  $WORDS"
-    printf "  destination: 0x80000000 .. 0x%08x\n" $((0x80000000 + BYTES - 1))
-    echo ""
-    echo "Make sure the loader bitstream is flashed and KEY0 has been pressed."
-    echo "Watching for 'L' marker on the JTAG-UART before sending..."
-
-    python3 - "$WORDS" "$BIN_PATH" <<'PY' | nios2-terminal
-    import struct
-    import sys
-
-    word_count = int(sys.argv[1])
-    bin_path   = sys.argv[2]
-
-    out = sys.stdout.buffer
-    out.write(struct.pack('<I', word_count))
-    with open(bin_path, 'rb') as f:
-        out.write(f.read())
-    out.flush()
-    PY
+    exec riski5-load-stream sdram-jtag "$WORDS" "$BIN_PATH"
   '';
 }

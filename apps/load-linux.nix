@@ -2,9 +2,10 @@
 # SPDX-License-Identifier: MIT OR BSD-3-Clause
 #
 # `nix run .#load-linux` — host-side counterpart to
-# firmware/phase1/LinuxBoot.hs. Sends a kernel image + device-tree
-# blob to the riski5 board over the JTAG-UART tap, then attaches a
-# nios2-terminal so the user sees kernel printk output.
+# firmware/phase1/LinuxBoot.hs. Spawns nios2-terminal, sends a
+# kernel + device-tree blob into its stdin with a live progress
+# bar, then keeps the terminal attached so kernel printk lands
+# in the user's shell.
 #
 # Defaults: when invoked with no args, uses the kernel + DTB built
 # by the riski5 flake (`linux-rv32-nommu/Image` and
@@ -16,20 +17,26 @@
 #
 # The default path triggers a Linux kernel build the first time
 # you run it (~5 min). Subsequent runs are cached.
+#
+# All transport / progress / subprocess machinery lives in the
+# Haskell host-tool `riski5-load-stream`, defined at
+# `tools/load-stream/Main.hs`. This wrapper only does
+# arg-validation + word-count math.
 {
   writeShellApplication,
-  python3,
   quartus-ii-13,
+  riski5-load-stream,
   linux-rv32-nommu,
   riski5-dtb,
 }:
 writeShellApplication {
   name = "load-linux";
-  runtimeInputs = [quartus-ii-13 python3];
+  # quartus-ii-13 supplies nios2-terminal, which riski5-load-stream
+  # spawns as a subprocess and pipes the kernel+DTB into.
+  runtimeInputs = [riski5-load-stream quartus-ii-13];
   text = ''
     set -euo pipefail
 
-    # Defaults from the flake build.
     DEFAULT_KERNEL="${linux-rv32-nommu}/Image"
     DEFAULT_DTB="${riski5-dtb}/riski5.dtb"
 
@@ -41,14 +48,16 @@ writeShellApplication {
       KERNEL="$1"
       DTB="$2"
     else
-      echo "usage: nix run .#load-linux [-- <kernel-image> <dtb>]" >&2
-      echo "" >&2
-      echo "  flash the linux-boot bitstream first:" >&2
-      echo "    nix run .#flash-riski5-linux" >&2
-      echo "" >&2
-      echo "  with no args: uses the flake-built kernel + DTB:" >&2
-      echo "    $DEFAULT_KERNEL" >&2
-      echo "    $DEFAULT_DTB" >&2
+      cat >&2 <<EOF
+    usage: nix run .#load-linux [-- <kernel-image> <dtb>]
+
+      flash the linux-boot bitstream first:
+        nix run .#flash-riski5-linux
+
+      with no args: uses the flake-built kernel + DTB:
+        $DEFAULT_KERNEL
+        $DEFAULT_DTB
+    EOF
       exit 2
     fi
 
@@ -61,50 +70,12 @@ writeShellApplication {
 
     KBYTES=$(stat -c %s "$KERNEL")
     DBYTES=$(stat -c %s "$DTB")
-
     KBYTES_PAD=$(( (KBYTES + 3) & ~3 ))
     DBYTES_PAD=$(( (DBYTES + 3) & ~3 ))
     KWORDS=$(( KBYTES_PAD / 4 ))
     DWORDS=$(( DBYTES_PAD / 4 ))
 
-    echo "Loading:"
-    echo "  kernel:   $KERNEL ($KBYTES bytes, $KWORDS words pad-aligned)"
-    echo "  dtb:      $DTB ($DBYTES bytes, $DWORDS words pad-aligned)"
-    echo "  layout:"
-    printf "    [0x80000000 .. 0x%08x]  kernel\n" $((0x80000000 + KBYTES_PAD - 1))
-    printf "    [0x%08x .. 0x%08x]  dtb\n" \
-      $((0x80000000 + KBYTES_PAD)) $((0x80000000 + KBYTES_PAD + DBYTES_PAD - 1))
-    echo ""
-    echo "Make sure the linux-boot bitstream is flashed and KEY0 has been pressed."
-    echo "Watching for 'L' marker on the JTAG-UART before sending..."
-
-    python3 - "$KWORDS" "$DWORDS" "$KERNEL" "$DTB" <<'PY' | nios2-terminal
-    import struct
-    import sys
-
-    kwords      = int(sys.argv[1])
-    dwords      = int(sys.argv[2])
-    kernel_path = sys.argv[3]
-    dtb_path    = sys.argv[4]
-
-    out = sys.stdout.buffer
-
-    out.write(struct.pack('<I', kwords))
-    out.write(struct.pack('<I', dwords))
-
-    with open(kernel_path, 'rb') as f:
-        data = f.read()
-    pad = (-len(data)) % 4
-    out.write(data)
-    out.write(b'\x00' * pad)
-
-    with open(dtb_path, 'rb') as f:
-        data = f.read()
-    pad = (-len(data)) % 4
-    out.write(data)
-    out.write(b'\x00' * pad)
-
-    out.flush()
-    PY
+    exec riski5-load-stream linux \
+      "$KWORDS" "$DWORDS" "$KERNEL" "$DTB"
   '';
 }

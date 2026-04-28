@@ -154,6 +154,15 @@ executable riski5-emit-hello
     , riski5
     , riski5-firmware
 
+executable riski5-load-stream
+  import:         warnings, language
+  main-is:        Main.hs
+  hs-source-dirs: tools/load-stream
+  build-depends:
+    , base
+    , bytestring  >=0.12 && <0.13
+    , process     >=1.6  && <1.7
+
 test-suite riski5-test
   import:         warnings, language
   type:           exitcode-stdio-1.0
