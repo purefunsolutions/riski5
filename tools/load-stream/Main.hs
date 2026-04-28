@@ -81,6 +81,7 @@ import System.IO
   ( BufferMode (..)
   , Handle
   , IOMode (..)
+  , hClose
   , hFlush
   , hIsEOF
   , hIsTerminalDevice
@@ -190,18 +191,45 @@ runWithTerminal action =
           -- Phase 1: load.
           action hin
           hPutStrLn stderr ""
-          hPutStrLn
-            stderr
-            "Load complete. Forwarding keyboard → kernel; Ctrl-C to detach."
-          hPutStrLn stderr ""
-          -- Phase 2: interactive stdin → kernel forwarding. cbreak
-          -- mode + no echo for per-keystroke flow with the kernel's
-          -- tty layer doing the visible echoing. ISIG stays on so
-          -- Ctrl-C still works.
-          withCbreakMode (interactiveForward hin ph)
-          waitForProcess ph >>= \case
-            ExitSuccess -> pure ()
-            ec -> exitWith ec
+          -- Phase 2 splits on whether stdin is a real tty. The
+          -- two cases want very different behaviours and lumping
+          -- them together via `withCbreakMode` (which silently
+          -- no-ops for non-ttys) caused real bugs:
+          --
+          --   - TTY: user wants a console — cbreak + per-keystroke
+          --     forwarding to the kernel, kernel TX echoed on
+          --     stdout, Ctrl-C to detach.
+          --
+          --   - non-TTY (pipe, redirection from a file, /dev/null,
+          --     CI runs): there's nothing to forward AND
+          --     `interactiveForward` returns immediately on EOF,
+          --     after which `waitForProcess` blocks forever
+          --     because nios2-terminal never exits on its own.
+          --     Net effect: `boot-linux < /dev/null` would hang
+          --     post-load forever, which is what bit testing in
+          --     this session.
+          isTty <- hIsTerminalDevice stdin
+          if isTty
+            then do
+              hPutStrLn
+                stderr
+                "Load complete. Forwarding keyboard → kernel; Ctrl-C to detach."
+              hPutStrLn stderr ""
+              withCbreakMode (interactiveForward hin ph)
+              waitForProcess ph >>= \case
+                ExitSuccess -> pure ()
+                ec -> exitWith ec
+            else do
+              hPutStrLn
+                stderr
+                "Load complete (non-interactive stdin — exiting)."
+              hPutStrLn
+                stderr
+                "Re-run on a tty to forward keystrokes to the kernel."
+              -- Closing hin signals EOF to nios2-terminal so it
+              -- exits its read loop cleanly; withCreateProcess
+              -- then reaps the child as the bracket unwinds.
+              hClose hin
         Nothing ->
           die "internal: failed to acquire nios2-terminal stdin handle"
 
@@ -353,6 +381,15 @@ padTo4 bs =
 -- | Stream a list of lazy bytestrings to @hin@, redrawing a
 -- progress bar on stderr roughly every 100 ms. Pipe backpressure
 -- from @nios2-terminal@ paces the writes to ~JTAG-UART rate.
+--
+-- Chunks are re-sliced to 'progressChunkBytes' so the in-place
+-- progress redraw happens at meaningful intervals even on the
+-- DE2's anemic ~2 KB/s JTAG-UART link. Default lazy bytestring
+-- chunks are 32 KB, which on this link takes ~16 s to drain
+-- through the pipe — long enough that the bar looks frozen.
+-- Splitting to 1 KB pieces lets each 'hPut' block for ~0.5 s
+-- (one chunk-of-bytes per ~half-second of host wall-clock),
+-- so the redraw cadence is "live" for the user.
 streamWithProgress :: Handle -> Int64 -> [BSL.ByteString] -> IO ()
 streamWithProgress hin totalBytes parts = do
   t0 <- getMonotonicTime
@@ -360,7 +397,9 @@ streamWithProgress hin totalBytes parts = do
   lastDrawRef <- newIORef (0 :: Double)
 
   let allChunks :: [BS.ByteString]
-      allChunks = concatMap BSL.toChunks parts
+      allChunks =
+        concatMap (sliceChunk progressChunkBytes)
+          (concatMap BSL.toChunks parts)
 
       sendChunk :: BS.ByteString -> IO ()
       sendChunk chunk = do
@@ -369,7 +408,7 @@ streamWithProgress hin totalBytes parts = do
         modifyIORef' writtenRef (+ chunkLen)
         now <- getMonotonicTime
         lastDraw <- readIORef lastDrawRef
-        when (now - lastDraw > 0.1) $ do
+        when (now - lastDraw >= progressDrawInterval) $ do
           writeIORef lastDrawRef now
           w <- readIORef writtenRef
           drawProgress w totalBytes (now - t0)
@@ -381,6 +420,31 @@ streamWithProgress hin totalBytes parts = do
   finalNow <- getMonotonicTime
   drawProgress totalBytes totalBytes (finalNow - t0)
   hFlush hin
+
+-- | Target chunk size for progress-aware streaming. The
+-- written-counter advances once per chunk, so this also sets
+-- the granularity of in-place ETA / KB-counter updates. 1 KB
+-- is small enough that the bar advances visibly even with
+-- multi-second `hPut` blocks at the slow JTAG-UART rate, and
+-- large enough that per-chunk syscall overhead stays
+-- negligible.
+progressChunkBytes :: Int
+progressChunkBytes = 1024
+
+-- | Minimum wall-clock between in-place progress redraws, in
+-- seconds. Throttling redraws independently from chunk size
+-- avoids burning CPU on stderr formatting at peak link rates
+-- while still keeping the bar feeling alive at slow rates.
+progressDrawInterval :: Double
+progressDrawInterval = 1.0
+
+-- | Split a strict bytestring into pieces of at most @n@ bytes.
+sliceChunk :: Int -> BS.ByteString -> [BS.ByteString]
+sliceChunk n bs
+  | BS.null bs = []
+  | otherwise =
+      let (h, t) = BS.splitAt n bs
+       in h : sliceChunk n t
 
 -- | Draw a single progress-line update on stderr. Carriage-return
 -- prefix overwrites the previous line in place.
