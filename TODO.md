@@ -58,9 +58,72 @@ rules around maintaining it.
     the boot stub in BRAM, so this stays deferred. See
     [docs/linux-boot.md](./docs/linux-boot.md) §L-2 for the
     full reasoning.
-  - **L-3..L-9** pending — see plan doc for the full sequence
-    (SDRAM JTAG-load, boot stub + DTS, cross-toolchain,
-    kernel build, initramfs, flash app, silicon bring-up).
+  - **L-3a. ✓ SoC-internal JTAG-load mux + Top.hs ports**
+    (**LANDED 2026-04-28**, commit `61f7c22`). New
+    `siJtagLoad{Mode,Addr,Wdata,We,Rd}` fields on `SocIn`;
+    `jtagMuxedSdram` overrides the riski5 core's bus signals
+    into `Riski5.Sdram.sdram` when `siJtagLoadMode = True`.
+    Future-ready integration point for option A
+    (Altera JTAG-Avalon-Master IP) — see
+    [docs/linux-boot.md](./docs/linux-boot.md) §L-3.
+    CoreMark stable.
+  - **L-3b. ✓ JTAG-UART → SDRAM firmware loader (option B)**
+    (**LANDED 2026-04-28**, commit `5c890cd`). New
+    `firmware/phase1/SdramLoader.hs` (39 words): polls JTAG-UART
+    RX, assembles 4 bytes → word, writes to SDRAM, JALRs.
+    `riski5-core-sdramload` Nix variant + `flash-riski5-sdramload`
+    app + `scripts/load-sdram-jtag.sh`. ~100 KB/s throughput
+    over JTAG-UART (~80 s for 8 MB Linux). Multi-bit
+    altsource_probe sources don't work on Quartus 13.0sp1
+    (option A blocker), so option B firmware loader is the
+    working baseline.
+  - **L-4. ✓ Device tree + DTB build**
+    (**LANDED 2026-04-28**, commit `91219a2`). New
+    `firmware/phase2/dts/riski5.dts` — declares CLINT @
+    0x02000000, PLIC @ 0x40000000 (riscv,ndev=8), Altera
+    JTAG-UART @ 0x10000000 routed to PLIC source 1, 8 MB SDRAM
+    @ 0x80000000, 40 MHz timebase. earlycon points at the same
+    JTAG-UART tap nios2-terminal listens on. New
+    `pkgs/riski5-dtb/package.nix` invokes `dtc` to produce a
+    1.5 KB DTB.
+  - **L-5. ✓ riscv32-linux cross-toolchain in devshell**
+    (**LANDED 2026-04-28**, commit `865f9d8`). Added
+    `pkgsCross.riscv64.buildPackages.gcc` — single toolchain
+    builds rv32 binaries with `-march=rv32ima -mabi=ilp32`.
+    Verified: `int main(){return 0;}` → elf32-littleriscv with
+    canonical RV32I prologue.
+  - **L-6. ✓ Linux 6.18.22 kernel build**
+    (**LANDED 2026-04-28**, commit `e18e242`). New
+    `pkgs/linux-rv32-nommu/{package.nix,riski5-overlay.config}`.
+    Layers nommu_virt_defconfig + 32-bit.config + riski5
+    overlay (Altera JTAG-UART driver, SiFive PLIC + RISC-V
+    timer bindings, aggressive size cuts). Recipe-only commit;
+    actual kernel build is slow (~5 min) and on-demand.
+  - **L-7 + L-8. ✓ BFLT /init + minimal cpio initramfs**
+    (**LANDED 2026-04-28**, commit `6776352`). New
+    `firmware/phase2/init-rv32-nommu/init.S` — two-stage
+    hello (direct MMIO write + write(1, ...) syscall + exit).
+    `pkgs/init-rv32-nommu/` cross-compiles + wraps in a
+    64-byte BFLT v4 header (Python script
+    `build_init_bflt.py`). `pkgs/initramfs-rv32-nommu/`
+    builds a 1024-byte newc cpio with `/init` + empty
+    `/proc /sys /dev`.
+  - **L-9. ✓ Linux silicon-bring-up bitstream + apps**
+    (**LANDED 2026-04-28**, commit `443ab4a`). New
+    `firmware/phase1/LinuxBoot.hs` (58 words) — combined
+    SDRAM-loader + RISC-V Linux boot-protocol jumper. Reads
+    kernel + DTB blobs from JTAG-UART, writes to SDRAM,
+    sets up `a0=0`, `a1=&dtb`, `sp=top of SRAM`, JALRs to
+    `0x80000000`. `riski5-core-linux` Nix variant +
+    `flash-riski5-linux` app + `scripts/load-linux.sh`.
+    CoreMark stable at 44.57 / 1.114.
+  - **Path-A stack feature-complete.** Silicon validation is
+    now a workflow:
+    1. `nix build .#riski5-dtb`
+    2. `nix build .#linux-rv32-nommu` (slow, ~5 min)
+    3. `nix run .#flash-riski5-linux`
+    4. `scripts/load-linux.sh result/Image result-dtb/riski5.dtb`
+    5. Watch nios2-terminal for: `'L'` → `'D'` → kernel banner.
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
