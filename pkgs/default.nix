@@ -151,6 +151,10 @@
       riski5-core-linux = pkgs.callPackage ./riski5-core/package.nix {
         inherit quartus-ii-13;
         linuxBoot = true;
+        # The B-* Copilot-eDSL → C → RV32 boot ROM. The variant's
+        # buildPhase drops `${bootRomCopilot}/CoreMark.hs` straight
+        # into firmware/phase1/CoreMark.hs.
+        bootRomCopilot = self'.packages.riski5-boot-rom-rv32-nommu;
       };
 
       # L-4: compiled device tree (DTB) for the riski5 SoC.

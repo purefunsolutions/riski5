@@ -20,6 +20,7 @@
   stdenv,
   lib,
   pkgsCross,
+  python3,
   riski5-boot-rom-gen,
 }: let
   ccPkg = pkgsCross.riscv64.buildPackages.gcc;
@@ -32,14 +33,18 @@ in
 
     src = ../../firmware/phase2/boot-rom;
 
-    nativeBuildInputs = [ccPkg binutils riski5-boot-rom-gen];
+    nativeBuildInputs = [ccPkg binutils python3 riski5-boot-rom-gen];
 
     dontConfigure = true;
 
     buildPhase = ''
       runHook preBuild
 
-      # Step 1: Copilot codegen → boot_rom_step.{c,h,_types.h}.
+      # Step 1: Copilot codegen → boot_rom_step.{c,h,_types.h}
+      # AND the C wrapper start.c (generated from a Haskell-string
+      # template inside tools/boot-rom/Main.hs). No hand-written
+      # C lives in the repo — every .c file in the build is
+      # machine-emitted at this step.
       mkdir -p generated
       riski5-boot-rom-gen generated
 
@@ -62,19 +67,10 @@ in
       cat generated/boot_rom_step.h
       echo "### Copilot-emitted boot_rom_step.c (head, post-strip):"
       head -40 generated/boot_rom_step.c
+      echo "### Haskell-emitted start.c (head):"
+      head -30 generated/start.c
 
       # Step 2: cross-compile start.c + the generated step source.
-      # -nostartfiles  : we provide _start ourselves
-      # -ffreestanding : no hosted libc / OS assumptions
-      # -nostdlib      : no auto-link of crt/libc
-      # -fno-builtin   : do not constant-fold things into memcpy etc.
-      # -Os            : size-optimise (BRAM is 16 KB)
-      # -mno-relax     : keep PC-relative addresses concrete (no
-      #                  linker-relaxation surprises in the flat blob)
-      # -no-pie + -static to avoid the toolchain's default
-      # dynamic / position-independent linking (the riscv64 cross
-      # is built for hosted Linux distros where shared objects are
-      # the default; we want a freestanding bare-metal blob).
       ${cc}gcc \
         -march=rv32ima -mabi=ilp32 \
         -nostartfiles -nostdlib -ffreestanding -fno-builtin \
@@ -83,7 +79,7 @@ in
         -Igenerated \
         -T linker.ld \
         -o boot_rom.elf \
-        start.c generated/boot_rom_step.c
+        generated/start.c generated/boot_rom_step.c
 
       ${cc}objdump -d boot_rom.elf > boot_rom.disasm
 
@@ -94,6 +90,21 @@ in
       echo "### boot_rom.disasm (first 40 lines):"
       head -40 boot_rom.disasm
 
+      # Step 4 (B-4 / B-5): convert the .bin into a Haskell
+      # CoreMark module overlay. The riski5-core linuxBoot
+      # variant drops this directly into firmware/phase1/CoreMark.hs,
+      # the same overlay slot every other variant
+      # (SramExec / SdramExec / SdramLoad / aExtTest /
+      # TimerIrqTest) targets — keeps Quartus placement stable
+      # and means no Clash callsite changes between the
+      # Asm-eDSL LinuxBoot (kept for reference) and this
+      # Copilot path.
+      python3 ${./../lib/gen-bin-hs.py} \
+        boot_rom.bin \
+        CoreMark.hs \
+        CoreMark \
+        coreMarkFirmwareWords
+
       runHook postBuild
     '';
 
@@ -103,9 +114,11 @@ in
       cp boot_rom.elf      $out/boot_rom.elf
       cp boot_rom.bin      $out/boot_rom.bin
       cp boot_rom.disasm   $out/boot_rom.disasm
+      cp CoreMark.hs       $out/CoreMark.hs
       cp generated/boot_rom_step.c        $out/boot_rom_step.c
       cp generated/boot_rom_step.h        $out/boot_rom_step.h
       cp generated/boot_rom_step_types.h  $out/boot_rom_step_types.h
+      cp generated/start.c                $out/start.c
       runHook postInstall
     '';
 

@@ -82,6 +82,13 @@
   # send a kernel + DTB pair via JTAG-UART. After 'D' marker,
   # kernel printk output streams via the same JTAG-UART tap.
   linuxBoot ? false,
+  # B-* (Copilot Boot ROM): the riski5-boot-rom-rv32-nommu
+  # derivation. Required iff `linuxBoot = true`. Provides a
+  # ready-made CoreMark.hs the linuxBoot variant drops into
+  # firmware/phase1/CoreMark.hs (replacing the Asm-eDSL
+  # LinuxBoot indirection with the Copilot-eDSL → C → RV32
+  # path).
+  bootRomCopilot ? null,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -380,36 +387,25 @@ in
             ''}
 
             ${lib.optionalString isLinuxBoot ''
-              # L-9 Linux-boot variant. Overlay CoreMark.hs with
-              # LinuxBoot's words: a combined SDRAM-loader +
-              # boot-protocol jumper. Reads kernel + DTB from
-              # JTAG-UART, writes them to SDRAM, JALRs into the
-              # kernel with a0=0, a1=&dtb, sp=top of SRAM.
+              # L-9 Linux-boot variant — Copilot-eDSL boot ROM.
+              # The riski5-boot-rom-rv32-nommu derivation ran the
+              # full Copilot → C → RV32 pipeline and emitted a
+              # ready-made CoreMark.hs containing the boot ROM as
+              # a [BitVector 32] literal. Drop it straight into
+              # firmware/phase1/CoreMark.hs — same overlay slot
+              # every other variant uses, keeps Quartus
+              # placement stable, no Clash callsite changes.
               chmod -R u+w firmware/phase1
-              cat > firmware/phase1/CoreMark.hs <<'EOF'
-              -- SPDX-FileCopyrightText: 2026 Mika Tammi
-              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
-              --
-              -- Overlaid by the linuxBoot Nix build: re-exports
-              -- LinuxBoot's firmware under the CoreMark name so
-              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
-              -- bakes the Linux boot stub into imem.
-              {-# LANGUAGE DataKinds #-}
-              {-# LANGUAGE NoStarIsType #-}
-
-              module CoreMark (
-                coreMarkFirmwareWords,
-              ) where
-
-              import Clash.Prelude (BitVector)
-              import LinuxBoot (linuxBootFirmwareWords)
-
-              coreMarkFirmwareWords :: [BitVector 32]
-              coreMarkFirmwareWords = linuxBootFirmwareWords
-              EOF
-              sed -i 's/^              //' firmware/phase1/CoreMark.hs
-              echo "### linuxBoot variant: overlaid firmware/phase1/CoreMark.hs"
-              cat firmware/phase1/CoreMark.hs
+              cp ${
+                if bootRomCopilot == null
+                then throw "linuxBoot=true requires bootRomCopilot ≠ null"
+                else "${bootRomCopilot}/CoreMark.hs"
+              } firmware/phase1/CoreMark.hs
+              echo "### linuxBoot variant: copied Copilot-built CoreMark.hs"
+              echo "### (head)"
+              head -10 firmware/phase1/CoreMark.hs
+              echo "### word count"
+              grep -c "^  ," firmware/phase1/CoreMark.hs
             ''}
 
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
