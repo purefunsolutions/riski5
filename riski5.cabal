@@ -133,6 +133,7 @@ library riski5-firmware
     HelloSdramExec
     HelloSramExec
     HelloTimerIrq
+    LinuxBoot
     MemTest
     SdramLoader
 

@@ -142,6 +142,17 @@
         sdramLoad = true;
       };
 
+      # L-9: Linux-boot bitstream. Bakes firmware/phase1/LinuxBoot.hs
+      # into imem — a combined SDRAM-loader + boot-protocol jumper.
+      # On power-up it prints 'L', reads (kernel + DTB) from
+      # JTAG-UART, writes to SDRAM, prints 'D', then JALRs into the
+      # kernel at 0x80000000 with a0=0, a1=&dtb, sp=top of SRAM.
+      # Use scripts/load-linux.sh as the host-side workflow.
+      riski5-core-linux = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        linuxBoot = true;
+      };
+
       # L-4: compiled device tree (DTB) for the riski5 SoC.
       # firmware/phase2/dts/riski5.dts → riski5.dtb via `dtc`.
       # Consumed by the Linux kernel build (L-6) which embeds it
@@ -218,6 +229,12 @@
         riski5-core = self'.packages.riski5-core-sdramload;
       };
 
+      # Flasher for the L-9 Linux-boot bitstream.
+      flash-riski5-linux = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-linux;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -253,6 +270,10 @@
       flash-riski5-sdramload = {
         type = "app";
         program = "${self'.packages.flash-riski5-sdramload}/bin/flash-riski5";
+      };
+      flash-riski5-linux = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-linux}/bin/flash-riski5";
       };
       console = {
         type = "app";

@@ -75,6 +75,13 @@
   # + 'D' (load complete) + whatever the loaded program prints.
   # See @scripts/load-sdram-jtag.sh@ for the host-side workflow.
   sdramLoad ? false,
+  # L-9: combined Linux loader + boot-stub. Like sdramLoad but
+  # loads two blobs (kernel + DTB) and JALRs into @0x8000_0000@
+  # with the standard RISC-V nommu boot ABI applied (a0=0,
+  # a1=&dtb, sp=top of SRAM). Use @scripts/load-linux.sh@ to
+  # send a kernel + DTB pair via JTAG-UART. After 'D' marker,
+  # kernel printk output streams via the same JTAG-UART tap.
+  linuxBoot ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -90,6 +97,7 @@
   isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec;
   isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest;
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
 in
   stdenv.mkDerivation {
     pname =
@@ -99,6 +107,7 @@ in
       else if isAExtTest then "riski5-core-aexttest"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
+      else if isLinuxBoot then "riski5-core-linux"
       else "riski5-core";
     version = "0.1.0";
 
@@ -370,6 +379,39 @@ in
               cat firmware/phase1/CoreMark.hs
             ''}
 
+            ${lib.optionalString isLinuxBoot ''
+              # L-9 Linux-boot variant. Overlay CoreMark.hs with
+              # LinuxBoot's words: a combined SDRAM-loader +
+              # boot-protocol jumper. Reads kernel + DTB from
+              # JTAG-UART, writes them to SDRAM, JALRs into the
+              # kernel with a0=0, a1=&dtb, sp=top of SRAM.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the linuxBoot Nix build: re-exports
+              -- LinuxBoot's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the Linux boot stub into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import LinuxBoot (linuxBootFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = linuxBootFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### linuxBoot variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -386,7 +428,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
