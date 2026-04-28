@@ -681,6 +681,7 @@ in
             .SRAM_DQ_I   (SRAM_DQ),
             .UART_RDATA  (uart_rdata),
             .UART_READY  (uart_ready),
+            .UART_IRQ    (jtag_uart_irq),
             .SDRAM_RDATA (sdram_ip_readdata),
             .SDRAM_VALID (sdram_ip_valid),
             .SDRAM_READY (sdram_ready),

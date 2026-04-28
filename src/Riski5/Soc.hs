@@ -596,13 +596,26 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- External IRQ source vector. Bit 0 is reserved per SiFive PLIC
   -- spec (firmware never enables source 0). Bit 1 = JTAG-UART RX
   -- (the IP's @av_irq@ pin asserts on @CONTROL.RE && RI@ once
-  -- firmware has set RE; ties to 'pure False' on sim and on early
-  -- silicon until firmware opts in). Bits 2..7 reserved for future
-  -- peripheral IRQs (LCD-ready, GPIO edge, SDRAM-bus error, etc.).
+  -- firmware has set RE). Bits 2..7 reserved for future peripheral
+  -- IRQs (LCD-ready, GPIO edge, SDRAM-bus error, etc.).
+  --
+  -- Each peripheral IRQ is registered before fanning into the PLIC's
+  -- combinational pending-and-arbitrate cone. The Altera JTAG-UART
+  -- IP's @av_irq@ output drives directly off the IP's internal
+  -- registers but in the same clock domain — registering at the SoC
+  -- boundary still adds one cycle of latency (irrelevant for OS-grade
+  -- IRQ semantics) and gives Quartus a clean register stage between
+  -- the IP-IRQ output and the riski5 fabric. Without this stage, on
+  -- silicon the live @av_irq@ → @plicExtIrqsS@ → @pendingS@ → bus
+  -- mux fan-out triggered a Quartus place-and-route shift that broke
+  -- BRAM fetches (CoreMark hung at boot) — see commit message of
+  -- L-1's hardware fix.
+  uartIrqRegS :: Signal dom Bool
+  uartIrqRegS = register False (siUartIrq <$> inS)
+
   plicExtIrqsS :: Signal dom (BitVector PlicSources)
   plicExtIrqsS =
-    (\uartIrq -> if uartIrq then 0b10 else 0)
-      <$> (siUartIrq <$> inS)
+    (\uartIrq -> if uartIrq then 0b10 else 0) <$> uartIrqRegS
   (plicRdataS, meipS) =
     plic plicSelS dAddrS dWdataS dBeS dRenS plicExtIrqsS
 

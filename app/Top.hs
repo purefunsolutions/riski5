@@ -162,6 +162,17 @@ topEntity ::
   IP's FIFO captures it.
   -}
   "UART_READY" ::: Signal Dom30 Bool ->
+  {- | The Altera JTAG-UART IP's @av_irq@ output, routed through
+  the @riski5_top.v@ wrapper. Active-high while the IP wants to
+  raise an interrupt — typically because firmware has set
+  @CONTROL.RE@ and the RX FIFO has data, or because firmware has
+  set @CONTROL.WE@ and the TX FIFO has space. The SoC routes this
+  to PLIC source 1, which drives @meipS@ → @mip.MEIP@ when
+  enabled. CoreMark and other phase-1 firmware never enable the
+  IP's IRQ controls so the line stays low and the new wire is
+  dead-coded by Quartus on the hot path.
+  -}
+  "UART_IRQ" ::: Signal Dom30 Bool ->
   {- | 16-bit read-data returned by the Altera SDRAM Controller IP
   on @za_data@. Valid on the cycle @SDRAM_VALID@ is asserted.
   -}
@@ -251,6 +262,7 @@ topEntity
   sramDqInS
   uartRdataS
   uartReadyS
+  uartIrqS
   sdramRdataS
   sdramValidS
   sdramReadyS
@@ -263,22 +275,18 @@ topEntity
               <*> sdramValidS
               <*> sdramReadyS
           inS =
-            (\sw key dq ur urRdy sdr cr co ->
+            (\sw key dq ur urRdy urIrq sdr cr co ->
                 SocIn
                   { siSwitches = sw
                   , siKeys = key
                   , siSramDqIn = dq
                   , siUartRdata = ur
                   , siUartReady = urRdy
-                  , -- The Altera JTAG-UART IP exposes an @av_irq@
-                    -- output that the riski5_top.v wrapper currently
-                    -- ignores; firmware on phase-2A silicon doesn't
-                    -- enable RX-interrupts yet, so the IRQ line is
-                    -- tied 'False' here. When firmware (or T-LI2's
-                    -- 16550-shape adapter) wants live UART-RX traps,
-                    -- the wrapper grows a top-level input wired
-                    -- through to here.
-                    siUartIrq = False
+                  , -- The Altera JTAG-UART IP's @av_irq@ output is
+                    -- now routed through @riski5_top.v@ as a top-
+                    -- level input on this Clash module. It feeds
+                    -- PLIC source 1 (see 'Riski5.Soc.plicExtIrqsS').
+                    siUartIrq = urIrq
                   , siSdramReply = sdr
                   , siCaptureReset = cr
                   , siCaptureOffset = co
@@ -288,6 +296,7 @@ topEntity
               <*> sramDqInS
               <*> uartRdataS
               <*> uartReadyS
+              <*> uartIrqS
               <*> sdramReplyS
               <*> captureResetS
               <*> captureOffsetS
