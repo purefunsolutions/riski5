@@ -158,13 +158,122 @@ For phase-2 Linux, BRAM is only the small boot stub — kernel +
 initramfs land in SDRAM via L-3's JTAG-load path. So we keep the
 current 16 KB and proceed straight to L-3.
 
-### L-3. JTAG-loadable SDRAM via `quartus_stp` Tcl
+### L-3. JTAG-loadable SDRAM via `quartus_stp` Tcl + altsource_probe
 
-`scripts/load-sdram-jtag.tcl` taking `<bin-path>` + `<base>`.
-Reuses the `quartus_stp` runtime our altsource_probe debug
-already lives in. Avalon-MM master writes through the SDRAM
-controller IP. Sanity-check: read-back-after-write a known
-pattern.
+Use the same `quartus_stp` + altsource_probe runtime that already
+hosts our PCFE / DBGF / FRZP / FRZF / CAPR / OFFS / CMTC / ITRC
+probes (see `pkgs/riski5-core/package.nix` and
+`scripts/freeze-trigger-probe.tcl`). No new IP needed — the JTAG
+hub on the FPGA reads/writes altsource_probe instances directly.
+
+**Sub-tasks (each its own commit):**
+
+#### L-3a. SoC-internal JTAG-load mux + Top.hs ports
+
+Inside `Riski5.Soc`, mux the SDRAM-IP-bound bus signals between
+the riski5 core's existing master and a JTAG-driven master, gated
+by a 1-bit `siJtagLoadMode` field on `SocIn`. New SocIn fields:
+
+```haskell
+, siJtagLoadMode  :: Bool          -- 1 = JTAG owns SDRAM
+, siJtagLoadAddr  :: BitVector 32  -- byte address
+, siJtagLoadWdata :: BitVector 32  -- 32-bit word
+, siJtagLoadWe    :: Bool          -- pulse to write
+, siJtagLoadRd    :: Bool          -- pulse to read
+```
+
+New SocOut fields (probe-readable by JTAG):
+
+```haskell
+, soJtagLoadRdata :: BitVector 32  -- last read result
+, soJtagLoadBusy  :: Bool          -- = waitrequest from SDRAM IP
+```
+
+Internally the mux sits *before* the existing `Riski5.Sdram`
+adapter — so the adapter's 32→16 conversion still applies, and
+the SDRAM IP sees clean 16-bit transactions on its slave port
+either way. When `siJtagLoadMode=False` (i.e. CoreMark and every
+other phase-1 / phase-2 firmware path), the mux reduces to
+identity and Quartus dead-codes the JTAG-load arms — CoreMark
+hot path stays bit-identical.
+
+Top.hs grows matching input/output ports
+(`JTAG_LOAD_MODE`, `JTAG_LOAD_ADDR`, `JTAG_LOAD_WDATA`,
+`JTAG_LOAD_WE`, `JTAG_LOAD_RD`, `JTAG_LOAD_RDATA`,
+`JTAG_LOAD_BUSY`). The wrapper does NOT yet drive these — they
+get tied to constants for now (the riski5_top.v wrapper change
+lands in L-3b).
+
+Tests: a new `JtagLoadSpec` writes a known pattern via the
+`siJtagLoad*` inputs to the simulated SDRAM model, then reads
+it back via the regular core path, asserts equality.
+
+#### L-3b. Wrapper-side altsource_probe instances
+
+Extend `riski5_top.v` (in `pkgs/riski5-core/package.nix`) with
+new altsource_probe instances:
+
+| Instance ID | Width | Direction       | Maps to                |
+|-------------|------:|-----------------|------------------------|
+| `JLMD`      | 1     | source → fabric | `JTAG_LOAD_MODE`       |
+| `JLAD`      | 32    | source → fabric | `JTAG_LOAD_ADDR`       |
+| `JLDW`      | 32    | source → fabric | `JTAG_LOAD_WDATA`      |
+| `JLWE`      | 1     | source → fabric | `JTAG_LOAD_WE`         |
+| `JLRD`      | 1     | source → fabric | `JTAG_LOAD_RD`         |
+| `JLRR`      | 32    | probe → JTAG    | `JTAG_LOAD_RDATA`      |
+| `JLBS`      | 1     | probe → JTAG    | `JTAG_LOAD_BUSY`       |
+
+Each wrapper-side source uses `clk30` as `source_clk` so the
+write is synchronous to the SoC. The Tcl script's
+`write_source_data -instance_id <ID> -value <hex>` then drives
+the corresponding `siJtagLoad*` input on the next core clock
+edge.
+
+Cost: ~10 LEs per source (storage register) + a few muxes. Total
+< 100 LEs — small enough that CoreMark should stay at the
+44.57 / 1.114 baseline.
+
+#### L-3c. `scripts/load-sdram-jtag.tcl`
+
+Tcl script matching the shape of `freeze-trigger-probe.tcl`:
+
+```tcl
+set ids [find_probe_instances]
+write_source_data -instance_id [dict get $ids JLMD] -value 1
+foreach {addr word} $payload {
+  write_source_data -instance_id [dict get $ids JLAD] -value $addr
+  write_source_data -instance_id [dict get $ids JLDW] -value $word
+  write_source_data -instance_id [dict get $ids JLWE] -value 1
+  write_source_data -instance_id [dict get $ids JLWE] -value 0
+  while {[read_probe_data -instance_id [dict get $ids JLBS]] eq "1"} {}
+}
+write_source_data -instance_id [dict get $ids JLMD] -value 0
+```
+
+Argument shape: `quartus_stp -t scripts/load-sdram-jtag.tcl
+<bin-path> <base-addr>`. Reads `<bin-path>` as little-endian
+32-bit words and writes them starting at `<base-addr>`.
+
+Sanity-check: read-back at the end via `JLRD`/`JLRR` for the
+first and last words — abort with a clear error if they don't
+match what was written.
+
+**Throughput estimate.** quartus_stp's JTAG hub commits sources
+at ~1k transactions/s on USB-Blaster (slow JTAG TCK). Each
+SDRAM word is 4 source writes + 1 probe read = 5 transactions =
+~5 ms per word = ~200 KB/s for an 8 MB kernel. ~40 s per load
+— acceptable for development. Compare against the firmware-
+driven JTAG-UART loader which would be ~10 s/MB at the IP's
+~100 KB/s, so similar order of magnitude either way.
+
+**Why this approach over a JTAG-to-Avalon Master IP.** Quartus II
+13.0sp1 ships an `altera_avalon_jtag_to_avalon_mm_master_bridge`
+IP, but it (a) requires Qsys-generated Verilog plus our wrapper
+adapter, (b) eats more LEs than a small altsource_probe set,
+(c) gives the same ~200 KB/s throughput in practice (the JTAG
+hub is the bottleneck, not the master port). Reusing
+altsource_probe matches the existing debug toolchain and keeps
+the wrapper a single source of truth.
 
 ### L-4. DTS + DTB
 
