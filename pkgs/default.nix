@@ -235,6 +235,26 @@
         riski5-core = self'.packages.riski5-core-linux;
       };
 
+      # `nix run .#load-linux` — sends kernel + DTB to the
+      # already-flashed linux-boot bitstream and attaches
+      # nios2-terminal. With no args, uses the flake-built
+      # kernel (linux-rv32-nommu) + DTB (riski5-dtb). Override
+      # via `nix run .#load-linux -- kernel.bin dtb`.
+      load-linux = pkgs.callPackage ../apps/load-linux.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) linux-rv32-nommu riski5-dtb;
+      };
+
+      # `nix run .#load-sdram-jtag -- <bin-path>` — host-side
+      # counterpart to the L-3b SdramLoader bitstream. Sends a
+      # length-prefixed binary blob via JTAG-UART; the on-board
+      # firmware writes to SDRAM and JALRs. Generic loader for
+      # the SdramLoader path (the Linux-specific equivalent is
+      # `load-linux` above).
+      load-sdram-jtag = pkgs.callPackage ../apps/load-sdram-jtag.nix {
+        inherit quartus-ii-13;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -274,6 +294,14 @@
       flash-riski5-linux = {
         type = "app";
         program = "${self'.packages.flash-riski5-linux}/bin/flash-riski5";
+      };
+      load-linux = {
+        type = "app";
+        program = "${self'.packages.load-linux}/bin/load-linux";
+      };
+      load-sdram-jtag = {
+        type = "app";
+        program = "${self'.packages.load-sdram-jtag}/bin/load-sdram-jtag";
       };
       console = {
         type = "app";
