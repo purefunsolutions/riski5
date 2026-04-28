@@ -308,6 +308,16 @@
         inherit (self'.packages) riski5-load-stream;
       };
 
+      # `nix run .#load-sdram-master -- <bin> <base-hex>` —
+      # direct-to-SDRAM upload via the JTAG-to-Avalon-Master bridge
+      # IP (L-3b option A). Bypasses the JTAG-UART RX path entirely.
+      # Expected throughput is the bridge IP's JTAG protocol rate
+      # (~50-100 KB/s) vs. the JTAG-UART loader's ~1-2 KB/s on the
+      # same USB-Blaster cable.
+      load-sdram-master = pkgs.callPackage ../apps/load-sdram-master.nix {
+        inherit quartus-ii-13;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -359,6 +369,10 @@
       load-sdram-jtag = {
         type = "app";
         program = "${self'.packages.load-sdram-jtag}/bin/load-sdram-jtag";
+      };
+      load-sdram-master = {
+        type = "app";
+        program = "${self'.packages.load-sdram-master}/bin/load-sdram-master";
       };
       console = {
         type = "app";

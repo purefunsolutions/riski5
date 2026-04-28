@@ -538,6 +538,36 @@ in
               --component-parameter=model=custom
             echo 'set_global_assignment -name VERILOG_FILE "altera-ip/sdram/riski5_sdram.v"' >> Riski5.qsf
 
+            # Generate Altera's JTAG-to-Avalon-Master bridge IP (L-3 design
+            # option A, deferred when L-3b chose option B / firmware loader).
+            # This is the IP that drives the L-3a `JTAG_LOAD_*` inputs of the
+            # Clash module so a host-side `master_write_32` Tcl command (via
+            # `quartus_stp`) writes 32-bit words straight into SDRAM via the
+            # SoC's bus mux. Bypasses the JTAG-UART RX path entirely —
+            # expected ~50-100 KB/s vs. the ~1-2 KB/s the JTAG-UART loader
+            # achieves on this rig (see docs/perf/jtag-uart-link-2026-04-28.md).
+            #
+            # FIFO_DEPTHS=2 is the IP default; the bridge uses internal
+            # streaming FIFOs to absorb JTAG-side bursts. FAST_VER is left
+            # off (experimental status in the IP's _hw.tcl).
+            mkdir -p altera-ip/jtag-master
+            ip-generate \
+              --component-file=${quartus-ii-13}/share/altera13.0sp1/ip/altera/sopc_builder_ip/altera_jtag_avalon_master/altera_jtag_avalon_master_hw.tcl \
+              --output-directory=altera-ip/jtag-master \
+              --output-name=riski5_jtag_master \
+              --file-set=QUARTUS_SYNTH \
+              --language=VERILOG \
+              --system-info=DEVICE_FAMILY=CYCLONEII \
+              --system-info=DEVICE=EP2C35F672C6 \
+              --component-parameter=USE_PLI=0 \
+              --component-parameter=FIFO_DEPTHS=2
+            # Pull all Verilog files the bridge IP emits — it composes
+            # several sub-modules, each in its own file under submodules/.
+            for f in altera-ip/jtag-master/riski5_jtag_master.v \
+                     altera-ip/jtag-master/submodules/*.v; do
+              echo "set_global_assignment -name VERILOG_FILE \"$f\"" >> Riski5.qsf
+            done
+
             # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
             # instantiation. The Clash top now takes clk30 / rst30_n as
             # inputs (rather than owning altpllSync internally), so this
@@ -758,16 +788,68 @@ in
         // Sources (JTAG → fabric): drive the SDRAM IP slave-side mux
         // inside Riski5.Soc when JTAG_LOAD_MODE is asserted.
         // Probes  (fabric → JTAG): SDRAM read result + busy.
-        // Tied to constants for now; L-3b replaces these with
-        // altsource_probe instances JLMD/JLAD/JLDW/JLWE/JLRD (sources)
-        // and JLRR/JLBS (probes).
-        wire         jtag_load_mode  = 1'b0;
-        wire [31:0]  jtag_load_addr  = 32'b0;
-        wire [31:0]  jtag_load_wdata = 32'b0;
-        wire         jtag_load_we    = 1'b0;
-        wire         jtag_load_rd    = 1'b0;
+        //
+        // L-3b option A landed: these wires are now driven by the
+        // Altera JTAG-to-Avalon-Master IP's master interface, which
+        // a host-side `master_write_32` Tcl command (via
+        // `quartus_stp` System Console) drives over JTAG. The bridge
+        // bypasses the JTAG-UART RX path, so kernel + DTB upload
+        // throughput is set by the bridge IP's JTAG protocol
+        // (~50-100 KB/s) rather than the JTAG-UART RX FIFO
+        // (~1-2 KB/s on this rig — see
+        // docs/perf/jtag-uart-link-2026-04-28.md).
+        wire [31:0]  jam_master_address;
+        wire [31:0]  jam_master_readdata;
+        wire         jam_master_read;
+        wire         jam_master_write;
+        wire [31:0]  jam_master_writedata;
+        wire         jam_master_waitrequest;
+        wire         jam_master_readdatavalid;
+        wire [3:0]   jam_master_byteenable;
+        wire         jam_master_reset_reset;
+
+        // Bridge → JTAG_LOAD_* fabric inputs.
+        wire         jtag_load_mode  = jam_master_read | jam_master_write;
+        wire [31:0]  jtag_load_addr  = jam_master_address;
+        wire [31:0]  jtag_load_wdata = jam_master_writedata;
+        wire         jtag_load_we    = jam_master_write;
+        wire         jtag_load_rd    = jam_master_read;
         wire [31:0]  jtag_load_rdata;
         wire         jtag_load_busy;
+
+        // JTAG_LOAD_BUSY is the Avalon-MM stall back to the bridge.
+        // The L-3a SoC uses a single-cycle write path (busy = we),
+        // so the bridge sees waitrequest deassert as soon as it
+        // strobes — a 1-cycle write per master_write transaction.
+        // For reads the SoC drives JTAG_LOAD_RDATA in the same
+        // cycle as we're not a multi-cycle reader (point-to-point
+        // SDRAM through the L-3a mux), so readdatavalid pulses
+        // for one cycle on each completed read transaction.
+        assign jam_master_waitrequest   = jtag_load_busy;
+        assign jam_master_readdata      = jtag_load_rdata;
+        // Single-cycle response: master_read this cycle ⇒
+        // master_readdatavalid next cycle. We register one tick
+        // of master_read to align with the L-3a SoC's pipeline.
+        reg          jam_read_pending = 1'b0;
+        always @(posedge clk30 or negedge rst30_n) begin
+            if (!rst30_n) jam_read_pending <= 1'b0;
+            else          jam_read_pending <= jam_master_read & ~jam_master_waitrequest;
+        end
+        assign jam_master_readdatavalid = jam_read_pending;
+
+        riski5_jtag_master u_jtag_master (
+            .clk_clk              (clk30),
+            .clk_reset_reset      (~rst30_n),
+            .master_address       (jam_master_address),
+            .master_readdata      (jam_master_readdata),
+            .master_read          (jam_master_read),
+            .master_write         (jam_master_write),
+            .master_writedata     (jam_master_writedata),
+            .master_waitrequest   (jam_master_waitrequest),
+            .master_readdatavalid (jam_master_readdatavalid),
+            .master_byteenable    (jam_master_byteenable),
+            .master_reset_reset   (jam_master_reset_reset)
+        );
 
         riski5 u_riski5 (
             .CLOCK_30    (clk30),
