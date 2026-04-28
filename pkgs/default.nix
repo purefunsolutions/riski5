@@ -150,6 +150,18 @@
       # kernel image with the DTB at a known offset.
       riski5-dtb = pkgs.callPackage ./riski5-dtb/package.nix {};
 
+      # L-6: rv32 nommu Linux kernel. Builds Linux 6.18 from
+      # nixpkgs's pinned source with riski5-specific config overlay
+      # (Altera JTAG-UART console, SiFive PLIC + CLINT bindings,
+      # aggressive size cuts). Output: $out/Image (raw kernel
+      # binary, ready to load via L-3b's loader) + $out/vmlinux
+      # (ELF for Spike). Initramfs is layered later via the
+      # L-7 / L-8 packages.
+      #
+      # Build is slow (~5 min). Trigger with `nix build
+      # .#linux-rv32-nommu`.
+      linux-rv32-nommu = pkgs.callPackage ./linux-rv32-nommu/package.nix {};
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
