@@ -331,6 +331,18 @@
         inherit quartus-ii-13;
       };
 
+      # `nix run .#boot-linux-master` — single-shot Linux boot via
+      # the JTAG-to-Avalon-Master path. Flashes the wait-for-go
+      # boot stub, master_write_32's kernel + DTB into SDRAM, writes
+      # the SRAM trigger, then opens nios2-terminal for the kernel
+      # console. Faster alternative to `boot-linux` for cases where
+      # the JTAG-UART loader's ~1-2 KB/s rate makes a 3.4 MB upload
+      # impractical.
+      boot-linux-master = pkgs.callPackage ../apps/boot-linux-master.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) riski5-core-linux-master linux-rv32-nommu riski5-dtb;
+      };
+
       console = pkgs.callPackage ../apps/console.nix {
         inherit quartus-ii-13;
       };
@@ -390,6 +402,10 @@
       load-sdram-master = {
         type = "app";
         program = "${self'.packages.load-sdram-master}/bin/load-sdram-master";
+      };
+      boot-linux-master = {
+        type = "app";
+        program = "${self'.packages.boot-linux-master}/bin/boot-linux-master";
       };
       console = {
         type = "app";

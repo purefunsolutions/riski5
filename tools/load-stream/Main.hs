@@ -81,7 +81,6 @@ import System.IO
   ( BufferMode (..)
   , Handle
   , IOMode (..)
-  , hClose
   , hFlush
   , hIsEOF
   , hIsTerminalDevice
@@ -222,14 +221,22 @@ runWithTerminal action =
             else do
               hPutStrLn
                 stderr
-                "Load complete (non-interactive stdin — exiting)."
+                "Load complete (non-interactive stdin — keeping nios2-terminal"
               hPutStrLn
                 stderr
-                "Re-run on a tty to forward keystrokes to the kernel."
-              -- Closing hin signals EOF to nios2-terminal so it
-              -- exits its read loop cleanly; withCreateProcess
-              -- then reaps the child as the bracket unwinds.
-              hClose hin
+                "attached so kernel TX still streams to stdout; Ctrl-C to exit)."
+              hPutStrLn stderr ""
+              -- Deliberately do NOT close hin: nios2-terminal stays
+              -- alive forwarding JTAG-UART RX (= kernel printk) to
+              -- our inherited stdout. Skipping `interactiveForward`
+              -- avoids pulling EOF from /dev/null and exiting
+              -- prematurely. waitForProcess blocks until SIGINT (or
+              -- nios2-terminal dying on its own); the surrounding
+              -- withCreateProcess reaps the child as the bracket
+              -- unwinds.
+              waitForProcess ph >>= \case
+                ExitSuccess -> pure ()
+                ec -> exitWith ec
         Nothing ->
           die "internal: failed to acquire nios2-terminal stdin handle"
 
