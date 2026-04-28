@@ -162,6 +162,18 @@
       # .#linux-rv32-nommu`.
       linux-rv32-nommu = pkgs.callPackage ./linux-rv32-nommu/package.nix {};
 
+      # L-7: BFLT /init hello-world. Cross-compiles
+      # firmware/phase2/init-rv32-nommu/init.S to a tiny BFLT
+      # binary that the L-8 initramfs places at /init.
+      init-rv32-nommu = pkgs.callPackage ./init-rv32-nommu/package.nix {};
+
+      # L-8: minimal cpio initramfs containing the L-7 BFLT init
+      # plus empty /proc /sys /dev mount-point dirs. Output:
+      # $out/initramfs.cpio.
+      initramfs-rv32-nommu = pkgs.callPackage ./initramfs-rv32-nommu/package.nix {
+        inherit (self'.packages) init-rv32-nommu;
+      };
+
       flash-riski5 = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         inherit (self'.packages) riski5-core;
