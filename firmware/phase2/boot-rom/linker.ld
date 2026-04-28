@@ -19,10 +19,20 @@ ENTRY(_start)
 
 MEMORY
 {
-    /* Match the BRAM region in src/Riski5/MemMap.hs — phase-1
-     * imem is 16 KB, addressable from PC 0.
+    /* BRAM hosts .text + .rodata + .data, baked into the bitstream.
+     * The bus port is **read-only** in `Riski5.Soc` (writes silently
+     * drop), so anything mutable can't live here.
      */
     BRAM (rx) : ORIGIN = 0x00000000, LENGTH = 16K
+
+    /* On-board 512 KB SRAM (IS61LV25616-class) is the writable
+     * scratch region. We park .bss/.sbss here (via NOLOAD) so
+     * `_start` can zero them — required because `boot_done`,
+     * `boot_kernel_bytes`, `uart_data`, and Copilot's per-step state
+     * indices live in .sbss and would otherwise inherit BRAM's
+     * bitstream padding (0x00000013 NOP, truthy as bool).
+     */
+    SRAM (rw) : ORIGIN = 0x20000000, LENGTH = 512K
 }
 
 SECTIONS
@@ -42,29 +52,26 @@ SECTIONS
         *(.rodata .rodata.*)
     } > BRAM
 
-    /* .data + .sdata. Catch both regular and "small" data
-     * (RV32 GCC puts static initialisers ≤ -G threshold in
-     * .sdata for gp-relative addressing). objcopy -j .text
-     * -j .data -j .sdata pulls all three into the flat
-     * binary so non-zero static initialisers reach BRAM. */
+    /* .data + .sdata. Initialised data lives in BRAM (read-only,
+     * bitstream-baked). Copilot only emits zero-initialised
+     * statics so .data/.sdata are normally empty for this image,
+     * but we keep the section in case some const-ish initialiser
+     * sneaks in. */
     .data : ALIGN(4) {
         *(.data .data.*)
         *(.sdata .sdata.*)
     } > BRAM
 
-    /* .bss + .sbss. _start zeros [__bss_start, __bss_end)
-     * before tail-calling c_main — Copilot's per-step state
-     * indices (s0_idx etc.) and our boot_done / uart_data
-     * statics live here. Without zeroing they'd inherit
-     * the bitstream padding (0x00000013 NOP) and the state
-     * machine starts mid-tick on reset. */
-    .bss : ALIGN(4) {
+    /* .bss + .sbss in SRAM (writable). NOLOAD keeps these out of
+     * the flat binary — `_start` zero-fills [__bss_start, __bss_end)
+     * over the live SRAM region before tail-calling c_main. */
+    .bss (NOLOAD) : ALIGN(4) {
         __bss_start = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
         *(COMMON)
         __bss_end = .;
-    } > BRAM
+    } > SRAM
 
     /DISCARD/ : {
         *(.note*)
