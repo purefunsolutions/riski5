@@ -20,6 +20,14 @@
     # Spike can load. Also lets the Hello firmware emit .elf for
     # ad-hoc Spike debugging.
     rv32Binutils = pkgs.pkgsCross.riscv32-embedded.buildPackages.binutils;
+    # L-5: full riscv64 cross-toolchain. Used to build the rv32 Linux
+    # kernel + initramfs userspace; the kernel build invokes
+    # riscv64-unknown-linux-gnu-gcc with `-march=rv32ima -mabi=ilp32`
+    # to target our hart. This single toolchain covers both rv32 and
+    # rv64 (rv32 is selected per-target via -march/-mabi), matching
+    # the riski5cuda recipe — no separate riscv32-linux GCC needed.
+    rv64LinuxGcc = pkgs.pkgsCross.riscv64.buildPackages.gcc;
+    rv64LinuxBinutils = pkgs.pkgsCross.riscv64.buildPackages.binutils;
   in {
     devShells.default = pkgs.mkShell {
       name = "riski5-dev";
@@ -46,6 +54,8 @@
         # Spike refuses to start ("Failed to run dtc").
         pkgs.dtc
         rv32Binutils
+        rv64LinuxGcc
+        rv64LinuxBinutils
       ];
       shellHook = ''
         echo "riski5 devshell — Clash 1.8.4 + Quartus 13.0sp1 + Verilator + Spike"
@@ -54,6 +64,9 @@
         echo "  nix build .#riski5-core  — (future) synthesize .sof for DE2"
         echo "  nix run .#flash-riski5   — (future) flash to DE2 via USB Blaster"
         echo "  nix run .#console        — (future) open nios2-terminal"
+        echo ""
+        echo "Linux toolchain (L-5):"
+        echo "  riscv64-unknown-linux-gnu-gcc -march=rv32ima -mabi=ilp32 ..."
       '';
     };
   };
