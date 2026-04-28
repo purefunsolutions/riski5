@@ -673,6 +673,21 @@ in
         wire         debug_reset_capture;
         wire [1:0]   debug_capture_offset; // unused — kept to match port shape
 
+        // ----- L-3 JTAG-load wires ----------------------------------
+        // Sources (JTAG → fabric): drive the SDRAM IP slave-side mux
+        // inside Riski5.Soc when JTAG_LOAD_MODE is asserted.
+        // Probes  (fabric → JTAG): SDRAM read result + busy.
+        // Tied to constants for now; L-3b replaces these with
+        // altsource_probe instances JLMD/JLAD/JLDW/JLWE/JLRD (sources)
+        // and JLRR/JLBS (probes).
+        wire         jtag_load_mode  = 1'b0;
+        wire [31:0]  jtag_load_addr  = 32'b0;
+        wire [31:0]  jtag_load_wdata = 32'b0;
+        wire         jtag_load_we    = 1'b0;
+        wire         jtag_load_rd    = 1'b0;
+        wire [31:0]  jtag_load_rdata;
+        wire         jtag_load_busy;
+
         riski5 u_riski5 (
             .CLOCK_30    (clk30),
             .RESET_30_N  (rst30_n),
@@ -687,6 +702,11 @@ in
             .SDRAM_READY (sdram_ready),
             .DEBUG_RESET_CAPTURE  (debug_reset_capture),
             .DEBUG_CAPTURE_OFFSET (debug_capture_offset),
+            .JTAG_LOAD_MODE  (jtag_load_mode),
+            .JTAG_LOAD_ADDR  (jtag_load_addr),
+            .JTAG_LOAD_WDATA (jtag_load_wdata),
+            .JTAG_LOAD_WE    (jtag_load_we),
+            .JTAG_LOAD_RD    (jtag_load_rd),
             .LEDR        (LEDR),
             .LEDG        (LEDG),
             .LCD_DATA    (LCD_DATA),
@@ -717,7 +737,9 @@ in
             .DEBUG_PCFETCH      (debug_pcfetch),
             .DEBUG_FLAGS        (debug_flags),
             .DEBUG_FROZEN_PC    (debug_frozen_pc),
-            .DEBUG_FROZEN_FLAGS (debug_frozen_flags)
+            .DEBUG_FROZEN_FLAGS (debug_frozen_flags),
+            .JTAG_LOAD_RDATA    (jtag_load_rdata),
+            .JTAG_LOAD_BUSY     (jtag_load_busy)
         );
 
         // ----- altsource_probe — read pcFetchS via JTAG --------------

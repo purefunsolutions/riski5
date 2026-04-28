@@ -60,7 +60,7 @@ module Riski5.Soc (
   SramOwner (..),
 ) where
 
-import Clash.Prelude hiding (And, Xor, not)
+import Clash.Prelude hiding (And, Or, Xor, not, (||))
 import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
 import Riski5.AvalonMm (AvalonMmBus (..))
@@ -73,7 +73,7 @@ import Riski5.Clint (clint)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Plic (PlicSources, plic)
-import Riski5.Sdram (SdramIpBus, SdramIpReply, sdram, sdramIpSim)
+import Riski5.Sdram (SdramIpBus, SdramIpReply (..), sdram, sdramIpSim)
 import Riski5.Sram (SramPins (..), sram, sramChipSim)
 
 {- |
@@ -154,6 +154,29 @@ data SocIn = SocIn
   wide probe (see @soDbgFrozenPcAll@ / @soDbgFrozenFlagsAll@).
   Kept in the record for now to avoid a wide refactor.
   -}
+  , siJtagLoadMode :: Bool
+  {- ^ L-3 JTAG-load: when 'True', the JTAG hub drives the SDRAM
+  IP via the @siJtagLoad*@ inputs below; when 'False', the riski5
+  core has the SDRAM as usual. Driven on hardware by an
+  altsource_probe source instance @JLMD@; tied to 'False' in
+  every sim wrapper so existing tests are unaffected. The mux
+  point is upstream of 'Riski5.Sdram.sdram' so the 32 ↔ 16
+  width conversion still applies in either mode.
+  -}
+  , siJtagLoadAddr :: BitVector 32
+  -- ^ L-3 JTAG-load: byte address for the next SDRAM transaction.
+  --   Driven by altsource_probe source @JLAD@. Ignored unless
+  --   @siJtagLoadMode = True@.
+  , siJtagLoadWdata :: BitVector 32
+  -- ^ L-3 JTAG-load: 32-bit write data. Source @JLDW@.
+  , siJtagLoadWe :: Bool
+  -- ^ L-3 JTAG-load: pulse-high to commit a write at
+  --   (siJtagLoadAddr, siJtagLoadWdata). Source @JLWE@. The Tcl
+  --   script writes 1, then 0, to issue one transaction.
+  , siJtagLoadRd :: Bool
+  -- ^ L-3 JTAG-load: pulse-high to issue a read from
+  --   siJtagLoadAddr. Source @JLRD@. The result lands on
+  --   'soJtagLoadRdata' once 'soJtagLoadBusy' deasserts.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -252,6 +275,15 @@ data SocOut = SocOut
   @mtvec.base@. Exposed on 'SocOut' so simulation harnesses
   and on-chip debug probes can observe the strobe directly.
   -}
+  , soJtagLoadRdata :: BitVector 32
+  -- ^ L-3 JTAG-load: last read result returned by the SDRAM IP.
+  --   Exposed via altsource_probe @JLRR@.
+  , soJtagLoadBusy :: Bool
+  -- ^ L-3 JTAG-load: 'True' while the SDRAM IP holds
+  --   @av_waitrequest@ for the JTAG-load transaction. The Tcl
+  --   script polls this between transactions to avoid issuing a
+  --   new write before the previous one completes. Exposed via
+  --   probe @JLBS@.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -783,6 +815,66 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   sdramSelDataS = (\a -> slaveOf a == SlaveSdram) <$> dAddrS
   sdramReplyS = siSdramReply <$> inS
 
+  -- L-3 JTAG-load mux. When @siJtagLoadMode = True@, the JTAG hub's
+  -- altsource_probe sources override the riski5 core's bus signals
+  -- before they reach 'sdram' (the 32 ↔ 16 width adapter); when
+  -- 'False' the mux reduces to identity and Quartus dead-codes the
+  -- override arms (CoreMark / silicon hot path bit-identical to L-2).
+  --
+  -- Sits __upstream__ of the existing fetch / data arbiter so the
+  -- 32 ↔ 16 conversion still runs in either mode and the SDRAM IP's
+  -- 16-bit slave port sees clean transactions.
+  sdramJtagModeS = siJtagLoadMode <$> inS
+  sdramJtagAddrS = siJtagLoadAddr <$> inS
+  sdramJtagWdataS = siJtagLoadWdata <$> inS
+  sdramJtagWeS = siJtagLoadWe <$> inS
+  sdramJtagRdS = siJtagLoadRd <$> inS
+
+  -- Bus-signal mux: applies @JtagLoadMode@ to a single
+  -- (sel, addr, wdata, be, ren) tuple. Used by both the
+  -- @enableSdramFetch=True@ arbitered arm and the @=False@ direct arm
+  -- below, keeping the JTAG-load contract identical across variants.
+  jtagMuxedSdram ::
+    Signal dom Bool ->
+    Signal dom (BitVector 32) ->
+    Signal dom (BitVector 32) ->
+    Signal dom (BitVector 4) ->
+    Signal dom Bool ->
+    ( Signal dom Bool
+    , Signal dom (BitVector 32)
+    , Signal dom (BitVector 32)
+    , Signal dom (BitVector 4)
+    , Signal dom Bool
+    )
+  jtagMuxedSdram selS_ addrS_ wdataS_ beS_ renS_ =
+    let sel' =
+          (\m s je jr -> if m then je || jr else s)
+            <$> sdramJtagModeS
+            <*> selS_
+            <*> sdramJtagWeS
+            <*> sdramJtagRdS
+        addr' =
+          (\m a ja -> if m then ja else a)
+            <$> sdramJtagModeS
+            <*> addrS_
+            <*> sdramJtagAddrS
+        wdata' =
+          (\m w jw -> if m then jw else w)
+            <$> sdramJtagModeS
+            <*> wdataS_
+            <*> sdramJtagWdataS
+        be' =
+          (\m b je -> if m then (if je then 0xF else 0) else b)
+            <$> sdramJtagModeS
+            <*> beS_
+            <*> sdramJtagWeS
+        ren' =
+          (\m r jr -> if m then jr else r)
+            <$> sdramJtagModeS
+            <*> renS_
+            <*> sdramJtagRdS
+     in (sel', addr', wdata', be', ren')
+
   ( sdramRdataS
     , sdramBusS
     , sdramDataReadyS
@@ -843,8 +935,10 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
               )
                 <$> sdramOwnerS
                 <*> dRenS
+            (selJ, addrJ, wdataJ, beJ, renJ) =
+              jtagMuxedSdram sdramSelArbS sdramAddrArbS sdramWdataArbS sdramBeArbS sdramRenArbS
             (sdramRdataS', sdramBusS', sdramReadyS') =
-              sdram sdramSelArbS sdramAddrArbS sdramWdataArbS sdramBeArbS sdramRenArbS sdramReplyS
+              sdram selJ addrJ wdataJ beJ renJ sdramReplyS
             sdramDataReadyS' =
               ( \o rdy -> case o of
                   OwnData -> rdy
@@ -868,8 +962,10 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
             )
         else
           let
+            (selJ, addrJ, wdataJ, beJ, renJ) =
+              jtagMuxedSdram sdramSelDataS dAddrS dWdataS dBeS dRenS
             (sdramRdataS', sdramBusS', sdramReadyS') =
-              sdram sdramSelDataS dAddrS dWdataS dBeS dRenS sdramReplyS
+              sdram selJ addrJ wdataJ beJ renJ sdramReplyS
            in
             ( sdramRdataS'
             , sdramBusS'
@@ -1216,6 +1312,15 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   _captureOffsetUnused :: Signal dom (Unsigned 2)
   _captureOffsetUnused = captureOffsetS
 
+  -- L-3 JTAG-load busy signal. True while the SDRAM IP holds
+  -- @av_waitrequest@, OR while @siJtagLoadWe@ is pulsed high before
+  -- the IP has had a chance to assert waitrequest. Folding the
+  -- write-strobe in here lets the Tcl script see "request in flight"
+  -- the same cycle it pulses @JLWE@, so it can poll @JLBS@ in a
+  -- tight loop without races.
+  jtagLoadBusyS =
+    (\w b -> w || b) <$> (siJtagLoadWe <$> inS) <*> (sirWaitrequest <$> sdramReplyS)
+
   -- ----- Bundle outputs ----------------------------------------
   outS =
     SocOut
@@ -1231,6 +1336,8 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> frozenPcFetchAllS
       <*> dbgFrozenFlagsAllS
       <*> mtipS
+      <*> sdramRdataS
+      <*> jtagLoadBusyS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
@@ -1264,6 +1371,11 @@ socSim progInit dataInit inSimS = outSimS
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
+          , siJtagLoadMode = False
+          , siJtagLoadAddr = 0
+          , siJtagLoadWdata = 0
+          , siJtagLoadWe = False
+          , siJtagLoadRd = False
           }
     )
       <$> inSimS
@@ -1381,6 +1493,11 @@ socSimFullWith enableSramFetch enableSdramFetch progInit dataInit sramInit inFul
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
+          , siJtagLoadMode = False
+          , siJtagLoadAddr = 0
+          , siJtagLoadWdata = 0
+          , siJtagLoadWe = False
+          , siJtagLoadRd = False
           }
     )
       <$> inFullS
@@ -1451,6 +1568,11 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
+          , siJtagLoadMode = False
+          , siJtagLoadAddr = 0
+          , siJtagLoadWdata = 0
+          , siJtagLoadWe = False
+          , siJtagLoadRd = False
           }
     )
       <$> inSimS

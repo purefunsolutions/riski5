@@ -200,6 +200,25 @@ topEntity ::
   @altsource_probe@ source.
   -}
   "DEBUG_CAPTURE_OFFSET" ::: Signal Dom30 (Unsigned 2) ->
+  {- | L-3 JTAG-load mode select. When 'True', the JTAG-load
+  inputs below own the SDRAM IP slave port; when 'False' (the
+  default in normal silicon operation), the riski5 core drives
+  SDRAM via its existing master path. Driven on hardware by
+  altsource_probe source instance @JLMD@.
+  -}
+  "JTAG_LOAD_MODE" ::: Signal Dom30 Bool ->
+  -- | L-3 JTAG-load: byte address for the next SDRAM transaction
+  --   (source @JLAD@). Ignored when @JTAG_LOAD_MODE = False@.
+  "JTAG_LOAD_ADDR" ::: Signal Dom30 (BitVector 32) ->
+  -- | L-3 JTAG-load: 32-bit write data (source @JLDW@).
+  "JTAG_LOAD_WDATA" ::: Signal Dom30 (BitVector 32) ->
+  -- | L-3 JTAG-load: pulse-high to commit a write (source
+  --   @JLWE@); the Tcl script writes 1 then 0.
+  "JTAG_LOAD_WE" ::: Signal Dom30 Bool ->
+  -- | L-3 JTAG-load: pulse-high to issue a read (source @JLRD@).
+  --   The result lands on @JTAG_LOAD_RDATA@ once
+  --   @JTAG_LOAD_BUSY@ deasserts.
+  "JTAG_LOAD_RD" ::: Signal Dom30 Bool ->
   ""
     ::: ( "LEDR" ::: Signal Dom30 (BitVector 18)
         , "LEDG" ::: Signal Dom30 (BitVector 9)
@@ -253,6 +272,12 @@ topEntity ::
           -- has the same layout as 'DEBUG_FLAGS' with bit [7]
           -- repurposed as @capturedS@.
           "DEBUG_FROZEN_FLAGS" ::: Signal Dom30 (BitVector 32)
+        , -- L-3 JTAG-load read-back. Driven by 'soJtagLoadRdata'.
+          -- Exposed via altsource_probe @JLRR@.
+          "JTAG_LOAD_RDATA" ::: Signal Dom30 (BitVector 32)
+        , -- L-3 JTAG-load busy strobe. Driven by 'soJtagLoadBusy'.
+          -- Exposed via altsource_probe @JLBS@.
+          "JTAG_LOAD_BUSY" ::: Signal Dom30 Bool
         )
 topEntity
   clk30
@@ -267,7 +292,12 @@ topEntity
   sdramValidS
   sdramReadyS
   captureResetS
-  captureOffsetS =
+  captureOffsetS
+  jtagLoadModeS
+  jtagLoadAddrS
+  jtagLoadWdataS
+  jtagLoadWeS
+  jtagLoadRdS =
   withClockResetEnable clk30 rst30 enableGen
     $ let sdramReplyS =
             (\d v r -> SdramIpReply {sirRdata = d, sirValid = v, sirWaitrequest = P.not r})
@@ -275,7 +305,7 @@ topEntity
               <*> sdramValidS
               <*> sdramReadyS
           inS =
-            (\sw key dq ur urRdy urIrq sdr cr co ->
+            ( \sw key dq ur urRdy urIrq sdr cr co jlm jla jlw jlwe jlrd ->
                 SocIn
                   { siSwitches = sw
                   , siKeys = key
@@ -290,6 +320,17 @@ topEntity
                   , siSdramReply = sdr
                   , siCaptureReset = cr
                   , siCaptureOffset = co
+                  , -- L-3 JTAG-load: when @jlm = True@ the JTAG hub
+                    -- drives the SDRAM IP via @jla@/@jlw@/@jlwe@/@jlrd@;
+                    -- when 'False' the riski5 core has SDRAM as usual
+                    -- (the CoreMark path). The wrapper ties these to
+                    -- altsource_probe sources @JLMD@ / @JLAD@ /
+                    -- @JLDW@ / @JLWE@ / @JLRD@ in L-3b.
+                    siJtagLoadMode = jlm
+                  , siJtagLoadAddr = jla
+                  , siJtagLoadWdata = jlw
+                  , siJtagLoadWe = jlwe
+                  , siJtagLoadRd = jlrd
                   })
               <$> swS
               <*> keyS
@@ -300,6 +341,11 @@ topEntity
               <*> sdramReplyS
               <*> captureResetS
               <*> captureOffsetS
+              <*> jtagLoadModeS
+              <*> jtagLoadAddrS
+              <*> jtagLoadWdataS
+              <*> jtagLoadWeS
+              <*> jtagLoadRdS
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
@@ -339,6 +385,8 @@ topEntity
           dbgFlagsS' = soDbgFlags <$> outS
           dbgFrozenPcS = soDbgFrozenPcAll <$> outS
           dbgFrozenFlagsS = soDbgFrozenFlagsAll <$> outS
+          jtagLoadRdataS = soJtagLoadRdata <$> outS
+          jtagLoadBusyS = soJtagLoadBusy <$> outS
        in ( ledrS
           , ledgS
           , lcdDataS
@@ -370,6 +418,8 @@ topEntity
           , dbgFlagsS'
           , dbgFrozenPcS
           , dbgFrozenFlagsS
+          , jtagLoadRdataS
+          , jtagLoadBusyS
           )
 
 {- | Exported Clash-usable top-entity annotation so
