@@ -19,13 +19,32 @@
 #   argv[0] — kernel image path (4-byte aligned)
 #   argv[1] — DTB path (4-byte aligned; padded if not)
 
-if {[llength $argv] != 2} {
-    puts stderr "usage: quartus_stp -t boot-linux-master.tcl <kernel> <dtb>"
-    exit 1
+## Args come via env vars because System Console's --script= flag
+## doesn't pass positional argv to the Tcl interpreter.
+
+## DIAGNOSTIC: System Console's `puts` may go to its log buffer
+## instead of the parent's stdout/stderr in `-cli` mode. Mirror
+## every important line into /tmp/boot-linux-master-progress.log
+## so we can see what actually ran even if console output is lost.
+set ::dbg_fp [open "/tmp/boot-linux-master-progress.log" "w"]
+proc dbg {msg} {
+    puts $::dbg_fp $msg
+    flush $::dbg_fp
+    puts stderr $msg
+    catch {flush stderr}
 }
 
-set kernel_path [lindex $argv 0]
-set dtb_path    [lindex $argv 1]
+dbg "boot-linux-master.tcl: started"
+
+if {![info exists ::env(BOOT_LINUX_KERNEL)] ||
+    ![info exists ::env(BOOT_LINUX_DTB)]} {
+    dbg "error: BOOT_LINUX_KERNEL and BOOT_LINUX_DTB must be set"
+    exit 1
+}
+set kernel_path $::env(BOOT_LINUX_KERNEL)
+set dtb_path    $::env(BOOT_LINUX_DTB)
+dbg "kernel: $kernel_path"
+dbg "dtb:    $dtb_path"
 
 foreach f [list $kernel_path $dtb_path] {
     if {![file exists $f]} {

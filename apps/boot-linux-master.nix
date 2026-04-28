@@ -92,8 +92,26 @@ writeShellApplication {
     sleep 0.5
 
     # Step 5 — upload kernel + DTB + go-trigger via master_write_32.
+    # `system-console` lives in sopc_builder/bin/ inside the unwrapped
+    # Quartus install. The alterade2-flake wrapper exports
+    # quartus_stp / quartus_pgm / etc. but not system-console
+    # itself, so we extract the FHS-env path from any wrapped tool's
+    # shell script and invoke `system-console` via the same FHS env
+    # (which has $QSYS_ROOTDIR on PATH already, see fhs-env.nix).
     echo "== boot-linux-master: streaming kernel + DTB via master_write_32 =="
-    quartus_stp -t ${../scripts/boot-linux-master.tcl} "$KERNEL" "$DTB"
+    fhs_wrapper=$(grep -oE '/nix/store/[^/]+-quartus-ii-13/bin/quartus-ii-13' \
+        "$(command -v quartus_stp)" | head -1)
+    if [[ -z "$fhs_wrapper" ]]; then
+      echo "error: could not extract FHS path from quartus_stp wrapper" >&2
+      exit 1
+    fi
+    # Pass paths via env vars — System Console's --script= flag
+    # doesn't propagate positional argv to the Tcl interpreter.
+    BOOT_LINUX_KERNEL="$KERNEL" \
+    BOOT_LINUX_DTB="$DTB" \
+    "$fhs_wrapper" system-console \
+        --script=${../scripts/boot-linux-master.tcl} \
+        -cli
 
     # Step 6 — recycle jtagd again so nios2-terminal gets a fresh
     # JTAG-UART handle (the master service's connection may have
