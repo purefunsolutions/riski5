@@ -187,6 +187,29 @@
         ghc = pkgs.haskellPackages.ghcWithPackages (ps: [ps.bytestring ps.process]);
       };
 
+      # B-* (Boot ROM via Copilot eDSL): host-tool that emits
+      # boot_rom_step.{c,h} from a Haskell stream specification.
+      # See docs/boot-rom-copilot.md.
+      riski5-boot-rom-gen =
+        pkgs.callPackage ./riski5-boot-rom-gen/package.nix {
+          ghc = pkgs.haskellPackages.ghcWithPackages (ps: [
+            ps.copilot
+            ps.copilot-c99
+            ps.copilot-language
+            ps.directory
+            ps.filepath
+          ]);
+        };
+
+      # B-* Boot ROM cross-compile pipeline: Copilot codegen →
+      # riscv64-unknown-linux-gnu-gcc → objcopy → flat
+      # binary. Output drives a future overlay of
+      # firmware/phase1/LinuxBoot.hs once B-5 lands.
+      riski5-boot-rom-rv32-nommu =
+        pkgs.callPackage ./boot-rom-rv32-nommu/package.nix {
+          inherit (self'.packages) riski5-boot-rom-gen;
+        };
+
       # L-8: minimal cpio initramfs containing the L-7 BFLT init
       # plus empty /proc /sys /dev mount-point dirs. Output:
       # $out/initramfs.cpio.

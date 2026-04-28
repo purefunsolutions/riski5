@@ -163,6 +163,18 @@ executable riski5-load-stream
     , bytestring  >=0.12 && <0.13
     , process     >=1.6  && <1.7
 
+executable riski5-boot-rom-gen
+  import:         warnings, language
+  main-is:        Main.hs
+  hs-source-dirs: tools/boot-rom
+  build-depends:
+    , base
+    , copilot
+    , copilot-c99
+    , copilot-language
+    , directory   >=1.3 && <1.4
+    , filepath    >=1.4 && <1.6
+
 test-suite riski5-test
   import:         warnings, language
   type:           exitcode-stdio-1.0

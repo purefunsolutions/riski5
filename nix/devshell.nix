@@ -11,6 +11,13 @@
         clash-ghc
         clash-prelude
         clash-lib
+        # B-* (Boot ROM via Copilot eDSL): generate C from a
+        # Haskell stream specification, then cross-compile to
+        # RV32 with the L-5 toolchain. See docs/boot-rom-copilot.md.
+        copilot
+        copilot-c99
+        copilot-language
+        copilot-prettyprinter
       ]);
     quartus = inputs.alterade2-flake.packages.${system}.quartus-ii-13;
     # riscv32-none-elf binutils: as, ld, objcopy, objdump, nm.
