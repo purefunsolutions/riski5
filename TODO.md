@@ -13,6 +13,26 @@ rules around maintaining it.
 
 ## In flight
 
+- **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
+  [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
+  minimal upstream Linux kernel + initramfs via JTAG-load to SDRAM,
+  print a banner over the JTAG UART. Tracked sub-tasks L-0..L-9.
+  - **L-0. ✓ CLINT to SiFive layout @ 0x0200_0000**
+    (**LANDED 2026-04-28**, commit `5937d3f`). `Riski5.MemMap.clintBase`
+    moves to the upstream-recognised slot; `Riski5.Clint` register
+    layout matches the SiFive CLINT v0 (msip @ 0x0000, mtimecmp @
+    0x4000, mtime @ 0xBFF8); decoder grows a `classifyLowMem`
+    sub-decode (top4=0x0 splits BRAM vs CLINT on bits[27:24]).
+    `firmware/phase1/HelloTimerIrq.hs` updated. CoreMark stable at
+    44.57 / 1.114 (CoreMark firmware never touches CLINT).
+    261/261 cabal tests green. Foundation for the DT
+    `compatible = "sifive,clint0"` binding the Linux clocksource
+    driver expects.
+  - **L-1..L-9** pending — see plan doc for the full sequence
+    (UART-IRQ wiring, BRAM bump, SDRAM JTAG-load, boot stub + DTS,
+    cross-toolchain, kernel build, initramfs, flash app, silicon
+    bring-up).
+
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
   `229e6a2`, `4bfb809`): ISA + encode + decode + Asm builders +
