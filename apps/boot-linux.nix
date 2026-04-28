@@ -120,15 +120,23 @@ writeShellApplication {
     echo "== boot-linux: flashing $SOF =="
     quartus_pgm -c "$cable" -m JTAG -o "p;$SOF"
 
-    # Step 4 — settle. Boot ROM runs _start (sp setup, bss
-    # zero-fill in SRAM, ~80 cycles), prints 'L', enters the
-    # polling loop. 500 ms at 40 MHz is 20 M cycles — orders
-    # of magnitude more than needed, but cheap.
+    # Step 4 — recycle jtagd. quartus_pgm spawns its own jtagd
+    # which keeps host-side buffers around even after the FPGA
+    # has been reconfigured. nios2-terminal would inherit those
+    # stale buffers and could see "phantom" RX bytes from a
+    # previous attempt OR write into a dead JTAG-UART instance
+    # ID that no longer matches the freshly-loaded bitstream.
+    # Killing jtagd here forces the next nios2-terminal to
+    # spawn a clean daemon that re-enumerates the JTAG chain
+    # against the live bitstream. This is the difference between
+    # "stuck on L forever" and "L + progress bar advances".
+    killall -q jtagd || :
     sleep 0.5
 
     # Step 5 — stream. riski5-load-stream owns nios2-terminal
     # spawning, header building, progress bar, and post-load
-    # interactive forwarding.
+    # interactive forwarding. The fresh nios2-terminal will spawn
+    # its own jtagd against the freshly-flashed FPGA.
     echo "== boot-linux: streaming kernel ($KBYTES B) + DTB ($DBYTES B) =="
     exec riski5-load-stream linux \
       "$KWORDS" "$DWORDS" "$KERNEL" "$DTB"

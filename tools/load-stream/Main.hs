@@ -325,7 +325,16 @@ announceLoad totalBytes parts = do
     (humanBytes totalBytes)
   hPutStrLn
     stderr
-    "Make sure the loader bitstream is flashed and KEY0 has been pressed."
+    "Loader bitstream must be flashed first — `nix run .#boot-linux` does"
+  hPutStrLn
+    stderr
+    "both flash + load atomically. The progress bar below redraws in place;"
+  hPutStrLn
+    stderr
+    "JTAG-UART throughput is ~1–2 KB/s on this rig so the first percent"
+  hPutStrLn
+    stderr
+    "takes ~30 s. Ctrl-C aborts; full upload runs ~25–30 min."
   hPutStrLn stderr ""
 
 -- | Zero-pad a lazy bytestring to the next multiple of 4 bytes.
