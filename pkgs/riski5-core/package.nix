@@ -894,25 +894,24 @@ in
         wire [31:0]  jtag_load_rdata;
         wire         jtag_load_busy;
 
-        // JTAG_LOAD_BUSY is the Avalon-MM stall back to the bridge.
-        // The L-3a SoC uses a single-cycle write path (busy = we),
-        // so the bridge sees waitrequest deassert as soon as it
-        // strobes — a 1-cycle write per master_write transaction.
-        // For reads the SoC drives JTAG_LOAD_RDATA in the same
-        // cycle as we're not a multi-cycle reader (point-to-point
-        // SDRAM through the L-3a mux), so readdatavalid pulses
-        // for one cycle on each completed read transaction.
-        assign jam_master_waitrequest   = jtag_load_busy;
-        assign jam_master_readdata      = jtag_load_rdata;
-        // Single-cycle response: master_read this cycle ⇒
-        // master_readdatavalid next cycle. We register one tick
-        // of master_read to align with the L-3a SoC's pipeline.
-        reg          jam_read_pending = 1'b0;
-        always @(posedge clk30 or negedge rst30_n) begin
-            if (!rst30_n) jam_read_pending <= 1'b0;
-            else          jam_read_pending <= jam_master_read & ~jam_master_waitrequest;
-        end
-        assign jam_master_readdatavalid = jam_read_pending;
+        // JTAG_LOAD_BUSY drives master_waitrequest and is the FSM-
+        // ready inverted (see Riski5.Soc.jtagLoadBusyS). The master
+        // therefore holds master_read / master_address asserted
+        // through the full SDRAM-controller multi-cycle read
+        // (SReadLoReq → SReadLoWait → SReadHiReq → SReadHiWait),
+        // and waitrequest only drops on the SReadHiWait cycle when
+        // the IP's za_valid pulses with the assembled 32-bit word.
+        assign jam_master_waitrequest = jtag_load_busy;
+        assign jam_master_readdata    = jtag_load_rdata;
+        // readdatavalid combinational with read-accept: pulses the
+        // SAME cycle as waitrequest=0 with master_read=1. This is
+        // required because @sdramRdataS@ is only meaningful in
+        // SReadHiWait when @validS@ is true — the next cycle the
+        // FSM has transitioned to SIdle and rdataS reverts to 0.
+        // An earlier @reg jam_read_pending@ that delayed the pulse
+        // by one cycle latched the post-transition zero, making
+        // every master_read_32 return 0.
+        assign jam_master_readdatavalid = jam_master_read & ~jam_master_waitrequest;
 
         riski5_jtag_master u_jtag_master (
             .clk_clk              (clk30),

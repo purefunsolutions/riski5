@@ -138,6 +138,19 @@ proc upload_file {m path base_addr size_bytes label} {
 upload_file $m $kernel_path $kbase $kbytes "kernel"
 upload_file $m $dtb_path    $dbase $dbytes "dtb"
 
+# Diagnostic: read back several kernel words via master_read_32 so we
+# can compare against the on-disk image. If they match, the upload
+# is intact end-to-end and any kernel-silent symptom is downstream
+# of the master-write path.
+puts ""
+puts "Verifying SDRAM contents at sample offsets..."
+foreach off {0 0x100 0x148 0x200 0x1000 0x35d000} {
+    set addr [expr {$kbase + $off}]
+    set words [master_read_32 $m $addr 1]
+    puts [format "  SDRAM\[%08x\] = %08x" $addr [lindex $words 0]]
+}
+puts ""
+
 puts ""
 puts "Writing boot-trigger record..."
 master_write_32 $m $go_addr [list $kbytes]
