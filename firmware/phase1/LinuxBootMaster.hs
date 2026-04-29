@@ -104,6 +104,30 @@ linuxBootMasterFirmware = do
   addi tmpReg x0 0x42            -- 'B'
   sw uartR tmpReg 0
 
+  -- DIAGNOSTIC: data-port read of SDRAM[0x8000_00A4] and dump
+  -- the four bytes via UART. Distinguishes "host patch at
+  -- 0x8000_00A4 didn't land in SDRAM" (we see kernel image
+  -- bytes here, e.g. NOP @0x00000013@ pattern) from "patch
+  -- landed but fetch from 0x8000_00A4 returns wrong data on
+  -- silicon" (we see the LUI @0xB7 02 00 10@ here but no
+  -- '!' stream once we JR). Emits four bytes between the
+  -- @B@ and the JR; framed by a @=@ before and @>@ after.
+  -- Halts after the JR was suppressed; remove the halt to
+  -- re-enable the JR for actual kernel boot.
+  addi tmpReg x0 0x3D            -- '='
+  sw uartR tmpReg 0
+  li sdramBaseR 0x8000_00A4
+  lw kbytes sdramBaseR 0
+  sw uartR kbytes 0
+  srli kbytes kbytes 8
+  sw uartR kbytes 0
+  srli kbytes kbytes 8
+  sw uartR kbytes 0
+  srli kbytes kbytes 8
+  sw uartR kbytes 0
+  addi tmpReg x0 0x3E            -- '>'
+  sw uartR tmpReg 0
+
   -- Host has placed kbytes at SDRAM[goAddr+0]. Read it.
   lw kbytes goAddr 0
 
