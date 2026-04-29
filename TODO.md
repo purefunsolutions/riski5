@@ -151,11 +151,30 @@ rules around maintaining it.
     pass on `Riski5.JtagAvalonMaster` and excludes the original
     `altera_avalon_packets_to_master.v` from the QSF
     `VERILOG_FILE` list.
-  - Validation pending: `nix build .#riski5-core-linux-master`
-    + on-DE2 boot via `nix run .#boot-linux-master`. Sentinel
-    test in `LinuxBootMaster.hs` already in place — should now
-    show 8/8 sample addresses overwritten by kernel bytes (vs
-    the 2/8 we observed with the Altera IP).
+  - Validation 2026-04-29: bridge counters confirm the FSM
+    accepts every byte and commits every write at the master
+    interface (bytes_in_cnt = 10,509,860, writes_commit_cnt =
+    873,541 ≈ expected 873,533). Yet silicon SDRAM cells still
+    held the pre-upload sentinel at ~85 % of sample addresses
+    — the bridge replacement alone did NOT fix the bug. The
+    `nix run .#jam-counter-probe` app + the diagnostic
+    altsource_probe wiring inside the shim are the load-bearing
+    diagnostic that pinpointed the residual path.
+  - **Sticky-arbiter fix (2026-04-30)** — task #133's
+    bridge-side work is correct; the residual writes were
+    being corrupted downstream at the SoC bus mux. New
+    `JtagMuxOwner` enum + `nextJtagMuxOwner` register in
+    `Riski5.Soc` (`jtagMuxOwnerS`) only re-picks ownership on
+    `sdramRawReadyS` edges, so the JTAG-Master mux can't flip
+    mid-transaction. Silicon dump now shows **8 / 8** sample
+    addresses match the actual kernel bytes (vs 1 / 7 before).
+    Build cost +152 LE (11,602 / 33,216), Fmax 53.1 MHz at
+    40 MHz. 261 / 261 cabal tests green. **Linux boot post-
+    JR-to-kernel still hangs silently** (separate debug —
+    likely residual partial-write at some unsampled cell or
+    DTB-related; see
+    [`memory/project_avalon_master_state.md`](./.claude/projects/-home-mika-riski5/memory/project_avalon_master_state.md)
+    for next-action notes).
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,

@@ -86,6 +86,48 @@ data SramOwner = OwnNone | OwnData | OwnFetch
   deriving anyclass (NFDataX)
 
 {- |
+Sticky arbiter state for the SDRAM bus mux that selects between
+the riski5 core and the JTAG-Avalon-Master IP. The combinational
+mux this replaced switched on @siJtagLoadMode@ each cycle, which
+let the IP's @master_write@ pulse drag the mux JTAG-side and then
+release back to core mid-transaction — corrupting in-flight writes
+at the SDRAM IP. The sticky arbiter latches the owner until the
+SDRAM controller signals an idle / completion edge
+(@sdramRawReadyS@), then re-picks for the next transaction.
+
+JTAG has priority on simultaneous arrival: kernel + DTB uploads
+are bursty (continuous @master_write@ stream until the host
+finishes), and stalling the core is the intended behaviour during
+the boot stub's poll loop anyway.
+-}
+data JtagMuxOwner = JmxNone | JmxCore | JmxJtag
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Next-state for 'JtagMuxOwner'. Args: current owner, "core wants
+SDRAM this cycle" (any port — data or fetch), "JTAG wants SDRAM
+this cycle", "SDRAM controller signalling ready/idle this cycle".
+
+Hold the owner whenever @!idle@ — that's the cycle window where a
+transaction is in flight and switching the mux would race the
+@Riski5.Sdram@ FSM. On the @idle@ pulse re-pick: JTAG-priority,
+otherwise core, otherwise none.
+-}
+nextJtagMuxOwner :: JtagMuxOwner -> Bool -> Bool -> Bool -> JtagMuxOwner
+nextJtagMuxOwner JmxNone _ True _ = JmxJtag
+nextJtagMuxOwner JmxNone True False _ = JmxCore
+nextJtagMuxOwner JmxNone False False _ = JmxNone
+nextJtagMuxOwner JmxCore _ _ False = JmxCore
+nextJtagMuxOwner JmxCore _ True True = JmxJtag
+nextJtagMuxOwner JmxCore True False True = JmxCore
+nextJtagMuxOwner JmxCore False False True = JmxNone
+nextJtagMuxOwner JmxJtag _ _ False = JmxJtag
+nextJtagMuxOwner JmxJtag _ True True = JmxJtag
+nextJtagMuxOwner JmxJtag True False True = JmxCore
+nextJtagMuxOwner JmxJtag False False True = JmxNone
+
+{- |
 Inputs the SoC reads from the board.
 
 The UART read-data channel @siUartRdata@ is an externalised bus tap:
@@ -832,25 +874,72 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> dBeS
   sdramReplyS = siSdramReply <$> inS
 
-  -- L-3 JTAG-load mux. When @siJtagLoadMode = True@, the JTAG hub's
-  -- altsource_probe sources override the riski5 core's bus signals
-  -- before they reach 'sdram' (the 32 ↔ 16 width adapter); when
-  -- 'False' the mux reduces to identity and Quartus dead-codes the
-  -- override arms (CoreMark / silicon hot path bit-identical to L-2).
-  --
-  -- Sits __upstream__ of the existing fetch / data arbiter so the
-  -- 32 ↔ 16 conversion still runs in either mode and the SDRAM IP's
-  -- 16-bit slave port sees clean transactions.
-  sdramJtagModeS = siJtagLoadMode <$> inS
+  -- L-3 JTAG-load source signals. The JTAG-Avalon-Master IP's
+  -- @master_*@ outputs (or, in the L-3 sdramload variant, the
+  -- altsource_probe @JLAD@ / @JLDW@ / @JLWE@ / @JLRD@ sources) land
+  -- here unmodified — the sticky arbiter immediately below decides
+  -- when these reach the SDRAM controller. The arbiter sits
+  -- __upstream__ of the existing fetch / data arbiter so the
+  -- 32 ↔ 16 conversion still runs and the SDRAM IP's 16-bit slave
+  -- port sees clean transactions on either side of the mux.
   sdramJtagAddrS = siJtagLoadAddr <$> inS
   sdramJtagWdataS = siJtagLoadWdata <$> inS
   sdramJtagWeS = siJtagLoadWe <$> inS
   sdramJtagRdS = siJtagLoadRd <$> inS
 
-  -- Bus-signal mux: applies @JtagLoadMode@ to a single
+  -- Sticky-arbiter source signals.
+  --
+  -- @sdramFetchAnyS@: True when the core's IF-stage is targeting the
+  -- SDRAM range (only meaningful with @enableSdramFetch=True@).
+  -- Hoisted here so the arbiter can see fetch requests even though
+  -- the rest of the fetch-side wiring lives inside the
+  -- @if enableSdramFetch@ block below.
+  --
+  -- @coreReqAnySdramS@: any core port (data or fetch) wants a
+  -- transaction this cycle. Used as the "core asking" input to the
+  -- arbiter.
+  --
+  -- @jtagReqS@: the JTAG-Avalon-Master IP (or the L-3 altsource_probe
+  -- driver) is asserting either @write@ or @read@. Held high through
+  -- the IP's transaction by @jam_master_waitrequest@ (= jtagLoadBusyS).
+  sdramFetchAnyS :: Signal dom Bool
+  sdramFetchAnyS =
+    if enableSdramFetch
+      then (\fs -> fs == SlaveSdram) <$> (slaveOf <$> pcFetchS)
+      else CP.pure False
+
+  coreReqAnySdramS :: Signal dom Bool
+  coreReqAnySdramS = (CP.||) <$> sdramSelDataS <*> sdramFetchAnyS
+
+  jtagReqS :: Signal dom Bool
+  jtagReqS = (CP.||) <$> sdramJtagWeS <*> sdramJtagRdS
+
+  -- Sticky arbiter for the SDRAM bus mux. Replaces the previous
+  -- combinational select on @siJtagLoadMode@ which let the IP's
+  -- @master_write@ pulse drag the mux JTAG-side and then release
+  -- back to core mid-transaction — corrupting in-flight 16-bit
+  -- sub-writes inside @Riski5.Sdram@. The register only updates on
+  -- cycles where the SDRAM FSM signals @sdramRawReadyS@ (idle or
+  -- about-to-go-idle), so the mux never flips while the controller
+  -- has a transaction in flight. JTAG has priority on simultaneous
+  -- arrival because uploads are bursty and the boot stub's poll
+  -- loop is supposed to stall during the upload anyway.
+  jtagMuxOwnerS :: Signal dom JtagMuxOwner
+  jtagMuxOwnerS =
+    register JmxNone
+      $ nextJtagMuxOwner
+      <$> jtagMuxOwnerS
+      <*> coreReqAnySdramS
+      <*> jtagReqS
+      <*> sdramRawReadyS
+
+  -- Bus-signal mux: applies the registered owner to a single
   -- (sel, addr, wdata, be, ren) tuple. Used by both the
   -- @enableSdramFetch=True@ arbitered arm and the @=False@ direct arm
   -- below, keeping the JTAG-load contract identical across variants.
+  -- With @JmxNone@ no master is driving — the IP sees @sel = False@
+  -- and stays in @SIdle@ for the cycle, which makes the next-state
+  -- pick well-defined.
   jtagMuxedSdram ::
     Signal dom Bool ->
     Signal dom (BitVector 32) ->
@@ -865,29 +954,45 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
     )
   jtagMuxedSdram selS_ addrS_ wdataS_ beS_ renS_ =
     let sel' =
-          (\m s je jr -> if m then je || jr else s)
-            <$> sdramJtagModeS
+          ( \o s je jr -> case o of
+              JmxJtag -> je CP.|| jr
+              JmxCore -> s
+              JmxNone -> False
+          )
+            <$> jtagMuxOwnerS
             <*> selS_
             <*> sdramJtagWeS
             <*> sdramJtagRdS
         addr' =
-          (\m a ja -> if m then ja else a)
-            <$> sdramJtagModeS
+          ( \o a ja -> case o of
+              JmxJtag -> ja
+              _ -> a
+          )
+            <$> jtagMuxOwnerS
             <*> addrS_
             <*> sdramJtagAddrS
         wdata' =
-          (\m w jw -> if m then jw else w)
-            <$> sdramJtagModeS
+          ( \o w jw -> case o of
+              JmxJtag -> jw
+              _ -> w
+          )
+            <$> jtagMuxOwnerS
             <*> wdataS_
             <*> sdramJtagWdataS
         be' =
-          (\m b je -> if m then (if je then 0xF else 0) else b)
-            <$> sdramJtagModeS
+          ( \o b je -> case o of
+              JmxJtag -> if je then 0xF else 0
+              _ -> b
+          )
+            <$> jtagMuxOwnerS
             <*> beS_
             <*> sdramJtagWeS
         ren' =
-          (\m r jr -> if m then jr else r)
-            <$> sdramJtagModeS
+          ( \o r jr -> case o of
+              JmxJtag -> jr
+              _ -> r
+          )
+            <$> jtagMuxOwnerS
             <*> renS_
             <*> sdramJtagRdS
      in (sel', addr', wdata', be', ren')
@@ -902,8 +1007,6 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       if enableSdramFetch
         then
           let
-            sdramFetchInS :: Signal dom Bool
-            sdramFetchInS = (\fs -> fs == SlaveSdram) <$> (slaveOf <$> pcFetchS)
             sdramOwnerS :: Signal dom SramOwner
             sdramOwnerS =
               ( \dReq fReq ->
@@ -912,7 +1015,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
                     else if fReq then OwnFetch else OwnNone
               )
                 <$> sdramSelDataS
-                <*> sdramFetchInS
+                <*> sdramFetchAnyS
             sdramSelArbS =
               ( \o dReq -> case o of
                   OwnFetch -> True
@@ -957,19 +1060,27 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
               jtagMuxedSdram sdramSelArbS sdramAddrArbS sdramWdataArbS sdramBeArbS sdramRenArbS
             (sdramRdataS', sdramBusS', sdramReadyS') =
               sdram selJ addrJ wdataJ beJ renJ sdramReplyS
+            -- Gate the core's "ready" signals by the sticky-arbiter
+            -- owner: when JTAG owns the bus, @sdramReadyS'@ is the
+            -- IP completing a JTAG transaction, not the core's, so
+            -- the core must keep stalling. Without this gate the
+            -- core would treat a JTAG-write completion as if its
+            -- own pending load had finished and latch garbage rdata.
             sdramDataReadyS' =
-              ( \o rdy -> case o of
-                  OwnData -> rdy
+              ( \jo so rdy -> case (jo, so) of
+                  (JmxCore, OwnData) -> rdy
                   _ -> False
               )
-                <$> sdramOwnerS
+                <$> jtagMuxOwnerS
+                <*> sdramOwnerS
                 <*> sdramReadyS'
             sdramFetchReadyS' =
-              ( \o rdy -> case o of
-                  OwnFetch -> rdy
+              ( \jo so rdy -> case (jo, so) of
+                  (JmxCore, OwnFetch) -> rdy
                   _ -> False
               )
-                <$> sdramOwnerS
+                <$> jtagMuxOwnerS
+                <*> sdramOwnerS
                 <*> sdramReadyS'
            in
             ( sdramRdataS'
@@ -985,10 +1096,20 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
               jtagMuxedSdram sdramSelDataS dAddrS dWdataS dBeS dRenS
             (sdramRdataS', sdramBusS', sdramReadyS') =
               sdram selJ addrJ wdataJ beJ renJ sdramReplyS
+            -- Gate by sticky-arbiter owner so the core ignores JTAG-
+            -- transaction completions on its data port (see the
+            -- mirror comment in the @enableSdramFetch=True@ arm).
+            sdramDataReadyS' =
+              ( \jo rdy -> case jo of
+                  JmxCore -> rdy
+                  _ -> False
+              )
+                <$> jtagMuxOwnerS
+                <*> sdramReadyS'
            in
             ( sdramRdataS'
             , sdramBusS'
-            , sdramReadyS'
+            , sdramDataReadyS'
             , CP.pure 0
             , CP.pure False
             , sdramReadyS' -- raw FSM ready (same as data ready in this branch)
@@ -1358,7 +1479,17 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- @JLBS@ via altsink_probe — many JTAG cycles per probe access,
   -- so by the time the host samples the next state, the FSM has
   -- already cycled through SIdle and is ready again.
-  jtagLoadBusyS = not <$> sdramRawReadyS
+  -- Sticky-arbiter aware: even when the SDRAM FSM is idle the JTAG
+  -- master must see waitrequest=1 unless it actually owns the bus
+  -- (otherwise it would try to issue while the core is mid-flight
+  -- and the request would be ignored on the next mux re-pick).
+  -- Goes low only on the cycle the FSM completes a JTAG-owned
+  -- transaction, exactly the Avalon-MM "transaction accepted" edge
+  -- the bridge IP and the L-3 altsource_probe driver both expect.
+  jtagLoadBusyS =
+    (\rdy jo -> CP.not (rdy CP.&& jo == JmxJtag))
+      <$> sdramRawReadyS
+      <*> jtagMuxOwnerS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =
