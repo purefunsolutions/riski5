@@ -1312,14 +1312,33 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   _captureOffsetUnused :: Signal dom (Unsigned 2)
   _captureOffsetUnused = captureOffsetS
 
-  -- L-3 JTAG-load busy signal. True while the SDRAM IP holds
-  -- @av_waitrequest@, OR while @siJtagLoadWe@ is pulsed high before
-  -- the IP has had a chance to assert waitrequest. Folding the
-  -- write-strobe in here lets the Tcl script see "request in flight"
-  -- the same cycle it pulses @JLWE@, so it can poll @JLBS@ in a
-  -- tight loop without races.
-  jtagLoadBusyS =
-    (\w b -> w || b) <$> (siJtagLoadWe <$> inS) <*> (sirWaitrequest <$> sdramReplyS)
+  -- L-3 JTAG-load busy signal: NOT the IP's @av_waitrequest@ (that
+  -- only reflects the controller IP's instantaneous state, which is
+  -- not-busy most of the time because the IP has its own internal
+  -- pipeline). Instead, mirror our 32→16 SDRAM-adapter FSM's
+  -- "ready" output back as busy = !ready.
+  --
+  -- Why: the JTAG-Avalon-Master IP holds @master_write@ only as long
+  -- as @master_waitrequest@ is high. Our adapter FSM stays in non-
+  -- terminal states (SWriteLoReq → SWriteHiReq → SIdle) for several
+  -- cycles per 32-bit write because each 32-bit transaction is
+  -- decomposed into two 16-bit IP requests. If we deassert
+  -- waitrequest before the FSM has captured the request (which it
+  -- does combinationally, not via latches), the master deasserts
+  -- @master_write@ at T1 — but the FSM at T1 still needs the
+  -- @addr@ / @wdata@ / @be@ inputs to pick the SWriteLoReq's
+  -- @writeBus@ outputs, so the IP receives a write of zero to a
+  -- garbage address. Tying waitrequest to !ready makes the master
+  -- hold its outputs through every state of the FSM, exactly the
+  -- shape the FSM was originally designed for (the core's data
+  -- port also holds @selS@ until it sees @ready@).
+  --
+  -- Quartus_stp / altsource_probe is unaffected: that path drives
+  -- @JLWE@ via FF-backed altsource_probe registers and observes
+  -- @JLBS@ via altsink_probe — many JTAG cycles per probe access,
+  -- so by the time the host samples the next state, the FSM has
+  -- already cycled through SIdle and is ready again.
+  jtagLoadBusyS = not <$> sdramDataReadyS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =

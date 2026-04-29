@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT OR BSD-3-Clause
 #
 # boot-linux-master.tcl — full Linux upload via the
-# JTAG-to-Avalon-Master path, in one quartus_stp Tcl session.
+# JTAG-to-Avalon-Master path, in one system-console Tcl session.
 #
 # Sequence:
 #   1. master_write_32 kernel image to 0x80000000
@@ -14,37 +14,19 @@
 # LinuxBootMaster.hs) spins on SRAM[+4]; once non-zero it reads
 # kbytes from SRAM[+0], computes a1 = 0x80000000 + kbytes (DTB
 # pointer), sets a0=0 / sp=0x20080000, JALRs to 0x80000000.
-#
-# Args:
-#   argv[0] — kernel image path (4-byte aligned)
-#   argv[1] — DTB path (4-byte aligned; padded if not)
 
-## Args come via env vars because System Console's --script= flag
-## doesn't pass positional argv to the Tcl interpreter.
-
-## DIAGNOSTIC: System Console's `puts` may go to its log buffer
-## instead of the parent's stdout/stderr in `-cli` mode. Mirror
-## every important line into /tmp/boot-linux-master-progress.log
-## so we can see what actually ran even if console output is lost.
-set ::dbg_fp [open "/tmp/boot-linux-master-progress.log" "w"]
-proc dbg {msg} {
-    puts $::dbg_fp $msg
-    flush $::dbg_fp
-    puts stderr $msg
-    catch {flush stderr}
-}
-
-dbg "boot-linux-master.tcl: started"
+## Args come via env vars because System Console's --script= flag is
+## broken in Quartus 13.0sp1 — see apps/boot-linux-master.nix for the
+## stdin-pipe workaround and the matching `exit 0` at the end of this
+## file.
 
 if {![info exists ::env(BOOT_LINUX_KERNEL)] ||
     ![info exists ::env(BOOT_LINUX_DTB)]} {
-    dbg "error: BOOT_LINUX_KERNEL and BOOT_LINUX_DTB must be set"
+    puts stderr "error: BOOT_LINUX_KERNEL and BOOT_LINUX_DTB must be set"
     exit 1
 }
 set kernel_path $::env(BOOT_LINUX_KERNEL)
 set dtb_path    $::env(BOOT_LINUX_DTB)
-dbg "kernel: $kernel_path"
-dbg "dtb:    $dtb_path"
 
 foreach f [list $kernel_path $dtb_path] {
     if {![file exists $f]} {
@@ -70,7 +52,12 @@ set dwords [expr {$dbytes_pad / 4}]
 # write the unpadded byte count.
 set kbase     0x80000000
 set dbase     [expr {$kbase + $kbytes_pad}]
-set go_addr   0x20000000
+# The L-3a JTAG-load path routes JTAG-Avalon-Master writes only to
+# SDRAM, so the trigger record has to live in SDRAM too. Park it
+# at the very top of the 8 MB chip — a real kernel image can't
+# reach this far during the upload phase. Once the kernel boots
+# it may overwrite the trigger; the boot stub never re-reads it.
+set go_addr   0x807FFFF0
 set go_sentinel_addr [expr {$go_addr + 4}]
 
 puts "boot-linux-master:"
@@ -80,8 +67,8 @@ set k_end [expr {$kbase + $kbytes_pad - 1}]
 set d_end [expr {$dbase + $dbytes_pad - 1}]
 puts "  layout : kernel @ [format 0x%08x $kbase]..[format 0x%08x $k_end]"
 puts "           dtb    @ [format 0x%08x $dbase]..[format 0x%08x $d_end]"
-puts "  trigger: SRAM\[[format 0x%08x $go_addr]\] <- kbytes=$kbytes"
-puts "           SRAM\[[format 0x%08x $go_sentinel_addr]\] <- 1"
+puts "  trigger: SDRAM\[[format 0x%08x $go_addr]\] <- kbytes=$kbytes"
+puts "           SDRAM\[[format 0x%08x $go_sentinel_addr]\] <- 1"
 puts ""
 
 set masters [get_service_paths master]
@@ -163,4 +150,8 @@ close_service master $m
 
 puts ""
 puts "Trigger written. Boot stub will JR to 0x80000000."
-puts "Run 'nix run .#console' to see kernel printk on the JTAG-UART."
+
+# Tell System Console (the host REPL) to exit after the upload — see
+# the comment in apps/boot-linux-master.nix about the
+# `source ... | system-console -cli` pattern.
+exit 0

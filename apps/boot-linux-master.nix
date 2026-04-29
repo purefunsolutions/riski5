@@ -86,9 +86,15 @@ writeShellApplication {
     echo "== boot-linux-master: flashing $SOF =="
     quartus_pgm -c "$cable" -m JTAG -o "p;$SOF"
 
-    # Step 4 — recycle jtagd so quartus_stp's master service
-    # enumerates against the freshly-flashed FPGA.
+    # Step 4 — recycle jtagd so it sees the freshly-flashed FPGA,
+    # then call jtagconfig to force JTAG discovery to complete
+    # before system-console launches. Without the warm-up,
+    # `get_service_paths master` inside the Tcl script races with
+    # jtagd startup and can return an empty list even though the
+    # JTAG-Avalon-Master IP is on the chip.
     killall -q jtagd || :
+    sleep 0.5
+    jtagconfig >/dev/null
     sleep 0.5
 
     # Step 5 — upload kernel + DTB + go-trigger via master_write_32.
@@ -98,6 +104,14 @@ writeShellApplication {
     # itself, so we extract the FHS-env path from any wrapped tool's
     # shell script and invoke `system-console` via the same FHS env
     # (which has $QSYS_ROOTDIR on PATH already, see fhs-env.nix).
+    #
+    # Quirk: in Quartus 13.0sp1, `system-console --script=foo.tcl -cli`
+    # logs "Executing foo.tcl" then exits before evaluating the body.
+    # `--rc_script=` and bare `--script=` (without `-cli`) misbehave
+    # similarly. The reliable way to drive system-console
+    # non-interactively is `echo "source foo.tcl" | system-console -cli`
+    # — the Tcl REPL `source`s the file and the body runs to completion.
+    # The Tcl ends with `exit 0` so the REPL terminates after the upload.
     echo "== boot-linux-master: streaming kernel + DTB via master_write_32 =="
     fhs_wrapper=$(grep -oE '/nix/store/[^/]+-quartus-ii-13/bin/quartus-ii-13' \
         "$(command -v quartus_stp)" | head -1)
@@ -105,13 +119,10 @@ writeShellApplication {
       echo "error: could not extract FHS path from quartus_stp wrapper" >&2
       exit 1
     fi
-    # Pass paths via env vars — System Console's --script= flag
-    # doesn't propagate positional argv to the Tcl interpreter.
     BOOT_LINUX_KERNEL="$KERNEL" \
     BOOT_LINUX_DTB="$DTB" \
-    "$fhs_wrapper" system-console \
-        --script=${../scripts/boot-linux-master.tcl} \
-        -cli
+    "$fhs_wrapper" system-console -cli \
+        <<< "source ${../scripts/boot-linux-master.tcl}"
 
     # Step 6 — recycle jtagd again so nios2-terminal gets a fresh
     # JTAG-UART handle (the master service's connection may have

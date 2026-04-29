@@ -451,6 +451,38 @@ in
               sed -i 's/^              //' firmware/phase1/CoreMark.hs
               echo "### linuxBootMaster variant: overlaid firmware/phase1/CoreMark.hs"
               cat firmware/phase1/CoreMark.hs
+
+              # The kernel image lives in SDRAM at 0x8000_0000. After
+              # the boot stub JRs there the core's IF stage must fetch
+              # from SDRAM, so flip enableSdramFetch=True (the
+              # committed default is False, which leaves kernel fetches
+              # wrapping back into BRAM and immediately re-running the
+              # boot stub — the cause of the original MBMBMB symptom).
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the linuxBootMaster Nix build: turns on
+              -- SDRAM fetch routing in Riski5.Soc.soc so that, after
+              -- LinuxBootMaster's boot stub JRs to 0x8000_0000, the
+              -- core's IF stage reaches the kernel image in SDRAM
+              -- instead of wrapping back into the BRAM-resident stub.
+              module FetchPolicy (
+                enableSramFetch,
+                enableSdramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = False
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### linuxBootMaster variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
             ''}
 
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
