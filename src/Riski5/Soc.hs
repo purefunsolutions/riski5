@@ -812,7 +812,24 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- "owner-locked" arbiter is the right next step when a future
   -- firmware overlaps data + fetch on SDRAM — track in the
   -- SX-follow-up section of @TODO.md@.
-  sdramSelDataS = (\a -> slaveOf a == SlaveSdram) <$> dAddrS
+  -- "Data port wants SDRAM" must be gated on an actual read-or-
+  -- write request, not just on the address. The data port drives
+  -- @dAddrS@ continuously (it's whatever the next-load/store address
+  -- calculation produces), and after a JR into SDRAM the address
+  -- often still points back into SDRAM even though @dRenS@ /
+  -- @dBeS@ are both inactive. Without the gating below the arbiter
+  -- in the @enableSdramFetch=True@ path picks @OwnData@ on those
+  -- spurious cycles, hijacks the SDRAM IP into a phantom read at
+  -- @dAddrS@, and starves fetch — visible on silicon as the kernel
+  -- running NOPs after the boot stub's JR (no UART output, no trap
+  -- back to BRAM mtvec). @|| be /= 0@ is the canonical "is this
+  -- cycle a write" test the rest of @Riski5.Sdram@ uses; @r@ is
+  -- the read-enable from the data port.
+  sdramSelDataS =
+    (\a r b -> slaveOf a == SlaveSdram CP.&& (r CP.|| b /= 0))
+      <$> dAddrS
+      <*> dRenS
+      <*> dBeS
   sdramReplyS = siSdramReply <$> inS
 
   -- L-3 JTAG-load mux. When @siJtagLoadMode = True@, the JTAG hub's
@@ -880,6 +897,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
     , sdramDataReadyS
     , sdramFetchDataS
     , sdramFetchReadyS
+    , sdramRawReadyS
     ) =
       if enableSdramFetch
         then
@@ -959,6 +977,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
             , sdramDataReadyS'
             , sdramRdataS' -- fetch reuses the 32-bit adapter output
             , sdramFetchReadyS'
+            , sdramReadyS' -- raw FSM ready, for JTAG-load busy
             )
         else
           let
@@ -972,6 +991,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
             , sdramReadyS'
             , CP.pure 0
             , CP.pure False
+            , sdramReadyS' -- raw FSM ready (same as data ready in this branch)
             )
 
   -- ----- Fetch mux ---------------------------------------------
@@ -1338,7 +1358,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- @JLBS@ via altsink_probe — many JTAG cycles per probe access,
   -- so by the time the host samples the next state, the FSM has
   -- already cycled through SIdle and is ready again.
-  jtagLoadBusyS = not <$> sdramDataReadyS
+  jtagLoadBusyS = not <$> sdramRawReadyS
 
   -- ----- Bundle outputs ----------------------------------------
   outS =

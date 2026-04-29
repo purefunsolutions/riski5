@@ -115,15 +115,10 @@ linuxBootMasterFirmware = do
   addi a0Reg x0 0
 
   -- mtvec = 0 — match the working JTAG-UART path
-  -- (firmware/phase1/LinuxBoot.hs). Pre-trap the kernel installs
-  -- its own trap vector in head.S; until then any trap restarts
-  -- this boot stub from word 0, which is harmless idempotent and
-  -- a clear sign on the JTAG-UART that something diverged
-  -- (visible as a repeating @M B M B …@ pattern).
+  -- (firmware/phase1/LinuxBoot.hs).
   csrrw x0 x0 csrMtvec
 
-  -- JR to 0x8000_0000. tmpReg as scratch since a0/a1 carry
-  -- the boot-ABI args.
+  -- JR to 0x8000_0000.
   li tmpReg 0x8000_0000
   jalr x0 tmpReg 0
 
