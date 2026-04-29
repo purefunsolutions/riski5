@@ -146,6 +146,25 @@ proc upload_file {m path base_addr size_bytes label} {
 upload_file $m $kernel_path $kbase $kbytes "kernel"
 upload_file $m $dtb_path    $dbase $dbytes "dtb"
 
+# DIAGNOSTIC: patch a "print '!' forever" loop at the kernel's
+# JAL target. @kernel[0] = 0x0a40006f@ decodes to JAL x0,
+# +0xA4 — so PC after the first instruction lands at
+# 0x8000_00A4 (NOT 0x8000_0148, despite the misleading
+# "+0x148" labelling that appears in some toolchain dumps;
+# JAL's imm[10:1] field is bits[30:21] of the encoding shifted
+# left by 1, which gives imm[10:1]=0x52, target offset=0xA4).
+#
+# If the JTAG-UART starts streaming "!" after the boot stub
+# JRs, the kernel's first hop is fine and the silent-kernel
+# symptom is downstream of head.S's initial JAL.
+puts ""
+puts "DIAGNOSTIC: patching print-'!' loop at 0x800000A4..."
+set jal_target [expr {$kbase + 0xA4}]
+master_write_32 $m $jal_target [list \
+    0x100002B7 0x00028293 0x02100313 0x0062A023 0xFFDFF06F]
+catch {master_read_32 $m $jal_target 1}
+puts [format "  patch done at 0x%x; boot stub will JR to kernel\[0\] which JALs there." $jal_target]
+
 puts ""
 
 puts ""
