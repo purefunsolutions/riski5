@@ -637,6 +637,7 @@ in
               --system-info=DEVICE_FAMILY=CYCLONEII \
               --system-info=DEVICE=EP2C35F672C6 \
               --component-parameter=USE_PLI=0 \
+              --component-parameter=FAST_VER=1 \
               --component-parameter=FIFO_DEPTHS=64
             # Pull all Verilog files the bridge IP emits — it composes
             # several sub-modules, each in its own file under submodules/.
