@@ -25,6 +25,14 @@
 //      (compiled from src/Riski5/JtagAvalonMaster.hs) under the
 //      Altera module name so the rest of the IP composition stays
 //      stock-Altera.
+//   4. Exposes diagnostic counters (bytes_in_cnt, writes_commit_cnt,
+//      reads_commit_cnt — task #133) via three altsource_probe SLD
+//      instances so the host can read them via JTAG hub
+//      (`read_probe_data jtag_master_bytes_in` etc.) without the
+//      counters needing to plumb up through the IP composition
+//      wrapper. The probes are self-contained SLD nodes; they
+//      register with the JTAG hub the same way the existing JTAG_LOAD
+//      probes do (see riski5_top.v's iter_counter_probe).
 //
 // Build hookup: pkgs/riski5-core/package.nix's buildPhase strips
 // the Altera-provided `altera_avalon_packets_to_master.v` from the
@@ -67,6 +75,11 @@ module altera_avalon_packets_to_master (
     parameter FIFO_WIDTHU           = 1;
     parameter FAST_VER              = 0;
 
+    // Diagnostic counters from the Clash FSM (task #133).
+    wire [31:0] jam_bytes_in_cnt;
+    wire [31:0] jam_writes_commit_cnt;
+    wire [31:0] jam_reads_commit_cnt;
+
     riski5_jtag_avalon_master u_clash_p2m (
         .clk               (clk),
         .reset_n           (reset_n),
@@ -87,7 +100,80 @@ module altera_avalon_packets_to_master (
         .read              (read),
         .write             (write),
         .byteenable        (byteenable),
-        .writedata         (writedata)
+        .writedata         (writedata),
+        .bytes_in_cnt      (jam_bytes_in_cnt),
+        .writes_commit_cnt (jam_writes_commit_cnt),
+        .reads_commit_cnt  (jam_reads_commit_cnt)
+    );
+
+    // ----- Diagnostic SLD probes ------------------------------------
+    // Three 32-bit altsource_probe instances that snapshot the FSM's
+    // counters every cycle. The host reads them with quartus_stp /
+    // System Console using the instance_id ASCII tag below, e.g.:
+    //
+    //   read_probe_data [lindex [get_service_paths probe] N]
+    //
+    // Tag legend:
+    //   "JBIN"  = JTAG-Master Bytes IN at Avalon-ST input  (4 byte chars)
+    //   "JWRC"  = JTAG-Master WRites Commit at Avalon-MM output
+    //   "JRDC"  = JTAG-Master ReaDs Commit
+    //
+    // Each character maps onto the lpm_decorator[]-encoded
+    // `instance_id` field altsource_probe consumes — Quartus matches
+    // these 4-byte tags exactly. Width=32 matches our counter width.
+
+    altsource_probe #(
+        .lpm_type                 ("altsource_probe"),
+        .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+        .source_width             (0),
+        .probe_width              (32),
+        .instance_id              ("JBIN"),
+        .sld_auto_instance_index  ("YES"),
+        .sld_instance_index       (0),
+        .sld_ir_width             (3),
+        .source_initial_value     ("0"),
+        .enable_metastability     ("NO")
+    ) u_probe_bytes_in (
+        .source     (),
+        .probe      (jam_bytes_in_cnt),
+        .source_clk (1'b0),
+        .source_ena (1'b1)
+    );
+
+    altsource_probe #(
+        .lpm_type                 ("altsource_probe"),
+        .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+        .source_width             (0),
+        .probe_width              (32),
+        .instance_id              ("JWRC"),
+        .sld_auto_instance_index  ("YES"),
+        .sld_instance_index       (0),
+        .sld_ir_width             (3),
+        .source_initial_value     ("0"),
+        .enable_metastability     ("NO")
+    ) u_probe_writes_commit (
+        .source     (),
+        .probe      (jam_writes_commit_cnt),
+        .source_clk (1'b0),
+        .source_ena (1'b1)
+    );
+
+    altsource_probe #(
+        .lpm_type                 ("altsource_probe"),
+        .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+        .source_width             (0),
+        .probe_width              (32),
+        .instance_id              ("JRDC"),
+        .sld_auto_instance_index  ("YES"),
+        .sld_instance_index       (0),
+        .sld_ir_width             (3),
+        .source_initial_value     ("0"),
+        .enable_metastability     ("NO")
+    ) u_probe_reads_commit (
+        .source     (),
+        .probe      (jam_reads_commit_cnt),
+        .source_clk (1'b0),
+        .source_ena (1'b1)
     );
 
 endmodule

@@ -128,6 +128,18 @@ data S = S
   , sRead :: Bool
   , sWrite :: Bool
   , sInReady :: Bool
+  , -- | Diagnostics for task #133. Bytes accepted from the
+    -- Avalon-ST input (in_ready && in_valid handshake) — every byte
+    -- the host pushed through the bytes_to_packets layer that the
+    -- FSM saw. Drops UPSTREAM of the FSM never increment this.
+    sBytesIn :: BitVector 32
+  , -- | Master-write transactions accepted by the slave (write was
+    -- high && waitrequest dropped). Drops at the FSM input would
+    -- show as @sBytesIn == bytes_sent_by_host@ but
+    -- @sWritesCommit \\\< (bytes_sent / 4)@.
+    sWritesCommit :: BitVector 32
+  , -- | Master-read transactions accepted by the slave.
+    sReadsCommit :: BitVector 32
   }
   deriving stock (Generic)
   deriving anyclass (NFDataX)
@@ -152,6 +164,9 @@ initS =
     , sRead = False
     , sWrite = False
     , sInReady = False
+    , sBytesIn = 0
+    , sWritesCommit = 0
+    , sReadsCommit = 0
     }
 
 data InS = InS
@@ -178,6 +193,9 @@ data OutS = OutS
   , oOutData :: BitVector 8
   , oOutSop :: Bool
   , oOutEop :: Bool
+  , oBytesIn :: BitVector 32
+  , oWritesCommit :: BitVector 32
+  , oReadsCommit :: BitVector 32
   }
   deriving stock (Generic)
   deriving anyclass (NFDataX)
@@ -237,12 +255,25 @@ preamble s outReady =
 
 -- | Advance the FSM one clock — Clash mealy-style transition.
 step :: S -> InS -> S
-step sOld i = sFinal
+step sOld i = sWithCounters
  where
   enable = sInReady sOld && iInValid i
   sBase = preamble sOld (iOutReady i)
   sCase = caseStep sOld sBase i enable
   sFinal = sopOverride sOld sCase i enable
+  -- | Diagnostic counters (task #133). Each is incremented on the
+  -- clock the corresponding event is observed. @sBytesIn@ rises
+  -- whenever a byte handshake completes at the Avalon-ST input;
+  -- @sWritesCommit@ rises on the cycle the slave accepts a write
+  -- (waitrequest drops while @sWrite@ is high); same for reads.
+  acceptedWrite = sWrite sOld && not (iWaitreq i)
+  acceptedRead = sRead sOld && (iReaddataVld i || not (iWaitreq i))
+  sWithCounters =
+    sFinal
+      { sBytesIn = sBytesIn sOld + (if enable then 1 else 0)
+      , sWritesCommit = sWritesCommit sOld + (if acceptedWrite then 1 else 0)
+      , sReadsCommit = sReadsCommit sOld + (if acceptedRead then 1 else 0)
+      }
 
 -- | If a SOP arrives during ANY state, force the FSM to GetExtra.
 sopOverride :: S -> S -> InS -> Bool -> S
@@ -585,6 +616,9 @@ outOf s =
     , oOutData = sOutData s
     , oOutSop = sOutSop s
     , oOutEop = sOutEop s
+    , oBytesIn = sBytesIn s
+    , oWritesCommit = sWritesCommit s
+    , oReadsCommit = sReadsCommit s
     }
 
 -- | Domain-polymorphic FSM. Outputs are registered (Moore-style).
@@ -622,6 +656,9 @@ topEntity ::
   , "write" ::: Signal Dom30Jam Bool
   , "byteenable" ::: Signal Dom30Jam (BitVector 4)
   , "writedata" ::: Signal Dom30Jam (BitVector 32)
+  , "bytes_in_cnt" ::: Signal Dom30Jam (BitVector 32)
+  , "writes_commit_cnt" ::: Signal Dom30Jam (BitVector 32)
+  , "reads_commit_cnt" ::: Signal Dom30Jam (BitVector 32)
   )
 topEntity clk rstN inValidS inDataS inSopS inEopS outReadyS readdataS waitreqS readvldS =
   withClockResetEnable clk rstN enableGen $
@@ -648,6 +685,9 @@ topEntity clk rstN inValidS inDataS inSopS inEopS outReadyS readdataS waitreqS r
       , oWrite <$> outS
       , oByteEnable <$> outS
       , oWriteData <$> outS
+      , oBytesIn <$> outS
+      , oWritesCommit <$> outS
+      , oReadsCommit <$> outS
       )
 
 makeTopEntityWithName 'topEntity "riski5_jtag_avalon_master"

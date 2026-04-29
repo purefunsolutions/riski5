@@ -347,6 +347,13 @@
         inherit quartus-ii-13;
       };
 
+      # `nix run .#jam-counter-probe` — read JTAG-Avalon-Master
+      # diagnostic counters via altsource_probe SLD (task #133).
+      jam-counter-probe = pkgs.callPackage ../apps/jam-counter-probe.nix {
+        inherit quartus-ii-13;
+        inherit (pkgs) psmisc;
+      };
+
       default = self'.packages.riski5-core;
     };
 
@@ -410,6 +417,10 @@
       console = {
         type = "app";
         program = "${self'.packages.console}/bin/console";
+      };
+      jam-counter-probe = {
+        type = "app";
+        program = "${self'.packages.jam-counter-probe}/bin/jam-counter-probe";
       };
     };
   };
