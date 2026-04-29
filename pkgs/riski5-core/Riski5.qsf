@@ -40,14 +40,15 @@ set_global_assignment -name SDC_FILE Riski5.sdc
 set_location_assignment PIN_N2 -to CLOCK_50
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
 
-# -- Pushbutton KEY0 (async active-LOW reset) ----------------------
-set_location_assignment PIN_G26 -to KEY0
-set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY0
-
-# -- Pushbuttons KEY[3:1] ------------------------------------------
+# -- Pushbuttons KEY[3:0] ------------------------------------------
+# KEY[0] is the async active-LOW reset (gated against PLL lock to
+# form rst30_n in riski5_top.v). KEY[1..3] are general buttons the
+# core can read. All four are active-LOW on the DE2.
+set_location_assignment PIN_G26 -to KEY[0]
 set_location_assignment PIN_N23 -to KEY[1]
 set_location_assignment PIN_P23 -to KEY[2]
 set_location_assignment PIN_W26 -to KEY[3]
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY[0]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY[1]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY[2]
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to KEY[3]

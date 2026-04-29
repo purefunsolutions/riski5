@@ -73,7 +73,7 @@ owning the PLL itself — both the riski5 SoC and the Altera JTAG UART
 IP need to be clocked on the same edge, and the easiest way to
 guarantee that is to share one source of truth for @clk30@ at the
 Verilog-wrapper level. Reset is held asserted until the PLL locks
-and KEY0 is released.
+and KEY[0] is released.
 -}
 createDomain
   vSystem
@@ -138,7 +138,7 @@ topEntity ::
   -}
   "CLOCK_30" ::: Clock Dom30 ->
   {- | Active-low reset, held asserted until the PLL locks and
-  @KEY0@ is released.
+  @KEY[0]@ is released.
   -}
   "RESET_30_N" ::: Reset Dom30 ->
   "KEY" ::: Signal Dom30 (BitVector 4) ->

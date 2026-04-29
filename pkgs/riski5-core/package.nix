@@ -637,7 +637,7 @@ in
               --system-info=DEVICE_FAMILY=CYCLONEII \
               --system-info=DEVICE=EP2C35F672C6 \
               --component-parameter=USE_PLI=0 \
-              --component-parameter=FIFO_DEPTHS=2
+              --component-parameter=FIFO_DEPTHS=64
             # Pull all Verilog files the bridge IP emits — it composes
             # several sub-modules, each in its own file under submodules/.
             for f in altera-ip/jtag-master/riski5_jtag_master.v \
@@ -659,8 +659,8 @@ in
       // Responsibilities:
       //   1. Derive the 50 MHz core clock (clk30) from CLOCK_50 via a
       //      directly-instantiated altpll.
-      //   2. Build rst30_n = KEY0 & pll_locked so the design holds reset
-      //      until the PLL has locked and the user has released KEY0.
+      //   2. Build rst30_n = KEY[0] & pll_locked so the design holds reset
+      //      until the PLL has locked and the user has released KEY[0].
       //   3. Resolve the bidirectional SRAM_DQ bus from the core's
       //      SRAM_DQ_{O,OE,I} triplet.
       //   4. Instantiate the Altera altera_avalon_jtag_uart IP
@@ -672,7 +672,6 @@ in
 
       module riski5_top (
           input  wire        CLOCK_50,
-          input  wire        KEY0,
           input  wire [3:0]  KEY,
           input  wire [17:0] SW,
           output wire [17:0] LEDR,
@@ -705,9 +704,23 @@ in
           output wire        DRAM_WE_N
       );
 
-        // ----- PLL: CLOCK_50 (50 MHz) → clk30 (50 MHz) -----------------
+        // ----- PLL: CLOCK_50 (50 MHz) → clk30 (40 MHz) ----------------
+        // clk0 (clk30):       40 MHz, 0°    — controller + core +
+        //                                      JTAG-UART + JTAG-Master
+        //                                      + SDRAM controller IP
+        // clk1 (clk30_dram):  40 MHz, -3 ns — drives DRAM_CLK output
+        //                                      pin so the SDRAM chip
+        //                                      samples 3 ns AFTER the
+        //                                      controller drives signals,
+        //                                      covering Tco + trace
+        //                                      delays. Fixes intermittent
+        //                                      JTAG-Master write commit
+        //                                      (task #132). Standard
+        //                                      Altera SDRAM Controller
+        //                                      deployment pattern.
         wire [4:0] altpll_clk_vec;
-        wire       clk30 = altpll_clk_vec[0];
+        wire       clk30      = altpll_clk_vec[0];
+        wire       clk30_dram = altpll_clk_vec[1];
         wire       pll_locked;
         altpll u_altpll (
             .areset (1'b0),
@@ -729,20 +742,25 @@ in
         defparam u_altpll.clk0_duty_cycle       = 50;
         defparam u_altpll.clk0_multiply_by      = 4;
         defparam u_altpll.clk0_phase_shift      = "0";
+        defparam u_altpll.clk1_divide_by        = 5;
+        defparam u_altpll.clk1_duty_cycle       = 50;
+        defparam u_altpll.clk1_multiply_by      = 4;
+        defparam u_altpll.clk1_phase_shift      = "-3000";
         defparam u_altpll.compensate_clock      = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
         defparam u_altpll.intended_device_family = "Cyclone II";
         defparam u_altpll.lpm_type              = "altpll";
         defparam u_altpll.operation_mode        = "NORMAL";
         defparam u_altpll.port_clk0             = "PORT_USED";
+        defparam u_altpll.port_clk1             = "PORT_USED";
         defparam u_altpll.port_inclk0           = "PORT_USED";
         defparam u_altpll.port_locked           = "PORT_USED";
         defparam u_altpll.port_areset           = "PORT_USED";
         defparam u_altpll.width_clock           = 5;
 
-        // Active-low reset: asserted (low) until the PLL locks AND KEY0
-        // has been released (KEY0 is active-low on the DE2).
-        wire rst30_n = KEY0 & pll_locked;
+        // Active-low reset: asserted (low) until the PLL locks AND KEY[0]
+        // has been released (KEY[0] is active-low on the DE2).
+        wire rst30_n = KEY[0] & pll_locked;
 
         // ----- Bidirectional SRAM DQ resolution -----------------------
         wire [15:0] sram_dq_o;
@@ -820,12 +838,18 @@ in
         // needs our own resolution because the core drives those
         // pins from pure logic without an Avalon-MM IP in between.)
 
-        // DRAM_CLK is forwarded from the core clock. At 50 MHz the
-        // setup/hold margin at the SDRAM pins is ~10 ns either way,
-        // well above the IS42S16400-7B's 1.5 / 0.8 ns requirements,
+        // DRAM_CLK is driven from a phase-shifted PLL output (clk1,
+        // -3 ns relative to clk30). This is the standard Altera SDRAM
+        // Controller deployment pattern: the chip samples 3 ns AFTER
+        // the controller drives signals, leaving plenty of time for
+        // FPGA Tco + board-trace delay. Without the phase shift,
+        // DRAM_CLK was forwarded directly from clk30, which left
+        // setup/hold margin at the chip pin marginal under back-to-
+        // back JTAG-Avalon-Master burst writes — observed as random
+        // dropped writes in the L-3b debugging session (task #132).
         // so we can share clk30 directly without a phase-shifted PLL
         // tap. Revisit if the target clock climbs past ~60 MHz.
-        assign DRAM_CLK = clk30;
+        assign DRAM_CLK = clk30_dram;
 
         riski5_sdram u_sdram (
             .clk            (clk30),
