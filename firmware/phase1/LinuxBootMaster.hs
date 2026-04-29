@@ -142,7 +142,10 @@ linuxBootMasterFirmware = do
   -- (firmware/phase1/LinuxBoot.hs).
   csrrw x0 x0 csrMtvec
 
-  -- JR to 0x8000_0000.
+  -- JR to the canonical kernel entry at 0x8000_0000.
+  -- (We tested JR-direct-to-0x8000_00A4 = the target of the
+  -- kernel's first JAL; same silent-boot symptom either way,
+  -- so the JAL itself is not at fault.)
   li tmpReg 0x8000_0000
   jalr x0 tmpReg 0
 
