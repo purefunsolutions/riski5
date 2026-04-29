@@ -41,7 +41,25 @@
 	model = "riski5-de2";
 
 	chosen {
-		bootargs = "console=ttyJ0,115200n8 earlycon=jtag-uart,mmio,0x10000000 keep_bootcon rdinit=/init";
+		/*
+		 * earlycon: the Linux altera_jtaguart driver registers
+		 * its earlycon under the name "juart" (not "jtag-uart"
+		 * as one might guess from the device's compatible
+		 * string). The OF_EARLYCON_DECLARE that drives this
+		 * lives in drivers/tty/serial/altera_jtaguart.c:
+		 *
+		 *   OF_EARLYCON_DECLARE(juart, "altr,juart-1.0",
+		 *                       altera_jtaguart_earlycon_setup);
+		 *
+		 * Wrong name → silent earlycon, kernel boot indistinguishable
+		 * from a hung head.S until the regular console comes up.
+		 *
+		 * verbose loglevel=8 (KERN_DEBUG) and ignore_loglevel get
+		 * everything onto the wire from the first printk; debug
+		 * keeps the floor of CONFIG_DYNAMIC_DEBUG enabled in case
+		 * any subsystem we care about uses pr_debug().
+		 */
+		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init";
 		/*
 		 * initrd window — the L-3b loader writes the cpio
 		 * starting at base + 4 MB, so it spans [0x80400000,
