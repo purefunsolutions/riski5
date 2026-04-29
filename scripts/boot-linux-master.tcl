@@ -111,6 +111,18 @@ proc upload_file {m path base_addr size_bytes label} {
         }
         set addr [expr {$base_addr + $written * 4}]
         master_write_32 $m $addr $buf_words
+        # Force the Altera SDRAM IP's write buffer to commit by
+        # issuing a single master_read at the chunk's end address.
+        # The IP must drain pending writes before serving a read,
+        # so this flushes every word of the chunk to actual silicon
+        # before the next chunk begins. Without this, the IP can
+        # silently drop late writes — most visibly when an SDRAM
+        # cell already holds data from a previous boot-master run
+        # (no power-cycle), in which case the new write never
+        # reaches the chip and the old bytecode persists.
+        # The returned value is unused; we only care about the
+        # round-trip side-effect of forcing a flush.
+        catch {master_read_32 $m $addr 1}
         incr written $this_chunk
 
         set now [clock milliseconds]
