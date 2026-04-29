@@ -195,16 +195,52 @@ sdram selS addrS wdataS beS _renS replyS =
   validS = sirValid <$> replyS
   ipRdataS = sirRdata <$> replyS
 
-  -- Decoded op shape — combinational from bus signals.
-  isWriteS = (\be -> be /= 0) <$> beS
-  loActiveS = (\be -> slice d1 d0 be /= 0) <$> beS
-  hiActiveS = (\be -> slice d3 d2 be /= 0) <$> beS
+  -- Latched request signals. Track current inputs while in SIdle,
+  -- freeze on the cycle we leave SIdle. Subsequent FSM states use
+  -- the latched values instead of the live inputs, so a master
+  -- that deasserts its bus signals as soon as it sees waitrequest
+  -- drop (the JTAG-Avalon-Master IP's behaviour) doesn't strand
+  -- the FSM mid-write with stale wdata / be / addr.
+  latchedAddrS = register 0 latchedAddrNextS
+  latchedAddrNextS =
+    (\st a old -> case st of SIdle -> a; _ -> old)
+      <$> stateS
+      <*> addrS
+      <*> latchedAddrS
+  latchedWdataS = register 0 latchedWdataNextS
+  latchedWdataNextS =
+    (\st w old -> case st of SIdle -> w; _ -> old)
+      <$> stateS
+      <*> wdataS
+      <*> latchedWdataS
+  latchedBeS = register 0 latchedBeNextS
+  latchedBeNextS =
+    (\st b old -> case st of SIdle -> b; _ -> old)
+      <$> stateS
+      <*> beS
+      <*> latchedBeS
+
+  -- "Effective" request signals — current inputs while deciding
+  -- in SIdle, latched values once processing has begun.
+  effAddrS  = (\st a la -> case st of SIdle -> a; _ -> la)
+                <$> stateS <*> addrS <*> latchedAddrS
+  effWdataS = (\st w lw -> case st of SIdle -> w; _ -> lw)
+                <$> stateS <*> wdataS <*> latchedWdataS
+  effBeS    = (\st b lb -> case st of SIdle -> b; _ -> lb)
+                <$> stateS <*> beS <*> latchedBeS
+
+  -- Decoded op shape — derived from effective (latched-when-busy)
+  -- be signal so the per-state nextState/ready/busFor decisions
+  -- stay consistent across the multi-cycle write/read sequences.
+  isWriteS = (\be -> be /= 0) <$> effBeS
+  loActiveS = (\be -> slice d1 d0 be /= 0) <$> effBeS
+  hiActiveS = (\be -> slice d3 d2 be /= 0) <$> effBeS
 
   -- Word-aligned chip addresses (16-bit-word indices). @halfIdx@ is
   -- the 22-bit half-word index of the CPU's addressed 16-bit word;
   -- word_lo = half-word 2·N, word_hi = half-word 2·N + 1 of the
   -- surrounding 32-bit word N.
-  halfIdxS = (\a -> slice d22 d1 (a - sdramBase)) <$> addrS
+  halfIdxS = (\a -> slice d22 d1 (a - sdramBase)) <$> effAddrS
   wordLoAddrS = (\h -> h .&. complement 1) <$> halfIdxS
   wordHiAddrS = (\h -> h .|. 1) <$> halfIdxS
 
@@ -244,7 +280,11 @@ sdram selS addrS wdataS beS _renS replyS =
       <*> waitS
       <*> validS
 
-  -- Master-side Avalon-MM signals driven to the IP.
+  -- Master-side Avalon-MM signals driven to the IP. Uses the
+  -- effective (latched-when-busy) wdata / be so the IP sees the
+  -- original request's payload throughout the multi-cycle write
+  -- sequence, regardless of whether the master is still asserting
+  -- its bus signals.
   busS =
     busFor
       <$> stateS
@@ -254,8 +294,8 @@ sdram selS addrS wdataS beS _renS replyS =
       <*> hiActiveS
       <*> wordLoAddrS
       <*> wordHiAddrS
-      <*> wdataS
-      <*> beS
+      <*> effWdataS
+      <*> effBeS
 
   -- Read data presented to the core. Only valid on the cycle
   -- readyS=True after a read; on all other cycles returns 0

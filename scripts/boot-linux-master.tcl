@@ -109,19 +109,15 @@ proc upload_file {m path base_addr size_bytes label} {
             binary scan $buf "@[expr {$i * 4}]i" w
             lappend buf_words [expr {$w & 0xFFFFFFFF}]
         }
+        # Bulk-write the chunk, then issue one master_read at the
+        # chunk's last address to force the Altera SDRAM IP to
+        # drain its write buffer. This combines with the
+        # input-latching SDRAM adapter (commit b3ed070's follow-up:
+        # @latchedAddr/Wdata/Be@ in @Riski5.Sdram@) so the master's
+        # bus signals don't have to remain stable through the
+        # multi-cycle 32→16 write sequence.
         set addr [expr {$base_addr + $written * 4}]
         master_write_32 $m $addr $buf_words
-        # Force the Altera SDRAM IP's write buffer to commit by
-        # issuing a single master_read at the chunk's end address.
-        # The IP must drain pending writes before serving a read,
-        # so this flushes every word of the chunk to actual silicon
-        # before the next chunk begins. Without this, the IP can
-        # silently drop late writes — most visibly when an SDRAM
-        # cell already holds data from a previous boot-master run
-        # (no power-cycle), in which case the new write never
-        # reaches the chip and the old bytecode persists.
-        # The returned value is unused; we only care about the
-        # round-trip side-effect of forcing a flush.
         catch {master_read_32 $m $addr 1}
         incr written $this_chunk
 
