@@ -125,6 +125,38 @@ rules around maintaining it.
     4. `scripts/load-linux.sh result/Image result-dtb/riski5.dtb`
     5. Watch nios2-terminal for: `'L'` → `'D'` → kernel banner.
 
+- **#133. JTAG-Avalon-Master — Clash bridge replacing the buggy
+  Altera state machine.** [started 2026-04-29] The Altera
+  `altera_avalon_packets_to_master` component inside
+  `altera_jtag_avalon_master` silently drops 50–75 % of master
+  writes during high-rate JTAG bursts (silicon-verified by the
+  L-3b sentinel test in `firmware/phase1/LinuxBootMaster.hs`;
+  see [`memory/project_avalon_master_state.md`](./.claude/projects/-home-mika-riski5/memory/project_avalon_master_state.md)).
+  Per CLAUDE.md "fix at hardware layer" policy, replace the
+  state machine in Clash, keeping the surrounding glue
+  (`altera_jtag_dc_streaming`, `sc_fifo`, `bytes_to_packets`,
+  `channel_adapter`, `packets_to_bytes`) stock-Altera.
+  - First cut: `src/Riski5/JtagAvalonMaster.hs` (Clash module
+    `riski5_jtag_avalon_master`) — re-implements the FAST_VER=0
+    "slow path" packet-to-master state machine in 16 phases.
+    Domain-polymorphic Moore FSM; outputs registered. Compiles
+    cleanly through `cabal build` and `clash --verilog`.
+  - Verilog shim
+    `pkgs/riski5-core/altera-ip/jtag-master-shim/altera_avalon_packets_to_master.v`
+    re-exports our Clash module under the original Altera name
+    + parameter list so the IP composition wrapper from
+    `ip-generate altera_jtag_avalon_master` instantiates it
+    transparently.
+  - `pkgs/riski5-core/package.nix` runs a second `clash --verilog`
+    pass on `Riski5.JtagAvalonMaster` and excludes the original
+    `altera_avalon_packets_to_master.v` from the QSF
+    `VERILOG_FILE` list.
+  - Validation pending: `nix build .#riski5-core-linux-master`
+    + on-DE2 boot via `nix run .#boot-linux-master`. Sentinel
+    test in `LinuxBootMaster.hs` already in place — should now
+    show 8/8 sample addresses overwritten by kernel bytes (vs
+    the 2/8 we observed with the Altera IP).
+
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
   `229e6a2`, `4bfb809`): ISA + encode + decode + Asm builders +

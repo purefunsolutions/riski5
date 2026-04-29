@@ -505,12 +505,37 @@ in
               -isrc -iapp -ifirmware/phase1 \
               Top
 
+            # Compile our Clash JTAG-Avalon-Master replacement
+            # (Riski5.JtagAvalonMaster, task #133). The output module
+            # `riski5_jtag_avalon_master` is wrapped under the original
+            # Altera name `altera_avalon_packets_to_master` by the
+            # hand-rolled shim at altera-ip/jtag-master-shim/. The
+            # composition wrapper from `ip-generate altera_jtag_avalon_master`
+            # below sees the Altera-named module as before; the buggy
+            # Altera state machine is silently swapped out.
+            clash --verilog -fclash-hdlsyn Quartus \
+              -XGHC2021 -XImplicitPrelude \
+              -isrc \
+              Riski5.JtagAvalonMaster
+
             # Quartus expects Riski5.qpf / Riski5.qsf / Riski5.sdc at the
             # build root. The .qsf references verilog/Top.topEntity/riski5.v
             # as its source file — matching what Clash just produced.
             cp pkgs/riski5-core/Riski5.qpf .
             cp pkgs/riski5-core/Riski5.qsf .
             cp pkgs/riski5-core/Riski5.sdc .
+
+            # Register the Clash JTAG-Avalon-Master replacement Verilog
+            # so Quartus picks it up alongside the main `riski5` core.
+            echo 'set_global_assignment -name VERILOG_FILE "verilog/Riski5.JtagAvalonMaster.topEntity/riski5_jtag_avalon_master.v"' >> Riski5.qsf
+            # And the thin shim that re-exports it under the Altera-IP
+            # module name (`altera_avalon_packets_to_master`), so the
+            # `ip-generate altera_jtag_avalon_master` composition wrapper
+            # below can instantiate it without any change.
+            mkdir -p altera-ip/jtag-master-shim
+            cp pkgs/riski5-core/altera-ip/jtag-master-shim/altera_avalon_packets_to_master.v \
+               altera-ip/jtag-master-shim/altera_avalon_packets_to_master.v
+            echo 'set_global_assignment -name VERILOG_FILE "altera-ip/jtag-master-shim/altera_avalon_packets_to_master.v"' >> Riski5.qsf
 
             # Generate the Altera JTAG UART IP. ip-generate reads the
             # component's _hw.tcl plus user-supplied parameters and emits
@@ -641,8 +666,17 @@ in
               --component-parameter=FIFO_DEPTHS=64
             # Pull all Verilog files the bridge IP emits — it composes
             # several sub-modules, each in its own file under submodules/.
+            #
+            # EXCEPT: skip altera_avalon_packets_to_master.v — that's
+            # the buggy state machine task #133 replaces with our
+            # Clash module (compiled above; included via the shim).
+            # If we let Quartus see both, the linker would complain
+            # about duplicate `module altera_avalon_packets_to_master`.
             for f in altera-ip/jtag-master/riski5_jtag_master.v \
                      altera-ip/jtag-master/submodules/*.v; do
+              case "$(basename "$f")" in
+                altera_avalon_packets_to_master.v) continue ;;
+              esac
               echo "set_global_assignment -name VERILOG_FILE \"$f\"" >> Riski5.qsf
             done
 

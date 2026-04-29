@@ -87,6 +87,7 @@ library
     Riski5.FormalTop
     Riski5.Gpio
     Riski5.ISA
+    Riski5.JtagAvalonMaster
     Riski5.JtagUart
     Riski5.JtagUartAdapter
     Riski5.Lcd
