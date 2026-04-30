@@ -45,7 +45,11 @@ import MemTest (memTestFirmwareWords)
 import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Lcd (LcdPins (..))
-import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
+import Riski5.SdrController (
+  SdrPins (..),
+  defaultDe2Config,
+  sdrControllerAsAlteraIp,
+ )
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
 -- soDbgPcFetch is exported as part of SocOut (..) above; the
 -- field selector is in scope thanks to RecordDotSyntax / the
@@ -178,18 +182,18 @@ topEntity ::
   dead-coded by Quartus on the hot path.
   -}
   "UART_IRQ" ::: Signal DomBus Bool ->
-  {- | 16-bit read-data returned by the Altera SDRAM Controller IP
-  on @za_data@. Valid on the cycle @SDRAM_VALID@ is asserted.
+  {- | What the SDRAM chip is currently driving on its DQ bus
+  (@DRAM_DQ@), sampled combinationally. The pin-multiplex
+  wrapper produced by the Nix build resolves this against
+  @SDRAM_DQ_OUT@ / @SDRAM_DQ_OE@ on the actual bidirectional
+  @DRAM_DQ[15:0]@ FPGA pads. Replaces the previous trio of
+  @SDRAM_RDATA@ / @SDRAM_VALID@ / @SDRAM_READY@ inputs (which
+  came from the Altera @altera_avalon_new_sdram_controller@
+  IP) — task #146 swapped that IP out for a pure-Clash
+  controller in 'Riski5.SdrController' so the upper-half-word
+  write drop bug is fixed at the hardware layer.
   -}
-  "SDRAM_RDATA" ::: Signal DomBus (BitVector 16) ->
-  {- | SDRAM read-data-valid strobe (@za_valid@) — rises on the
-  cycle the IP has the read-data ready on @SDRAM_RDATA@.
-  -}
-  "SDRAM_VALID" ::: Signal DomBus Bool ->
-  {- | Complement of the SDRAM IP's @za_waitrequest@ — the core
-  stalls while this is low, same stall mechanism as the JTAG UART.
-  -}
-  "SDRAM_READY" ::: Signal DomBus Bool ->
+  "SDRAM_DQ_IN" ::: Signal DomBus (BitVector 16) ->
   {- | Re-arm pulse for the freeze-on-trigger capture (see
   'Riski5.Soc.SocOut.soDbgFrozenPc'). The @riski5_top.v@ wrapper
   drives this from a 1-bit @altsource_probe@ source pin so
@@ -250,15 +254,24 @@ topEntity ::
         , "UART_WDATA" ::: Signal DomBus (BitVector 32)
         , "UART_BE" ::: Signal DomBus (BitVector 4)
         , "UART_RE" ::: Signal DomBus Bool
-        , -- SDRAM bus tap — 16-bit Avalon-MM master signals produced
-          -- by the 32 ↔ 16 adapter 'Riski5.Sdram.sdram'. Routed by
-          -- @riski5_top.v@ to the Altera SDRAM Controller IP.
-          "SDRAM_CS" ::: Signal DomBus Bool
-        , "SDRAM_ADDR" ::: Signal DomBus (BitVector 22)
-        , "SDRAM_WDATA" ::: Signal DomBus (BitVector 16)
-        , "SDRAM_BE" ::: Signal DomBus (BitVector 2)
-        , "SDRAM_RD" ::: Signal DomBus Bool
-        , "SDRAM_WR" ::: Signal DomBus Bool
+        , -- SDRAM chip-side pins — driven by 'Riski5.SdrController'
+          -- via the 'sdrControllerAsAlteraIp' drop-in wrapper. The
+          -- @riski5_top.v@ wrapper connects these directly to the
+          -- DE2 board's DRAM_* FPGA pads (no Altera IP, no CDC
+          -- bridge — single clkBus domain). Replaces the previous
+          -- Avalon-MM master bus tap (@SDRAM_CS@ / @SDRAM_ADDR@ /
+          -- @SDRAM_WDATA@ / @SDRAM_BE@ / @SDRAM_RD@ / @SDRAM_WR@)
+          -- that fed the Altera IP slave port.
+          "SDRAM_ADDR_OUT" ::: Signal DomBus (BitVector 12)
+        , "SDRAM_BA" ::: Signal DomBus (BitVector 2)
+        , "SDRAM_CAS_N" ::: Signal DomBus Bool
+        , "SDRAM_CKE" ::: Signal DomBus Bool
+        , "SDRAM_CS_N" ::: Signal DomBus Bool
+        , "SDRAM_DQ_OUT" ::: Signal DomBus (BitVector 16)
+        , "SDRAM_DQ_OE" ::: Signal DomBus Bool
+        , "SDRAM_DQM" ::: Signal DomBus (BitVector 2)
+        , "SDRAM_RAS_N" ::: Signal DomBus Bool
+        , "SDRAM_WE_N" ::: Signal DomBus Bool
         , -- Debug tap. Carries 'soDbgPcFetch' = the core's pcFetchS.
           -- @riski5_top.v@ feeds this into an @altsource_probe@
           -- megafunction so @quartus_stp@'s @read_probe_data@ can
@@ -293,9 +306,7 @@ topEntity
   uartRdataS
   uartReadyS
   uartIrqS
-  sdramRdataS
-  sdramValidS
-  sdramReadyS
+  sdramDqInS
   captureResetS
   captureOffsetS
   jtagLoadModeS
@@ -304,11 +315,13 @@ topEntity
   jtagLoadWeS
   jtagLoadRdS =
   withClockResetEnable clkBus rstBus enableGen
-    $ let sdramReplyS =
-            (\d v r -> SdramIpReply {sirRdata = d, sirValid = v, sirWaitrequest = P.not r})
-              <$> sdramRdataS
-              <*> sdramValidS
-              <*> sdramReadyS
+    $ let -- The SoC consumes 'sdramReplyS' inside 'inS' and produces
+          -- the matching 'sdramBusS' inside 'outS'; we close the loop
+          -- by feeding 'sdramBusS' into our pure-Clash SDR SDRAM
+          -- controller and feeding its 'sdramReplyS' back into 'inS'.
+          -- Clash's lazy 'let' tolerates the data-dependency cycle
+          -- because the controller and the SoC each carry registers
+          -- on this path.
           inS =
             ( \sw key dq ur urRdy urIrq sdr cr co jlm jla jlw jlwe jlrd ->
                 SocIn
@@ -352,6 +365,9 @@ topEntity
               <*> jtagLoadWeS
               <*> jtagLoadRdS
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
+          sdramBusS = soSdramBus <$> outS
+          (sdramReplyS, sdramPinsS) =
+            sdrControllerAsAlteraIp defaultDe2Config sdramBusS sdramDqInS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
           lcdDataS = lcdData . soLcdPins <$> outS
@@ -379,13 +395,16 @@ topEntity
           uartWdataS = ambWdata <$> uartBusS
           uartBeS = ambBe <$> uartBusS
           uartReS = ambRe <$> uartBusS
-          sdramBusS = soSdramBus <$> outS
-          sdramCsS = sibCs <$> sdramBusS
-          sdramAddrOutS = sibAddr <$> sdramBusS
-          sdramWdataOutS = sibWdata <$> sdramBusS
-          sdramBeS = sibBe <$> sdramBusS
-          sdramRdS = sibRd <$> sdramBusS
-          sdramWrS = sibWr <$> sdramBusS
+          sdramAddrOutS = sdrAddr <$> sdramPinsS
+          sdramBaS = sdrBa <$> sdramPinsS
+          sdramCasNS = sdrCasN <$> sdramPinsS
+          sdramCkeS = sdrCke <$> sdramPinsS
+          sdramCsNS = sdrCsN <$> sdramPinsS
+          sdramDqOutS = sdrDqOut <$> sdramPinsS
+          sdramDqOeS = sdrDqOe <$> sdramPinsS
+          sdramDqmS = sdrDqm <$> sdramPinsS
+          sdramRasNS = sdrRasN <$> sdramPinsS
+          sdramWeNS = sdrWeN <$> sdramPinsS
           dbgPcFetchS = soDbgPcFetch <$> outS
           dbgFlagsS' = soDbgFlags <$> outS
           dbgFrozenPcS = soDbgFrozenPcAll <$> outS
@@ -413,12 +432,16 @@ topEntity
           , uartWdataS
           , uartBeS
           , uartReS
-          , sdramCsS
           , sdramAddrOutS
-          , sdramWdataOutS
-          , sdramBeS
-          , sdramRdS
-          , sdramWrS
+          , sdramBaS
+          , sdramCasNS
+          , sdramCkeS
+          , sdramCsNS
+          , sdramDqOutS
+          , sdramDqOeS
+          , sdramDqmS
+          , sdramRasNS
+          , sdramWeNS
           , dbgPcFetchS
           , dbgFlagsS'
           , dbgFrozenPcS

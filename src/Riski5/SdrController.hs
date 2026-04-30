@@ -181,6 +181,18 @@ sdrAutoRefreshCmd =
     , sdrWeN = True
     }
 
+-- | LOAD MODE REGISTER. Sets:
+--
+--   * @A9 = 1@: single-bit write mode (writes are always BL=1
+--     regardless of the burst-length field).
+--   * @A6:A4 = cas@: CAS latency (010 = 2, 011 = 3).
+--   * @A3 = 0@: sequential burst order (don't-care for BL=1 reads).
+--   * @A2:A0 = 000@: read burst length = 1 beat. The earlier value
+--     @001@ programmed BL=2 and made every READ return two beats
+--     where we only sampled the first; the chip then sat in the
+--     second-beat / auto-precharge window during the cycles the
+--     controller assumed it was idle, which corrupted back-to-back
+--     accesses on real silicon.
 sdrLoadModeRegCmd :: Unsigned 4 -> SdrPins
 sdrLoadModeRegCmd cas =
   sdrIdleCmd
@@ -192,7 +204,7 @@ sdrLoadModeRegCmd cas =
     , sdrAddr =
         bit 9
           .|. (resize (pack cas) `shiftL` 4)
-          .|. 0b001
+          .|. 0b000
     }
 
 -- | ACTIVATE row in bank.
