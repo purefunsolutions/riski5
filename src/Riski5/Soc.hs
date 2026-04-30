@@ -1272,19 +1272,34 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   -- accepted-gating engages and 'dataStallS' would stay True
   -- forever, freezing the pipeline (the iter-2 halt symptom
   -- pinpointed via altsource_probe on 2026-04-26).
+  -- True iff the data port is actively asserting a memory access
+  -- this cycle (any byte-enable bit set OR a read strobe). Used
+  -- to gate @dataStallS@ to False when the data port is idle —
+  -- without this, an idle data port whose @dAddrS@ happens to
+  -- target a slave currently owned by the fetch port would see
+  -- @dataStallS=True@ via the inner sticky arbiter's
+  -- ownership-gated ready signal, which would freeze the
+  -- pipeline-advance gate and prevent the FETCH path from
+  -- making progress (task #143 silicon hang follow-up).
+  dataAccessS :: Signal dom Bool
+  dataAccessS =
+    (\be re -> be /= 0 || re) <$> dBeS <*> dRenS
+
   dataStallS =
-    ( \s sramDataRdy sdramDataRdy uartRdy bramRdy uartAcc ->
-        case s of
-          SlaveSram -> not sramDataRdy
-          SlaveSdram -> not sdramDataRdy
-          SlaveJtagUart -> case (uartRdy, uartAcc) of
+    ( \access s sramDataRdy sdramDataRdy uartRdy bramRdy uartAcc ->
+        case (access, s) of
+          (False, _) -> False
+          (True, SlaveSram) -> not sramDataRdy
+          (True, SlaveSdram) -> not sdramDataRdy
+          (True, SlaveJtagUart) -> case (uartRdy, uartAcc) of
             (True, _) -> False
             (False, True) -> False
             (False, False) -> True
-          SlaveBram -> not bramRdy
+          (True, SlaveBram) -> not bramRdy
           _ -> False
     )
-      <$> (slaveOf <$> dAddrS)
+      <$> dataAccessS
+      <*> (slaveOf <$> dAddrS)
       <*> sramDataReadyS
       <*> sdramDataReadyS
       <*> uartReadyS
