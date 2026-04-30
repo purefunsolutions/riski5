@@ -53,6 +53,7 @@ import Riski5.ISA (
   csrMepc,
   csrMie,
   csrMip,
+  csrMisa,
   csrMscratch,
   csrMstatus,
   csrMtval,
@@ -119,7 +120,20 @@ readCsr cs addr
   | addr == unCsr csrMcycle = cMcycle cs
   | addr == unCsr csrMie = cMie cs
   | addr == unCsr csrMip = cMip cs
+  | addr == unCsr csrMisa = misaValue
+  -- ^ misa: hard-wired read-only CSR advertising the implemented
+  -- ISA shape. Linux head.S reset_regs reads it to decide whether
+  -- to clear the F/D-extension registers, and traps on illegal
+  -- instr if we lie about having F/D. We implement RV32IMA + Zicsr
+  -- + Zifencei: bit 8 (I), bit 12 (M), bit 0 (A), MXL=01 (= RV32)
+  -- in the top bits (mxl[1:0] = 01 means XLEN=32). All other
+  -- extension bits MUST be 0.
   | otherwise = 0
+  where
+    -- MXL = 01 (RV32) in bits[31:30] = 0x4000_0000
+    -- Extensions: I (bit 8 = 0x100), M (bit 12 = 0x1000), A (bit 0 = 0x1)
+    misaValue :: BitVector 32
+    misaValue = 0x40001101
 
 {- | Write a 32-bit CSR value. Writes to addresses the core doesn't
 implement are dropped (Csrs unchanged).
