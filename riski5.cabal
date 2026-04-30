@@ -97,6 +97,7 @@ library
     Riski5.Regfile
     Riski5.Rvfi
     Riski5.Sdram
+    Riski5.SdrController
     Riski5.Soc
     Riski5.SocSim
     Riski5.SpikeDriver
