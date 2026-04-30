@@ -407,6 +407,43 @@ linuxBootMasterFirmware = do
   srli tmpReg rdReg 24
   sw uartR tmpReg 0
 
+  -- == HART_LOTTERY PRE-LOAD (task #144 disambiguation) ==
+  -- Pre-write *hart_lottery = 0xFFFF_FFFF (= -1) before the kernel
+  -- runs its amoadd.w at PC=0x80000108. Two outcomes possible:
+  --
+  --   AMO returns OLD value (correct):
+  --     a3 ← 0xFFFF_FFFF, *hart_lottery ← 0   (-1 + 1 = 0).
+  --     bnez(a3 != 0) TAKEN → .Lsecondary_start → park (current
+  --     symptom — silicon behaves correctly).
+  --
+  --   AMO returns NEW value (bug):
+  --     a3 ← 0, *hart_lottery ← 0.
+  --     bnez(0) NOT TAKEN → kernel falls through to .Lgood_cores
+  --     and continues to start_kernel → kernel banner appears!
+  --
+  -- This disambiguates "AMO bug fetched-from-SDRAM" from "kernel
+  -- hangs for some other reason". If the kernel boots after this
+  -- pre-load, we've definitively pinned the bug to the AMO FU
+  -- and we can post-mortem it via JTAG-Master read of *hart_lottery
+  -- after the run (should be 0 in either case).
+  --
+  -- Address: hart_lottery = 0x802FD380 (per riski5-linux-rv32-nommu
+  -- ELF symbol table; verified in the @2 dump above where
+  -- SDRAM[0x80000100] = 0x00C6A6AF = the AMO with operands
+  -- pointing at this offset).
+  li tmpReg 0x802F_D380
+  addi rdReg x0 (-1)
+  sw tmpReg rdReg 0
+  -- Row sweep to flush the SW commit so the kernel's AMO sees
+  -- the new value, not buffered residue.
+  li rdReg 0x80000000
+  lw rdReg rdReg 0
+  li rdReg 0x80100000
+  lw rdReg rdReg 0
+  -- 'L' marker confirms the pre-load executed.
+  addi tmpReg x0 0x4C             -- 'L'
+  sw uartR tmpReg 0
+
   -- == LINUX nommu BOOT ABI ==
   --   a0 = 0           (single-core hartid)
   --   a1 = 0x8040_0000 (DTB pointer — well past the kernel's
