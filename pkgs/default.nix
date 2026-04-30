@@ -284,6 +284,35 @@
         riski5-core = self'.packages.riski5-core-linux-master;
       };
 
+      # Task #141 — slow-clock variants of every Linux-bringup
+      # bitstream. The package builds at 30 MHz instead of 40 MHz
+      # (PLL ratio 50×3/5) with the SDRAM IP regenerated for the
+      # matching clockRate. Cheapest experiment for the SDRAM-IP
+      # back-to-back-row-switch hypothesis: if Linux boots cleanly
+      # with -slow but hangs without it, the IP is timing-bound at
+      # 40 MHz and the multi-PLL split (separate clocks via async
+      # FIFO) is justified. If both behave identically, the hang
+      # is not chip- or IP-timing-bound.
+      riski5-core-linux-master-slow = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        linuxBootMaster = true;
+        slowClock = true;
+      };
+      flash-riski5-linux-master-slow = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-linux-master-slow;
+      };
+      boot-linux-master-slow = pkgs.callPackage ../apps/boot-linux-master.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) linux-rv32-nommu riski5-dtb;
+        riski5-core-linux-master = self'.packages.riski5-core-linux-master-slow;
+      };
+
+      riski5-core-slow = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        slowClock = true;
+      };
+
       # `nix run .#load-linux` — sends kernel + DTB to the
       # already-flashed linux-boot bitstream and attaches
       # nios2-terminal. With no args, uses the flake-built
@@ -393,6 +422,14 @@
       flash-riski5-linux-master = {
         type = "app";
         program = "${self'.packages.flash-riski5-linux-master}/bin/flash-riski5";
+      };
+      flash-riski5-linux-master-slow = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-linux-master-slow}/bin/flash-riski5";
+      };
+      boot-linux-master-slow = {
+        type = "app";
+        program = "${self'.packages.boot-linux-master-slow}/bin/boot-linux-master";
       };
       load-linux = {
         type = "app";

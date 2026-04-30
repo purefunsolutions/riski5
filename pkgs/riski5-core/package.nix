@@ -96,6 +96,23 @@
   # LinuxBoot indirection with the Copilot-eDSL → C → RV32
   # path).
   bootRomCopilot ? null,
+  # Task #141 — diagnostic: drop the entire design from 40 MHz down
+  # to 30 MHz by changing the ALTPLL ratio from 50×4/5 to 50×3/5,
+  # and regenerate the Altera SDRAM Controller IP with the matching
+  # @clockRate=30000000@. Single clock domain, no CDC, no second
+  # PLL. The motivating hypothesis (compaction notes 2026-04-30):
+  # Linux silicon hangs at PC=0x80000108 immediately after an
+  # @amoadd.w@ writes to a different SDRAM row from the next IF
+  # fetch — the IP's back-to-back ACTIVATE/PRECHARGE/ACTIVATE may
+  # need more wall-clock time per command. Slowing the entire
+  # design uniformly tests that hypothesis without requiring a
+  # CDC bridge between clock domains. If Linux boots cleanly with
+  # @slowClock=true@, the timing hypothesis is confirmed and the
+  # next step is the proper multi-PLL split (CPU @ 40 MHz, SDRAM
+  # IP @ 30 MHz with async-FIFO Avalon-MM bridge between them).
+  # Pname gets a @-slow@ suffix when this is enabled, so both
+  # variants are buildable side-by-side for A/B comparison.
+  slowClock ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -113,10 +130,17 @@
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
   isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  # Task #141: PLL-output and SDRAM-IP @clockRate@ both vary together
+  # so that the IP's internal cycle counts stay correctly calibrated
+  # for whatever frequency we actually run at.
+  pllMultBy = if slowClock then 3 else 4;  # → 50 × M / 5 = 30 / 40 MHz
+  pllPeriodNs = if slowClock then "33.333" else "25.000";
+  sdramIpClockRate = if slowClock then 30000000 else 40000000;
+  slowSuffix = lib.optionalString slowClock "-slow";
 in
   stdenv.mkDerivation {
     pname =
-      if isCoremark then "riski5-core-coremark"
+      (if isCoremark then "riski5-core-coremark"
       else if isSramExec then "riski5-core-sramexec"
       else if isSdramExec then "riski5-core-sdramexec"
       else if isAExtTest then "riski5-core-aexttest"
@@ -124,7 +148,7 @@ in
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
       else if isLinuxBootMaster then "riski5-core-linux-master"
-      else "riski5-core";
+      else "riski5-core") + slowSuffix;
     version = "0.1.0";
 
     # Reach up two levels to the repo root so we get src/, app/, and
@@ -638,7 +662,7 @@ in
               --component-parameter=TRP=20.0 \
               --component-parameter=TWR=14.0 \
               --component-parameter=TMRD=2 \
-              --component-parameter=clockRate=40000000 \
+              --component-parameter=clockRate=${toString sdramIpClockRate} \
               --component-parameter=size=8388608 \
               --component-parameter=addressWidth=22 \
               --component-parameter=bankWidth=2 \
@@ -795,11 +819,11 @@ in
         defparam u_altpll.bandwidth_type        = "AUTO";
         defparam u_altpll.clk0_divide_by        = 5;
         defparam u_altpll.clk0_duty_cycle       = 50;
-        defparam u_altpll.clk0_multiply_by      = 4;
+        defparam u_altpll.clk0_multiply_by      = ${toString pllMultBy};
         defparam u_altpll.clk0_phase_shift      = "0";
         defparam u_altpll.clk1_divide_by        = 5;
         defparam u_altpll.clk1_duty_cycle       = 50;
-        defparam u_altpll.clk1_multiply_by      = 4;
+        defparam u_altpll.clk1_multiply_by      = ${toString pllMultBy};
         defparam u_altpll.clk1_phase_shift      = "-3000";
         defparam u_altpll.compensate_clock      = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
