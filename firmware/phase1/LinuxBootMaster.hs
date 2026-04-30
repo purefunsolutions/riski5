@@ -113,6 +113,54 @@ linuxBootMasterFirmware = do
   addi tmpReg x0 0x4D
   sw uartR tmpReg 0
 
+  -- == TRAP-INFO DUMP (task #144 follow-up) ==
+  -- Read mcause/mepc/mtval and emit them as 'T' + 12 LE bytes.
+  -- On cold boot these CSRs are zero (FPGA reset), so the
+  -- dump is harmless. On a trap-induced re-entry (mtvec=0
+  -- routes back here), the values are the kernel's last
+  -- trap state — tells us *what* faulted and where.
+  --
+  -- Format: 'T' [mcause LE×4] [mepc LE×4] [mtval LE×4]
+  --
+  -- Standard mcause values to recognise in the byte stream:
+  --   0x00000001 = Instruction access fault
+  --   0x00000002 = Illegal instruction
+  --   0x00000005 = Load access fault
+  --   0x00000007 = Store/AMO access fault
+  --   0x80000003 = Machine sw interrupt
+  --   0x80000007 = Machine timer interrupt
+  --   0x8000000b = Machine external interrupt
+  let csrTmp = a0Reg              -- reuse — restored later
+  addi tmpReg x0 0x54             -- 'T'
+  sw uartR tmpReg 0
+  -- mcause
+  csrrs csrTmp x0 csrMcause
+  sw uartR csrTmp 0
+  srli tmpReg csrTmp 8
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 16
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 24
+  sw uartR tmpReg 0
+  -- mepc
+  csrrs csrTmp x0 csrMepc
+  sw uartR csrTmp 0
+  srli tmpReg csrTmp 8
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 16
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 24
+  sw uartR tmpReg 0
+  -- mtval
+  csrrs csrTmp x0 csrMtval
+  sw uartR csrTmp 0
+  srli tmpReg csrTmp 8
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 16
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 24
+  sw uartR tmpReg 0
+
   -- == INVALIDATE STALE TRIGGER ==
   -- FPGA reset clears the SDRAM IP but the chip keeps refreshing
   -- across reflashes, so the trigger record at 0x807F_FFF4 may
