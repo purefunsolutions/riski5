@@ -478,6 +478,42 @@ linuxBootMasterFirmware = do
   srli tmpReg rdReg 24
   sw uartR tmpReg 0
 
+  -- == CORE-SW UPPER-16 PROBE (task #146 disambiguation) ==
+  -- The JTAG-Master path drops the upper-16 of every 32-bit
+  -- write to SDRAM (verified by `nix run .#sdram-write-pattern-test`).
+  -- This test does the same kind of write, but from the CORE's
+  -- data port instead of JTAG-Master. If core SW commits the
+  -- upper 16 bits, the bug is JTAG-Master-specific (in the
+  -- jtagMuxedSdram routing). If core SW also drops upper-16,
+  -- the bug is at the SDRAM adapter / bridge / IP layer and
+  -- affects ALL writes.
+  --
+  -- Output: 'X' + 4 LE bytes of MEM[testAddr].
+  -- Expected if core SW works:    X EF BE AD DE  (= 0xDEADBEEF LE)
+  -- If core SW also has the bug:  X EF BE 00 00  (or random upper)
+  let coreWrAddr = a0Reg            -- reuse — restored later
+      coreWrPattern = a1Reg
+      coreWrRead = x28              -- t3
+  li coreWrAddr 0x80700000          -- well clear of kernel + DTB + trigger
+  li coreWrPattern 0xDEADBEEF
+  sw coreWrAddr coreWrPattern 0
+  -- Force a row switch so the SDRAM IP commits the buffered write.
+  li tmpReg 0x80100000
+  lw tmpReg tmpReg 0
+  li tmpReg 0x80200000
+  lw tmpReg tmpReg 0
+  -- Read back via core LW.
+  lw coreWrRead coreWrAddr 0
+  addi tmpReg x0 0x58              -- 'X'
+  sw uartR tmpReg 0
+  sw uartR coreWrRead 0
+  srli tmpReg coreWrRead 8
+  sw uartR tmpReg 0
+  srli tmpReg coreWrRead 16
+  sw uartR tmpReg 0
+  srli tmpReg coreWrRead 24
+  sw uartR tmpReg 0
+
   -- == HART_LOTTERY PRE-LOAD (task #144 disambiguation) ==
   -- Pre-write *hart_lottery = 0xFFFF_FFFF (= -1) before the kernel
   -- runs its amoadd.w at PC=0x80000108. Two outcomes possible:
