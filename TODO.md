@@ -200,18 +200,32 @@ rules around maintaining it.
        design from 40 MHz to 30 MHz uniformly (PLL ratio
        50×4/5 → 50×3/5) and regenerates the SDRAM IP with
        `clockRate=30000000`. Single domain, no CDC, no second
-       PLL. Cheapest experiment for the timing hypothesis: if
-       `nix run .#boot-linux-master-slow` boots cleanly while
-       `nix run .#boot-linux-master` still hangs, the proper
-       multi-PLL split is justified. Otherwise we look elsewhere.
+       PLL. Cheapest experiment for the timing hypothesis.
        Build verified: 24.4 ns slack at 30 MHz vs 16.5 ns at
-       40 MHz, plenty of margin either way. Silicon test pending.
-    3. **Multi-PLL with async-FIFO Avalon-MM bridge — pending.**
-       Architectural fix the user requested: separate PLL for
-       the SDRAM IP at slower frequency, keep CPU + peripherals
-       at 40 MHz, async-FIFO between them. Wait on result of
-       step 2 before investing in CDC-bridge implementation
-       (~hours of careful Verilog).
+       40 MHz, plenty of margin either way.
+    3. **Silicon test of slowClock — RESULT NEGATIVE (2026-04-30).**
+       Ran `nix run .#boot-linux-master-slow` end-to-end. Boot
+       stub printed its full diagnostic-marker sequence
+       (M / J / K / 4-cell dump) exactly like the 40 MHz
+       baseline, then JR'd to 0x80000000, then **no kernel
+       earlycon output ever appeared** — identical hang
+       signature to the 40 MHz path. SDRAM-IP-timing hypothesis
+       falsified.
+    4. **Multi-PLL with async-FIFO Avalon-MM bridge — DROPPED
+       FROM CRITICAL PATH.** Since the slow-clock proxy
+       (which gives the IP a strict superset of the timing
+       relaxation a multi-PLL split would provide) didn't
+       unstick the hang, the multi-PLL bridge wouldn't help
+       either. Architectural design captured in
+       [`docs/multi-pll-sdram-design.md`](./docs/multi-pll-sdram-design.md)
+       for future reference; not implemented now.
+    5. **Next: SDRAM hang diagnostics (task #142 created).**
+       altsource_probe SLD nodes for SDRAM IP signals
+       (waitrequest, za_valid, za_data) + Sdram adapter state
+       + sticky-arbiter ownership at the freeze-on-hang
+       trigger, so we can read via quartus_stp whether the
+       IP itself is hung or the adapter / arbiter is stuck
+       waiting for it.
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
