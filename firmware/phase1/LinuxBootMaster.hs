@@ -338,6 +338,13 @@ linuxBootMasterFirmware = do
   addi scrubAddr scrubAddr 4
   blt scrubAddr scrubEnd scrubL
 
+  -- 'Z' marker — BSS scrub completed. If the test hangs after
+  -- @3 but never sees Z, the SDRAM SW loop above is the culprit
+  -- (silicon-only — pure-Haskell sim boots fine). If it sees Z
+  -- but no kernel printk, the kernel itself is hanging early.
+  addi tmpReg x0 0x5A             -- 'Z'
+  sw uartR tmpReg 0
+
   -- == LINUX nommu BOOT ABI ==
   --   a0 = 0           (single-core hartid)
   --   a1 = 0x8040_0000 (DTB pointer — well past the kernel's
