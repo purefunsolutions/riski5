@@ -367,7 +367,22 @@ step s (active, op, addr, rs2, dmemRdata, slaveReady) = (s', (busy, resultReg s,
                 -- AMOs and successful SC.W both clear the reservation.
                 , reservation = Nothing
                 }
-    AmoDone -> s {phase = AmoIdle}
+    AmoDone
+      | active -> s
+      -- ^ Hold AmoDone while the X-stage still has the AMO
+      -- instruction (idValid && isAmoOp). Without this guard, the
+      -- FSM transitions Done → Idle on the very next clock; if the
+      -- pipeline can't retire the AMO in that one cycle (because
+      -- e.g. the external @stallS@ is briefly high from the AMO's
+      -- own write echoing back through a multi-cycle bus / CDC
+      -- bridge), the next-cycle AmoIdle sees @active@ still True
+      -- and re-launches via launchAt — generating a self-feeding
+      -- loop where the AMO write is re-issued indefinitely. Task
+      -- #143 / silicon Linux hang at PC=0x80000108 was exactly this.
+      -- While in AmoDone the FU's @busy@ output is False, so the
+      -- pipeline-advance logic is free to retire the AMO; once
+      -- @active@ drops we enter AmoIdle cleanly.
+      | otherwise -> s {phase = AmoIdle}
 
 -- | State at the Idle → Busy transition: capture operands; for SC.W
 -- additionally check the reservation and either head straight into
