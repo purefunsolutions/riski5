@@ -113,6 +113,29 @@ linuxBootMasterFirmware = do
   addi tmpReg x0 0x4D
   sw uartR tmpReg 0
 
+  -- == INVALIDATE STALE TRIGGER ==
+  -- FPGA reset clears the SDRAM IP but the chip keeps refreshing
+  -- across reflashes, so the trigger record at 0x807F_FFF4 may
+  -- still hold "1" from a previous boot. Without this clear, the
+  -- poll loop below sees the stale 1 immediately and JRs to
+  -- whatever stale kernel bytes the previous session left at
+  -- 0x80000000 — diagnosed by observing kbytes dump = previous
+  -- run's value when uploading a new image.
+  --
+  -- Uses a core-side SW which the sticky JTAG-mux arbiter
+  -- (Riski5.Soc.JtagMuxOwner) keeps separate from any host
+  -- JTAG-Master upload that happens to start near the same time.
+  -- Followed by a row sweep to force the IP to commit the SW
+  -- to the chip (otherwise the buffered SW could get clobbered
+  -- by the host's later trigger write).
+  li goAddr 0x807F_FFF0
+  sw goAddr x0 4                  -- SDRAM[0x807F_FFF4] = 0
+  -- Quick row sweep to flush the SW commit to chip.
+  li tmpReg 0x80000000
+  lw tmpReg tmpReg 0
+  li tmpReg 0x80100000
+  lw tmpReg tmpReg 0
+
   -- == POLL FOR HOST TRIGGER ==
   --
   -- Spin reading @SDRAM[0x807F_FFF4]@ until it becomes non-zero.
