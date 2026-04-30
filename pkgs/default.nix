@@ -383,6 +383,16 @@
         inherit (pkgs) psmisc;
       };
 
+      # `nix run .#sdram-state-probe` — read the SDRAM CDC bridge
+      # state + IP signal probes (task #142, SDST + SDIO probes
+      # added in commit c3500f1). Use after the silicon Linux hang
+      # to learn whether the bridge or the IP is parked at the
+      # moment the core stalls at PC=0x80000108.
+      sdram-state-probe = pkgs.callPackage ../apps/sdram-state-probe.nix {
+        inherit quartus-ii-13;
+        inherit (pkgs) psmisc;
+      };
+
       default = self'.packages.riski5-core;
     };
 
@@ -458,6 +468,10 @@
       jam-counter-probe = {
         type = "app";
         program = "${self'.packages.jam-counter-probe}/bin/jam-counter-probe";
+      };
+      sdram-state-probe = {
+        type = "app";
+        program = "${self'.packages.sdram-state-probe}/bin/sdram-state-probe";
       };
     };
   };
