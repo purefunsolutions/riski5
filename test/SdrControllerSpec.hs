@@ -63,10 +63,7 @@ tests =
     , testGroup
         "steady-state R/W round-trips against chip model"
         [ testCase "write 0xBEEF then read back" case_roundTripDeadbeef
-        -- TODO: lo+hi pair test fails — second read returns lo value
-        -- instead of hi. Suspected chip-model state-tracking issue or
-        -- transaction-overlap timing. Not gating on this until fixed.
-        -- , testCase "two adjacent writes (lo + hi pattern) commit independently" case_loHiPair
+        , testCase "two adjacent writes (lo + hi pattern) commit independently" case_loHiPair
         ]
     ]
 
@@ -303,26 +300,25 @@ case_loHiPair = do
   let baseAddr :: CP.BitVector 22 = 0x2000
       loVal :: CP.BitVector 16 = 0xBEEF
       hiVal :: CP.BitVector 16 = 0xDEAD
-      -- Write to baseAddr + 0 (LO half) and baseAddr + 1 (HI half),
-      -- then read both back. Mimics the 32→16 adapter's write
-      -- pattern for a 32-bit transaction.
-      writeLo = P.replicate 30 (writeStim baseAddr loVal 0b00)
-      writeHi = P.replicate 30 (writeStim (baseAddr P.+ 1) hiVal 0b00)
-      readLo = P.replicate 30 (readStim baseAddr)
-      readHi = P.replicate 30 (readStim (baseAddr P.+ 1))
+      -- Single-shot stims: master asserts cs for ONE cycle then
+      -- drops it. The controller latches in PhIdle on that cycle
+      -- and continues independently to PhActivate / PhWrite / etc.
+      -- The 30 idle cycles after each give the FSM time to finish
+      -- (write: PhActivate → PhTrcd → PhWrite → PhTwr → PhTrpAfter
+      -- → PhIdle ≈ 1+1+1+1+2 = 6 cycles; read: similar + CL ≈ 8).
+      -- Without this discipline a held cs causes the controller to
+      -- start a new transaction every time it returns to PhIdle.
       stims =
-        writeLo
-          P.++ P.replicate 5 idleStim
-          P.++ writeHi
-          P.++ P.replicate 5 idleStim
-          P.++ readLo
-          P.++ P.replicate 5 idleStim
-          P.++ readHi
+        [writeStim baseAddr loVal 0b00] P.++ P.replicate 30 idleStim
+          P.++ [writeStim (baseAddr P.+ 1) hiVal 0b00] P.++ P.replicate 30 idleStim
+          P.++ [readStim baseAddr] P.++ P.replicate 30 idleStim
+          P.++ [readStim (baseAddr P.+ 1)] P.++ P.replicate 30 idleStim
       replies = issueAfterInit testCfg 400 stims
-      -- Filter ssoValid pulses; we expect exactly two reads → two pulses.
+      -- We expect EXACTLY two reads → exactly two valid pulses.
       valids = P.filter ssoValid replies
-  assertBool ("expected ≥ 2 valid pulses, got " P.++ P.show (P.length valids))
-    (P.length valids P.>= 2)
+  assertEqual ("valid pulse count")
+    (2 :: P.Int)
+    (P.length valids)
   let v1 = ssoRdata (valids P.!! 0)
       v2 = ssoRdata (valids P.!! 1)
   assertEqual "lo readback" loVal v1
