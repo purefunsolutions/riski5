@@ -112,6 +112,20 @@ data SdrConfig = SdrConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
+-- | Default config sized for the DE2's IS42S16400-7TL chip running
+-- on the @40 MHz@ bus clock (period 25 ns). Datasheet timings:
+--
+-- @
+--   T_RCD  = 20 ns →  1 cycle min   (we use 3 — over-conservative)
+--   T_RP   = 20 ns →  1 cycle min   (we use 3)
+--   T_RFC  = 70 ns →  3 cycles min  (we use 7)
+--   T_WR   = 14 ns →  1 cycle min   (we use 2)
+--   T_MRD  = 2 cycles               (we use 2)
+--   CL     = 3                      (we use 3)
+-- @
+--
+-- Refresh: 4096 rows / 64 ms = 15.625 µs avg interval. At 40 MHz
+-- that's 625 cycles max. We use 600 to leave a safety margin.
 defaultDe2Config :: SdrConfig
 defaultDe2Config =
   SdrConfig
@@ -121,8 +135,8 @@ defaultDe2Config =
     , sdrTwrCycles = 2
     , sdrCasLatency = 3
     , sdrTmrdCycles = 2
-    , sdrRefreshIntervalCycles = 843
-    , sdrInitNopCycles = 21600
+    , sdrRefreshIntervalCycles = 600
+    , sdrInitNopCycles = 4100 -- ≥100 µs at 40 MHz period 25 ns (= 4000 cycles)
     , sdrInitRefreshCount = 8
     }
 
