@@ -84,7 +84,12 @@ module Riski5.SdrController (
   -- * Chip behavioral model (sim only — for unit tests)
   ChipModelOut (..),
   sdrChipModel,
+
+  -- * Drop-in wrapper for the Altera-IP shape (Riski5.Sdram)
+  sdrControllerAsAlteraIp,
 ) where
+
+import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
 
 import Clash.Prelude hiding ((||), (&&), not)
 import qualified Clash.Prelude as CP
@@ -715,6 +720,71 @@ data ChipCmd
   | ChipAutoRefresh
   | ChipLoadMode
   deriving (P.Eq, P.Show, Generic, NFDataX)
+
+-- * Drop-in wrapper for the Altera IP shape ----------------------
+
+{- |
+Adapt 'sdrController' to the same port shape Riski5.Sdram already
+expects from the Altera IP. Lets us swap the IP for our own
+controller in 'Riski5.Soc' with a one-line change:
+
+  -- before:
+  --   sdramReplyS = siSdramReply <$> inS
+
+  -- after:
+  --   (sdramReplyS, sdrPinsS) = sdrControllerAsAlteraIp defaultDe2Config sdramBusS dqInS
+
+The wrapper translates:
+
+  * 'sibBe' (active-high byte enable from Sdram.hs) → 'ssiBeN'
+    (active-low input expected by sdrController, which forwards it
+    directly to the chip's active-high DQM mask: be=11 → DQM=00 →
+    write both bytes).
+  * 'sibRd' / 'sibWr' / 'sibCs' → 'ssiRd' / 'ssiWr' / 'ssiCs' (1:1).
+  * 'SdrSlaveOut' → 'SdramIpReply' (1:1 except field names).
+-}
+sdrControllerAsAlteraIp ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  SdrConfig ->
+  -- | Master-side request (Sdram.hs's busS output).
+  Signal dom SdramIpBus ->
+  -- | Chip → FPGA DQ (during reads).
+  Signal dom (BitVector 16) ->
+  ( -- | Slave reply (becomes Sdram.hs's replyS input).
+    Signal dom SdramIpReply
+  , -- | Chip-side pins (drive DRAM_* out of the SoC).
+    Signal dom SdrPins
+  )
+sdrControllerAsAlteraIp cfg busS dqInS = (replyS, pinsS)
+ where
+  inS = adaptIn CP.<$> busS
+  (sloS, pinsS) = sdrController cfg inS dqInS
+  replyS = adaptOut CP.<$> sloS
+
+  adaptIn :: SdramIpBus -> SdrSlaveIn
+  adaptIn b =
+    SdrSlaveIn
+      { ssiCs = sibCs b
+      , ssiAddr = sibAddr b
+      , ssiWdata = sibWdata b
+      , -- Sdram.hs gives sibBe ACTIVE-HIGH ("1 = write that byte").
+        -- sdrController's ssiBeN is "value passed unchanged to the
+        -- chip's DQM input" (chip DQM=1 = mask). So we need to
+        -- INVERT sibBe → DQM. (For sibBe=11: DQM=00 = both bytes
+        -- written; for sibBe=01: DQM=10 = only byte 0 written.)
+        ssiBeN = complement (sibBe b)
+      , ssiRd = sibRd b
+      , ssiWr = sibWr b
+      }
+
+  adaptOut :: SdrSlaveOut -> SdramIpReply
+  adaptOut o =
+    SdramIpReply
+      { sirRdata = ssoRdata o
+      , sirValid = ssoValid o
+      , sirWaitrequest = ssoWaitrequest o
+      }
 
 decodeChipCmd :: SdrPins -> ChipCmd
 decodeChipCmd p

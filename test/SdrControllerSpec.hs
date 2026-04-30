@@ -43,6 +43,7 @@ import Clash.Prelude (
   withClockResetEnable,
  )
 import qualified Clash.Prelude as CP
+import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
 import Riski5.SdrController
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, testCase)
@@ -64,6 +65,10 @@ tests =
         "steady-state R/W round-trips against chip model"
         [ testCase "write 0xBEEF then read back" case_roundTripDeadbeef
         , testCase "two adjacent writes (lo + hi pattern) commit independently" case_loHiPair
+        ]
+    , testGroup
+        "drop-in wrapper for the Altera-IP shape"
+        [ testCase "SdrController can replace the Altera IP behind Riski5.Sdram" case_alteraIpWrapper
         ]
     ]
 
@@ -323,3 +328,67 @@ case_loHiPair = do
       v2 = ssoRdata (valids P.!! 1)
   assertEqual "lo readback" loVal v1
   assertEqual "hi readback" hiVal v2
+
+-- * Drop-in wrapper integration test ------------------------------
+
+-- | Drive Riski5.Sdram (the 32 ↔ 16 width adapter that today
+-- talks to the Altera IP) with `sdrControllerAsAlteraIp` plugged
+-- in where the Altera IP normally sits. A 32-bit SW + LW pattern
+-- through the adapter must round-trip the full 32-bit word —
+-- i.e. *both* lo and hi half-words commit. If the wrapper or
+-- byte-enable polarity is wrong, the upper 16 bits will read back
+-- as zero (= the silicon bug we're trying to fix in real hardware).
+case_alteraIpWrapper :: Assertion
+case_alteraIpWrapper = do
+  -- Feed the wrapper a SdramIpBus stim sequence shaped like what
+  -- Riski5.Sdram emits during a half-word lo + hi write pair,
+  -- then half-word reads, and verify the full 32-bit pattern
+  -- round-trips through the chip model. If the wrapper's
+  -- byte-enable polarity translation is wrong, the chip writes
+  -- the wrong bytes and the readback fails (which would be the
+  -- exact silicon symptom we're trying to fix).
+  let baseAddr :: CP.BitVector 22 = 0x4000
+      loVal :: CP.BitVector 16 = 0xABCD
+      hiVal :: CP.BitVector 16 = 0x1234
+      busTrace =
+        [busWrite baseAddr loVal 0b11]
+          P.++ P.replicate 30 busIdle
+          P.++ [busWrite (baseAddr P.+ 1) hiVal 0b11]
+          P.++ P.replicate 30 busIdle
+          P.++ [busRead baseAddr]
+          P.++ P.replicate 30 busIdle
+          P.++ [busRead (baseAddr P.+ 1)]
+          P.++ P.replicate 30 busIdle
+      replies = runWrapperWithChip testCfg 400 busTrace
+      valids = P.filter sirValid replies
+  assertEqual "valid pulse count from wrapper" (2 :: P.Int) (P.length valids)
+  assertEqual "lo readback (via wrapper)" loVal (sirRdata (valids P.!! 0))
+  assertEqual "hi readback (via wrapper)" hiVal (sirRdata (valids P.!! 1))
+
+busIdle :: SdramIpBus
+busIdle = SdramIpBus P.False 0 0 0b00 P.False P.False
+
+busWrite :: CP.BitVector 22 -> CP.BitVector 16 -> CP.BitVector 2 -> SdramIpBus
+busWrite a w be = SdramIpBus P.True a w be P.False P.True
+
+busRead :: CP.BitVector 22 -> SdramIpBus
+busRead a = SdramIpBus P.True a 0 0b00 P.True P.False
+
+runWrapperWithChip ::
+  SdrConfig ->
+  P.Int ->
+  [SdramIpBus] ->
+  [SdramIpReply]
+runWrapperWithChip cfg n busSeq =
+  let initLen = computeInitCycles cfg
+      filler = P.replicate initLen busIdle
+   in P.drop initLen
+        P.$ P.map P.fst
+        P.$ sampleN @System (initLen P.+ n)
+        P.$ withClockResetEnable @System clockGen resetGen enableGen
+        P.$ ( let busS = CP.fromList ((filler P.++ busSeq) P.++ P.repeat busIdle)
+                  dqInS = (\co -> cmoDqOut co) CP.<$> chipOutS
+                  (replyS, pinsS) = sdrControllerAsAlteraIp cfg busS dqInS
+                  chipOutS = sdrChipModel cfg pinsS
+               in CP.bundle (replyS, pinsS)
+            )
