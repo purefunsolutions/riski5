@@ -175,6 +175,43 @@ rules around maintaining it.
     DTB-related; see
     [`memory/project_avalon_master_state.md`](./.claude/projects/-home-mika-riski5/memory/project_avalon_master_state.md)
     for next-action notes).
+  - **SDRAM IP timing investigation (task #141, started 2026-04-30,
+    in progress)** — the silicon Linux hang at PC=0x80000108
+    immediately after an `amoadd.w` writes one SDRAM row and the
+    next IF fetch reads from a different row points at the
+    Altera SDRAM Controller IP's back-to-back ACTIVATE /
+    PRECHARGE / ACTIVATE sequence not getting enough wall-clock
+    time per command. Two layers of work:
+    1. **Naming + clockRate fix (LANDED commit `f4132f2`,
+       2026-04-30).** Renamed `Dom30 → DomSys`, `clk30 → clkSys`,
+       `clk30_dram → clkSdramOut`, `rst30_n → rstSys_n`, port
+       `CLOCK_30 → CLOCK_SYS`, `RESET_30_N → RESET_SYS_N`. Fixed
+       the dangling `clockRate=30000000` on the SDRAM IP (it had
+       been left over from before the phase-2 PLL retarget — the
+       IP was computing its internal cycle counts as if it were
+       running at 30 MHz while actually running at 40 MHz, which
+       made @powerUpDelay@ undershoot 100 µs by 25 µs and ran
+       refresh every 11.7 µs instead of the spec's 15.625 µs).
+       Rename only — no behaviour change beyond the SDRAM-IP
+       parameter recalibration. 261/261 cabal tests green.
+    2. **slowClock Nix flag (LANDED commit `1456737`,
+       2026-04-30).** New `slowClock ? false` parameter on
+       `pkgs/riski5-core/package.nix` that drops the entire
+       design from 40 MHz to 30 MHz uniformly (PLL ratio
+       50×4/5 → 50×3/5) and regenerates the SDRAM IP with
+       `clockRate=30000000`. Single domain, no CDC, no second
+       PLL. Cheapest experiment for the timing hypothesis: if
+       `nix run .#boot-linux-master-slow` boots cleanly while
+       `nix run .#boot-linux-master` still hangs, the proper
+       multi-PLL split is justified. Otherwise we look elsewhere.
+       Build verified: 24.4 ns slack at 30 MHz vs 16.5 ns at
+       40 MHz, plenty of margin either way. Silicon test pending.
+    3. **Multi-PLL with async-FIFO Avalon-MM bridge — pending.**
+       Architectural fix the user requested: separate PLL for
+       the SDRAM IP at slower frequency, keep CPU + peripherals
+       at 40 MHz, async-FIFO between them. Wait on result of
+       step 2 before investing in CDC-bridge implementation
+       (~hours of careful Verilog).
 
 - **A-extension (RV32A) — phase-2 opener.** First arc of phase 2.
   Landed **2026-04-27** in 4 commits (`3cd088d`, `fa34d9e`,
