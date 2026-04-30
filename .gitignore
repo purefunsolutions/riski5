@@ -36,3 +36,4 @@ greybox_tmp/
 docs/**/*.pdf
 !docs/riscv/*.pdf
 !docs/de2/*.pdf
+verilog/

@@ -197,5 +197,5 @@ runHarness program mtips =
       dmem = CP.pure 0
       mtipS = fromList (mtips P.++ P.repeat P.False)
       (pcFetchS, pcExecS, _dAddrS, _dWdataS, _dBeS, _dRenS, wbS, _rvfiS) =
-        core imem (CP.pure P.True) dmem (CP.pure P.False) mtipS (CP.pure P.False)
+        core imem (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False) mtipS (CP.pure P.False)
    in bundle (pcExecS, wbS)

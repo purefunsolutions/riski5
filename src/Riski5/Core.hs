@@ -479,6 +479,19 @@ core ::
   -- stalls (SRAM / SDRAM / UART waits) and fetch-in-flight
   -- stalls both fold into this.
   Signal dom Bool ->
+  -- | data-side back-pressure only: freezes the AMO FU's
+  -- @slaveReady@ when 'True'. Pulled out as a separate input
+  -- (rather than re-derived from 'stallS') because the AMO FU
+  -- must NOT see fetch-side stalls — otherwise we get a
+  -- circular dependency where the AMO holds the data bus,
+  -- fetch starves on the sticky arbiter, fetch-stall stays
+  -- True, the combined stall stays True, and the AMO never
+  -- sees its own slave-ready pulse to advance out of
+  -- @AmoRead@ / @AmoWrite@. Task #143 silicon hang at
+  -- PC=0x80000108 was exactly this. The SoC drives this from
+  -- its @dataStallS@ signal; FormalTop / sim wrappers can
+  -- pass 'pure False'.
+  Signal dom Bool ->
   -- | external machine-timer-interrupt-pending strobe. Wired
   -- straight into @mip.MTIP@ (bit 7 of the @cMip@ CSR) on every
   -- clock edge in the core; combined with @mstatus.MIE@ and
@@ -500,7 +513,7 @@ core ::
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   , Signal dom Rvfi -- RVFI observability bundle
   )
-core imemData imemReadyS dmemRData stallS mtipS meipS =
+core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   ( pcFetchS
   , mwPcOutS
   , dmemAddrOutS
@@ -1003,7 +1016,16 @@ core imemData imemReadyS dmemRData stallS mtipS meipS =
   -- single-cycle dmem still retires AMOs in the original 3-busy-
   -- cycle envelope.
   amoSlaveReadyS :: Signal dom Bool
-  amoSlaveReadyS = not <$> stallS
+  amoSlaveReadyS = not <$> dataStallS
+  -- ^ Was @not <$> stallS@. Switched to dataStallS-only because
+  -- the combined stallS includes fetchStallS, which causes a
+  -- circular dependency: the AMO holds the data bus, fetch
+  -- starves on the sticky arbiter, fetchStallS stays True, the
+  -- combined stallS stays True, and the AMO FU's slaveReady
+  -- never pulses True so the FSM never advances past AmoRead /
+  -- AmoWrite. The dataStallS signal reports only data-side
+  -- slave readiness, breaking the cycle. Task #143 silicon
+  -- Linux hang at PC=0x80000108 was exactly this.
   (amoBusyS, amoResultS, amoBusS) =
     amoFU amoActiveS amoOpS rs1FwdS rs2FwdS dmemRData amoSlaveReadyS
 
