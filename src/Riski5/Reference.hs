@@ -40,6 +40,14 @@ module Riski5.Reference (
   -- * Register helpers
   readReg,
   writeReg,
+
+  -- * Memory helpers (exposed for SoC sim)
+  Addr,
+  readByte,
+  readWord,
+  writeByte,
+  writeHalf,
+  writeWord,
 ) where
 
 import Clash.Prelude (BitVector, Signed, Unsigned, pack, unpack)

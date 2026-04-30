@@ -98,6 +98,7 @@ library
     Riski5.Rvfi
     Riski5.Sdram
     Riski5.Soc
+    Riski5.SocSim
     Riski5.SpikeDriver
     Riski5.Sram
 
@@ -176,6 +177,16 @@ executable riski5-boot-rom-gen
     , copilot-language
     , directory   >=1.3 && <1.4
     , filepath    >=1.4 && <1.6
+
+executable riski5-linux-sim
+  import:         warnings, language
+  main-is:        Main.hs
+  hs-source-dirs: tools/linux-sim
+  build-depends:
+    , base
+    , bytestring   >=0.12 && <0.13
+    , containers   >=0.7  && <0.8
+    , riski5
 
 test-suite riski5-test
   import:         warnings, language
