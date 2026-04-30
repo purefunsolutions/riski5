@@ -575,8 +575,8 @@ in
             # two 16-bit chips in parallel, which the DE2 doesn't have.
             #
             # Timing parameters are sized for the -7 speed grade of the
-            # DE2's chip and a 40 MHz (Dom30 — name kept even after the
-            # phase-2 PLL retarget) clock, leaving generous margin:
+            # DE2's chip and the 40 MHz @clkSys@ clock, leaving generous
+            # margin:
             #
             #   casLatency       = 2   — fine below ~133 MHz for a -7 part
             #   TRCD             = 20  ns (≥ 15 ns data-sheet min)
@@ -588,7 +588,15 @@ in
             #   refreshPeriod    = 15.625 µs (64 ms / 4096 rows)
             #   powerUpDelay     = 100 µs (initialisation NOP window)
             #   initRefreshCommands = 2
-            #   clockRate        = 30_000_000 Hz
+            #   clockRate        = 40_000_000 Hz (matches @clkSys@ —
+            #                       was previously 30_000_000 left over
+            #                       from before the phase-2 PLL retarget,
+            #                       which made the IP compute its
+            #                       internal cycle counts as if it were
+            #                       running at 30 MHz; refresh ended up
+            #                       11.7 µs instead of 15.6 µs and
+            #                       @powerUpDelay@ initialisation
+            #                       undershot by 25 µs at every reset)
             #
             # Geometry:
             #   rowWidth   = 12   → 4096 rows
@@ -630,7 +638,7 @@ in
               --component-parameter=TRP=20.0 \
               --component-parameter=TWR=14.0 \
               --component-parameter=TMRD=2 \
-              --component-parameter=clockRate=30000000 \
+              --component-parameter=clockRate=40000000 \
               --component-parameter=size=8388608 \
               --component-parameter=addressWidth=22 \
               --component-parameter=bankWidth=2 \
@@ -681,10 +689,10 @@ in
             done
 
             # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
-            # instantiation. The Clash top now takes clk30 / rst30_n as
+            # instantiation. The Clash top now takes clkSys / rstSys_n as
             # inputs (rather than owning altpllSync internally), so this
             # wrapper owns the PLL and the IP. Both the riski5 core and the
-            # JTAG UART share the same 50 MHz clock — one source of truth.
+            # JTAG UART share the same 40 MHz clock — one source of truth.
             mkdir -p verilog/riski5_top
             cat > verilog/riski5_top/riski5_top.v <<'EOF'
       // SPDX-License-Identifier: MIT OR BSD-3-Clause
@@ -692,9 +700,9 @@ in
       // Top-level wrapper around the Clash-emitted `riski5` module.
       //
       // Responsibilities:
-      //   1. Derive the 50 MHz core clock (clk30) from CLOCK_50 via a
+      //   1. Derive the 40 MHz core clock (clkSys) from CLOCK_50 via a
       //      directly-instantiated altpll.
-      //   2. Build rst30_n = KEY[0] & pll_locked so the design holds reset
+      //   2. Build rstSys_n = KEY[0] & pll_locked so the design holds reset
       //      until the PLL has locked and the user has released KEY[0].
       //   3. Resolve the bidirectional SRAM_DQ bus from the core's
       //      SRAM_DQ_{O,OE,I} triplet.
@@ -739,23 +747,35 @@ in
           output wire        DRAM_WE_N
       );
 
-        // ----- PLL: CLOCK_50 (50 MHz) → clk30 (40 MHz) ----------------
-        // clk0 (clk30):       40 MHz, 0°    — controller + core +
-        //                                      JTAG-UART + JTAG-Master
-        //                                      + SDRAM controller IP
-        // clk1 (clk30_dram):  40 MHz, -3 ns — drives DRAM_CLK output
-        //                                      pin so the SDRAM chip
-        //                                      samples 3 ns AFTER the
-        //                                      controller drives signals,
-        //                                      covering Tco + trace
-        //                                      delays. Fixes intermittent
-        //                                      JTAG-Master write commit
-        //                                      (task #132). Standard
-        //                                      Altera SDRAM Controller
-        //                                      deployment pattern.
+        // ----- PLL: CLOCK_50 (50 MHz) → clkSys (40 MHz) --------------
+        // clk0 (clkSys):       40 MHz, 0°    — controller + core +
+        //                                       JTAG-UART + JTAG-Master
+        //                                       + SDRAM controller IP
+        // clk1 (clkSdramOut):  40 MHz, -3 ns — drives DRAM_CLK output
+        //                                       pin so the SDRAM chip
+        //                                       samples 3 ns AFTER the
+        //                                       controller drives signals,
+        //                                       covering Tco + trace
+        //                                       delays. Fixes intermittent
+        //                                       JTAG-Master write commit
+        //                                       (task #132). Standard
+        //                                       Altera SDRAM Controller
+        //                                       deployment pattern.
+        //
+        // Naming note: the @clkSys@ rail is the only clock domain used
+        // today; the SDRAM controller IP shares it (just sees a
+        // -3 ns phase shift on its DRAM_CLK chip-side output via
+        // @clkSdramOut@). Task #141 plans to add a third PLL output
+        // for an entirely separate @clkSdram@ domain that the SDRAM
+        // IP+adapter can run on, with an async-FIFO Avalon-MM bridge
+        // back to @clkSys@. The names already anticipate that split:
+        // @clkSys@ stays for the system / core / peripheral domain,
+        // @clkSdramOut@ continues to be the chip-pin-side phase-shift
+        // output, and the future @clkSdram@ wire becomes the real
+        // independent clock for the IP slave.
         wire [4:0] altpll_clk_vec;
-        wire       clk30      = altpll_clk_vec[0];
-        wire       clk30_dram = altpll_clk_vec[1];
+        wire       clkSys      = altpll_clk_vec[0];
+        wire       clkSdramOut = altpll_clk_vec[1];
         wire       pll_locked;
         altpll u_altpll (
             .areset (1'b0),
@@ -795,7 +815,7 @@ in
 
         // Active-low reset: asserted (low) until the PLL locks AND KEY[0]
         // has been released (KEY[0] is active-low on the DE2).
-        wire rst30_n = KEY[0] & pll_locked;
+        wire rstSys_n = KEY[0] & pll_locked;
 
         // ----- Bidirectional SRAM DQ resolution -----------------------
         wire [15:0] sram_dq_o;
@@ -826,8 +846,8 @@ in
         wire        jtag_uart_read_n   = ~jtag_uart_rd;
 
         riski5_jtag_uart u_jtag_uart (
-            .clk            (clk30),
-            .rst_n          (rst30_n),
+            .clk            (clkSys),
+            .rst_n          (rstSys_n),
             .av_chipselect  (uart_sel),
             .av_address     (uart_addr[2]),
             .av_read_n      (jtag_uart_read_n),
@@ -874,21 +894,21 @@ in
         // pins from pure logic without an Avalon-MM IP in between.)
 
         // DRAM_CLK is driven from a phase-shifted PLL output (clk1,
-        // -3 ns relative to clk30). This is the standard Altera SDRAM
-        // Controller deployment pattern: the chip samples 3 ns AFTER
-        // the controller drives signals, leaving plenty of time for
-        // FPGA Tco + board-trace delay. Without the phase shift,
-        // DRAM_CLK was forwarded directly from clk30, which left
+        // -3 ns relative to clkSys). This is the standard Altera
+        // SDRAM Controller deployment pattern: the chip samples 3 ns
+        // AFTER the controller drives signals, leaving plenty of time
+        // for FPGA Tco + board-trace delay. Without the phase shift,
+        // DRAM_CLK was forwarded directly from clkSys, which left
         // setup/hold margin at the chip pin marginal under back-to-
         // back JTAG-Avalon-Master burst writes — observed as random
         // dropped writes in the L-3b debugging session (task #132).
-        // so we can share clk30 directly without a phase-shifted PLL
-        // tap. Revisit if the target clock climbs past ~60 MHz.
-        assign DRAM_CLK = clk30_dram;
+        // Revisit the phase shift if the target clock climbs past
+        // ~60 MHz.
+        assign DRAM_CLK = clkSdramOut;
 
         riski5_sdram u_sdram (
-            .clk            (clk30),
-            .reset_n        (rst30_n),
+            .clk            (clkSys),
+            .reset_n        (rstSys_n),
             // Avalon-MM slave (master-side driven by Clash adapter)
             .az_cs          (sdram_cs),
             .az_addr        (sdram_addr_bus),
@@ -973,8 +993,8 @@ in
         assign jam_master_readdatavalid = jam_master_read & ~jam_master_waitrequest;
 
         riski5_jtag_master u_jtag_master (
-            .clk_clk              (clk30),
-            .clk_reset_reset      (~rst30_n),
+            .clk_clk              (clkSys),
+            .clk_reset_reset      (~rstSys_n),
             .master_address       (jam_master_address),
             .master_readdata      (jam_master_readdata),
             .master_read          (jam_master_read),
@@ -987,8 +1007,8 @@ in
         );
 
         riski5 u_riski5 (
-            .CLOCK_30    (clk30),
-            .RESET_30_N  (rst30_n),
+            .CLOCK_SYS   (clkSys),
+            .RESET_SYS_N (rstSys_n),
             .KEY         (KEY),
             .SW          (SW),
             .SRAM_DQ_I   (SRAM_DQ),
@@ -1165,7 +1185,7 @@ in
         ) u_capture_reset_source (
             .probe        (),
             .source       (debug_reset_capture),
-            .source_clk   (clk30),
+            .source_clk   (clkSys),
             .source_ena   (1'b1)
         );
 
@@ -1194,7 +1214,7 @@ in
         ) u_capture_offset_source (
             .probe        (),
             .source       (debug_capture_offset),
-            .source_clk   (clk30),
+            .source_clk   (clkSys),
             .source_ena   (1'b1)
         );
 
@@ -1217,8 +1237,8 @@ in
         // doubling, JTAG transport).
         wire ip_commit_pulse = uart_sel & jtag_uart_wr & jtag_uart_waitrequest;
         reg [31:0] ip_commit_counter = 32'b0;
-        always @(posedge clk30 or negedge rst30_n) begin
-            if (!rst30_n)
+        always @(posedge clkSys or negedge rstSys_n) begin
+            if (!rstSys_n)
                 ip_commit_counter <= 32'b0;
             else if (debug_reset_capture)
                 ip_commit_counter <= 32'b0;
@@ -1250,8 +1270,8 @@ in
         // (= 0x42). Same reset semantics as the IP commit counter.
         wire byte_is_b = (uart_wdata[7:0] == 8'h42);
         reg [31:0] iter_counter = 32'b0;
-        always @(posedge clk30 or negedge rst30_n) begin
-            if (!rst30_n)
+        always @(posedge clkSys or negedge rstSys_n) begin
+            if (!rstSys_n)
                 iter_counter <= 32'b0;
             else if (debug_reset_capture)
                 iter_counter <= 32'b0;

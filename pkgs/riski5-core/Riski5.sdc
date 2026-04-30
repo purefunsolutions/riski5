@@ -21,13 +21,14 @@ set_false_path -from [get_ports KEY[0]] -to [all_registers]
 
 # -- SDRAM (DRAM_CLK output) ----------------------------------------
 # DRAM_CLK is sourced from altpll clk[1] — a -3 ns phase-shifted
-# copy of clk[0] (clk30). The phase shift puts the SDRAM chip's
-# rising edge AFTER the FPGA's controller-clock edge by ~3 ns,
-# leaving plenty of room for FPGA Tco + board-trace delay before
-# the chip samples its inputs. This is the standard Altera SDRAM
-# Controller deployment pattern and was added in phase L-3b after
-# in-phase DRAM_CLK was identified as the likely root cause of
-# intermittent JTAG-Avalon-Master write commit failures (task #132).
+# copy of clk[0] (clkSys, 40 MHz). The phase shift puts the SDRAM
+# chip's rising edge AFTER the FPGA's controller-clock edge by
+# ~3 ns, leaving plenty of room for FPGA Tco + board-trace delay
+# before the chip samples its inputs. This is the standard Altera
+# SDRAM Controller deployment pattern and was added in phase L-3b
+# after in-phase DRAM_CLK was identified as the likely root cause
+# of intermittent JTAG-Avalon-Master write commit failures
+# (task #132).
 #
 # The actual DRAM_CLK pin is driven from altpll_clk_vec[1] — see
 # riski5_top.v in package.nix. This create_generated_clock tags

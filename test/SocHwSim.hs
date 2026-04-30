@@ -295,7 +295,7 @@ runUartCollect n stopAt = do
 -- * The test itself
 
 {- | Generous cycle budget for the Hello firmware to boot and stream
-its 13-byte UART greeting. At Dom30 the firmware needs a few
+its 13-byte UART greeting. At DomSys the firmware needs a few
 hundred cycles per byte (IP stall + poll loop), so a 200k budget
 gives ~15× headroom before the test times out.
 -}
