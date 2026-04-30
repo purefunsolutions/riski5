@@ -7,6 +7,7 @@
 # explore maxing out fmax.
 
 create_clock -name clk50 -period 20.000 [get_ports CLOCK_50]
+create_clock -name clk27 -period 37.037 [get_ports CLOCK_27]
 derive_pll_clocks
 derive_clock_uncertainty
 
@@ -20,20 +21,49 @@ set_false_path -from [get_ports KEY[0]] -to [all_registers]
 # now we leave the defaults.
 
 # -- SDRAM (DRAM_CLK output) ----------------------------------------
-# DRAM_CLK is sourced from altpll clk[1] — a -3 ns phase-shifted
-# copy of clk[0] (clkSys, 40 MHz). The phase shift puts the SDRAM
-# chip's rising edge AFTER the FPGA's controller-clock edge by
-# ~3 ns, leaving plenty of room for FPGA Tco + board-trace delay
-# before the chip samples its inputs. This is the standard Altera
-# SDRAM Controller deployment pattern and was added in phase L-3b
-# after in-phase DRAM_CLK was identified as the likely root cause
-# of intermittent JTAG-Avalon-Master write commit failures
-# (task #132).
+# Multi-PLL topology (task #141) — see comment block in
+# pkgs/riski5-core/package.nix around the u_altpll / u_altpll_sdram
+# instantiations for the full clock map.
 #
-# The actual DRAM_CLK pin is driven from altpll_clk_vec[1] — see
-# riski5_top.v in package.nix. This create_generated_clock tags
-# the net so STA carries the timing over to the DRAM_* output
-# ports the IP drives.
+# DRAM_CLK is sourced from u_altpll_sdram|clk[1] — a -3 ns
+# phase-shifted copy of clkSdram (30 MHz). The phase shift puts the
+# SDRAM chip's rising edge ~3 ns AFTER the FPGA-side controller's
+# rising edge, covering Tco + trace delay. Standard Altera SDRAM
+# Controller deployment pattern; this is the pattern that
+# task #132 introduced to fix intermittent JTAG-Master write
+# commit failures.
+#
+# `derive_pll_clocks` picks up both ALTPLL outputs automatically.
+# This `create_generated_clock` tags the dram_clk net so STA
+# carries the timing through to the DRAM_* output ports the IP
+# drives.
 create_generated_clock -name dram_clk \
-    -source [get_pins -compatibility_mode {*altpll*|clk[1]}] \
+    -source [get_pins -compatibility_mode {*altpll_sdram*|clk[1]}] \
     [get_ports DRAM_CLK]
+
+# -- SDRAM CDC bridge — clkBus ↔ clkSdram cross-domain --------------
+# The riski5_sdram_cdc_bridge module uses a toggle-handshake CDC
+# pattern. The toggled flags (req_toggle_bus, done_toggle_sdram)
+# go through 2-FF synchronisers on the destination side; the
+# accompanying data registers (m_lat_*, cap_rdata_sdram) are
+# sampled by the destination side AFTER the synchronised toggle
+# edge, so they're stable across the boundary even though the
+# combinational paths are unconstrained.
+#
+# These false-path constraints tell STA to ignore the
+# cross-domain combinational paths between latched-on-source and
+# sampled-on-dest registers. Without them, Quartus would either
+# fail timing on impossible-to-meet 25-ns / 33-ns single-clock
+# transfers or insert metastability hazards by retiming.
+set_false_path \
+    -from [get_registers {*u_sdram_cdc|m_lat_*}] \
+    -to   [get_registers {*u_sdram_cdc|s_lat_*_buf}]
+set_false_path \
+    -from [get_registers {*u_sdram_cdc|cap_rdata_sdram*}] \
+    -to   [get_registers {*u_sdram_cdc|cap_rdata_sync_0*}]
+set_false_path \
+    -from [get_registers {*u_sdram_cdc|req_toggle_bus*}] \
+    -to   [get_registers {*u_sdram_cdc|req_sync_0_sdr*}]
+set_false_path \
+    -from [get_registers {*u_sdram_cdc|done_toggle_sdram*}] \
+    -to   [get_registers {*u_sdram_cdc|done_sync_0*}]

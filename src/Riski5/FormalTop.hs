@@ -28,7 +28,7 @@ core with:
     spec (@docs\/source\/rvfi.rst@) so the harness's
     @`RVFI_CONN32`@ macro connects them by name.
 
-Uses the same 'DomSys' clock-domain shape as the synthesis top
+Uses the same 'DomBus' clock-domain shape as the synthesis top
 (see @app\/Top.hs@) — doesn't strictly matter for formal verification
 (no period, async reset) but keeps the Clash generation
 machinery happy. SymbiYosys doesn't care about the domain's
@@ -53,7 +53,7 @@ import Riski5.Rvfi (Rvfi (..), RvfiCsr (..))
 -- * Clock domain ---------------------------------------------------
 
 {- | Formal-verification clock domain. Same shape as the synthesis
-'Top.DomSys' but defined here so this module doesn't pull in the
+'Top.DomBus' but defined here so this module doesn't pull in the
 synthesis top. SymbiYosys treats the period as opaque — it only
 reads the reset polarity and active-edge hints.
 -}

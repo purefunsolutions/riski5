@@ -130,12 +130,43 @@
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
   isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
-  # Task #141: PLL-output and SDRAM-IP @clockRate@ both vary together
-  # so that the IP's internal cycle counts stay correctly calibrated
-  # for whatever frequency we actually run at.
-  pllMultBy = if slowClock then 3 else 4;  # → 50 × M / 5 = 30 / 40 MHz
-  pllPeriodNs = if slowClock then "33.333" else "25.000";
-  sdramIpClockRate = if slowClock then 30000000 else 40000000;
+  # Task #141: multi-PLL clock topology — two physically separate
+  # ALTPLLs driven by two different on-board clock pins, so the SDRAM
+  # IP and the bus + core domain run on independent VCOs.
+  #
+  #   u_altpll        — bus + core domain (input: CLOCK_50, PIN_N2)
+  #     clk0:  clkBus      40 MHz, 0°    (slowClock=true → 30 MHz)
+  #     clk1:  clkCore     40 MHz, 0°    (separate counter from clkBus
+  #                                        so a future commit can
+  #                                        change just clk1's multiplier
+  #                                        and clock the RISC-V core
+  #                                        faster than the bus)
+  #
+  #   u_altpll_sdram  — SDRAM IP domain (input: CLOCK_27, PIN_D13,
+  #                                        the DE2's on-board 27 MHz
+  #                                        oscillator)
+  #     clk0:  clkSdram     30 MHz, 0°   (input × 10/9)
+  #     clk1:  clkSdramOut  30 MHz, -3 ns → DRAM_CLK pin
+  #
+  # Two different input pins because Cyclone II forbids one clock
+  # input feeding more than one PLL (Quartus 13.0sp1 reports
+  # "Error 172024: Input clock CLOCK_50 cannot feed more than one
+  # PLL"). The user explicitly authorised a third pin too — that
+  # would be EXT_CLOCK / SMA on the DE2 for a dedicated u_altpll_core
+  # PLL, gating on whether an external clock generator is connected.
+  # Without that hardware, clkCore stays on u_altpll's clk1 counter
+  # (still independently tunable, just sharing a VCO with clkBus).
+  #
+  # The Clash riski5 module currently runs entirely on clkBus
+  # (CLOCK_BUS / RESET_BUS_N input ports). The SDRAM IP runs on
+  # clkSdram with a Verilog-side toggle-handshake CDC bridge
+  # (riski5_sdram_cdc_bridge) at the 16-bit Avalon-MM boundary.
+  pllBusMultBy = if slowClock then 3 else 4;  # bus, core: 50 × M / 5
+  pllCoreMultBy = if slowClock then 3 else 4; # tied to bus initially
+  # SDRAM: input is 27 MHz (CLOCK_27), output 30 MHz, ratio 10/9.
+  pllSdramMultBy = 10;
+  pllSdramDivBy  = 9;
+  sdramIpClockRate = 30000000;                # always 30 MHz under multi-PLL
   slowSuffix = lib.optionalString slowClock "-slow";
 in
   stdenv.mkDerivation {
@@ -599,8 +630,8 @@ in
             # two 16-bit chips in parallel, which the DE2 doesn't have.
             #
             # Timing parameters are sized for the -7 speed grade of the
-            # DE2's chip and the 40 MHz @clkSys@ clock, leaving generous
-            # margin:
+            # DE2's chip and the 30 MHz @clkSdram@ clock, leaving
+            # generous margin:
             #
             #   casLatency       = 2   — fine below ~133 MHz for a -7 part
             #   TRCD             = 20  ns (≥ 15 ns data-sheet min)
@@ -612,15 +643,13 @@ in
             #   refreshPeriod    = 15.625 µs (64 ms / 4096 rows)
             #   powerUpDelay     = 100 µs (initialisation NOP window)
             #   initRefreshCommands = 2
-            #   clockRate        = 40_000_000 Hz (matches @clkSys@ —
-            #                       was previously 30_000_000 left over
-            #                       from before the phase-2 PLL retarget,
-            #                       which made the IP compute its
-            #                       internal cycle counts as if it were
-            #                       running at 30 MHz; refresh ended up
-            #                       11.7 µs instead of 15.6 µs and
-            #                       @powerUpDelay@ initialisation
-            #                       undershot by 25 µs at every reset)
+            #   clockRate        = 30_000_000 Hz (matches @clkSdram@ —
+            #                       the SDRAM IP runs in its own clock
+            #                       domain at 30 MHz under the multi-PLL
+            #                       topology, with a Verilog-side
+            #                       toggle-handshake CDC bridge between
+            #                       the Clash adapter (clkBus) and the
+            #                       IP slave port; see task #141)
             #
             # Geometry:
             #   rowWidth   = 12   → 4096 rows
@@ -712,11 +741,13 @@ in
               echo "set_global_assignment -name VERILOG_FILE \"$f\"" >> Riski5.qsf
             done
 
-            # Bidirectional pin wrapper + external ALTPLL + Altera JTAG UART
-            # instantiation. The Clash top now takes clkSys / rstSys_n as
-            # inputs (rather than owning altpllSync internally), so this
-            # wrapper owns the PLL and the IP. Both the riski5 core and the
-            # JTAG UART share the same 40 MHz clock — one source of truth.
+            # Bidirectional pin wrapper + external ALTPLLs + Altera
+            # JTAG UART + Altera SDRAM Controller IP + Verilog CDC
+            # bridge. The Clash top takes clkBus / rstBus_n as inputs
+            # (rather than owning altpllSync internally) so this
+            # wrapper owns the two PLLs (bus + SDRAM domains) and
+            # bridges Avalon-MM traffic into the SDRAM IP across the
+            # clock-domain boundary.
             mkdir -p verilog/riski5_top
             cat > verilog/riski5_top/riski5_top.v <<'EOF'
       // SPDX-License-Identifier: MIT OR BSD-3-Clause
@@ -724,10 +755,12 @@ in
       // Top-level wrapper around the Clash-emitted `riski5` module.
       //
       // Responsibilities:
-      //   1. Derive the 40 MHz core clock (clkSys) from CLOCK_50 via a
-      //      directly-instantiated altpll.
-      //   2. Build rstSys_n = KEY[0] & pll_locked so the design holds reset
-      //      until the PLL has locked and the user has released KEY[0].
+      //   1. Derive three independent clocks (clkBus 40 MHz, clkCore
+      //      40 MHz, clkSdram 30 MHz + clkSdramOut at -3 ns) from the
+      //      on-board 50 MHz CLOCK_50 via two altpll megafunctions.
+      //   2. Build rstBus_n = KEY[0] & both-PLLs-locked, plus a 2-FF
+      //      reset synchroniser into the clkSdram domain so all
+      //      domains see clean reset deassertion.
       //   3. Resolve the bidirectional SRAM_DQ bus from the core's
       //      SRAM_DQ_{O,OE,I} triplet.
       //   4. Instantiate the Altera altera_avalon_jtag_uart IP
@@ -737,8 +770,267 @@ in
       //
       // The JTAG UART rides the USB-Blaster JTAG tap — no external pins.
 
+      // ═══════════════════════════════════════════════════════════════
+      //  riski5_sdram_cdc_bridge
+      //
+      //  Toggle-handshake clock-domain-crossing bridge between the
+      //  Clash module's clkBus-domain SDRAM master signals and the
+      //  Altera SDRAM Controller IP's clkSdram-domain Avalon-MM slave
+      //  port. Generic 16-bit Avalon-MM slave bridge — addr 22 bits,
+      //  wdata/rdata 16 bits, byteenable 2 bits.
+      //
+      //  Master-side state machine (clkBus, posedge clkBus):
+      //    M_IDLE:    waiting for m_cs.
+      //               m_waitrequest = 0 (free for new request).
+      //               When m_cs goes high, latch addr/wdata/be/rd/wr,
+      //               toggle req_toggle_bus, transition to M_BUSY.
+      //    M_BUSY:    waiting for slave-side done_toggle.
+      //               m_waitrequest = 1 (master holds inputs stable).
+      //               When done_edge_bus fires, capture cap_rdata into
+      //               m_rdata, transition to M_DONE_W (writes) or
+      //               M_DONE_R (reads).
+      //    M_DONE_W:  m_waitrequest = 0 (master advances next cycle).
+      //               Transition back to M_IDLE.
+      //    M_DONE_R:  m_waitrequest = 0 (adapter SReadLoReq → SReadLoWait
+      //               next cycle), schedule m_valid pulse for next cycle
+      //               so the adapter (now in SReadLoWait) captures rdata.
+      //               Transition back to M_IDLE.
+      //
+      //  Slave-side state machine (clkSdram, posedge clkSdram):
+      //    S_IDLE:        waiting for req_edge from master toggle sync.
+      //                   On edge, sample m_lat_* into s_lat_*_buf,
+      //                   transition to S_REQ.
+      //    S_REQ:         drive IP slave port from s_lat_*_buf.
+      //                   When IP drops s_waitrequest, transition to
+      //                   S_AWAIT_VALID (reads) or S_DONE (writes).
+      //    S_AWAIT_VALID: wait for IP's s_valid pulse, capture s_rdata
+      //                   into cap_rdata_sdram. Transition to S_DONE.
+      //    S_DONE:        toggle done_toggle_sdram so master sees the
+      //                   completion. Transition back to S_IDLE.
+      //
+      //  Cross-domain signals (sampled across the boundary while the
+      //  source side holds them stable, so set_false_path applies in
+      //  STA — the SDC adds the necessary constraints):
+      //    m_lat_*    (clkBus → clkSdram)  — request payload
+      //    cap_rdata_sdram (clkSdram → clkBus) — read response payload
+      //    req_toggle_bus  (clkBus → clkSdram) — through 2-FF synchroniser
+      //    done_toggle_sdram (clkSdram → clkBus) — through 2-FF synchroniser
+      // ═══════════════════════════════════════════════════════════════
+      module riski5_sdram_cdc_bridge (
+          // Master side (clkBus domain)
+          input  wire        clkBus,
+          input  wire        rstBus_n,
+          input  wire        m_cs,
+          input  wire [21:0] m_addr,
+          input  wire [15:0] m_wdata,
+          input  wire [1:0]  m_be,
+          input  wire        m_rd,
+          input  wire        m_wr,
+          output reg  [15:0] m_rdata,
+          output reg         m_valid,
+          output wire        m_waitrequest,
+
+          // Slave side (clkSdram domain) — drives the IP's az_* port
+          input  wire        clkSdram,
+          input  wire        rstSdram_n,
+          output wire        s_cs,
+          output wire [21:0] s_addr,
+          output wire [15:0] s_wdata,
+          output wire [1:0]  s_be,
+          output wire        s_rd,
+          output wire        s_wr,
+          input  wire [15:0] s_rdata,
+          input  wire        s_valid,
+          input  wire        s_waitrequest
+      );
+
+          // ─── Master-side state ────────────────────────────────────
+          localparam [1:0] M_IDLE    = 2'd0;
+          localparam [1:0] M_BUSY    = 2'd1;
+          localparam [1:0] M_DONE_W  = 2'd2;
+          localparam [1:0] M_DONE_R  = 2'd3;
+
+          reg [1:0]  m_state;
+          reg [21:0] m_lat_addr;
+          reg [15:0] m_lat_wdata;
+          reg [1:0]  m_lat_be;
+          reg        m_lat_rd;
+          reg        m_lat_wr;
+          reg        req_toggle_bus;
+          reg        done_sync_0, done_sync_1, done_prev_bus;
+          wire       done_edge_bus = done_sync_1 ^ done_prev_bus;
+          reg [15:0] cap_rdata_sync_0, cap_rdata_sync_1;
+
+          // ─── Slave-side state (forward declared for cross-refs) ──
+          reg        done_toggle_sdram;
+          reg [15:0] cap_rdata_sdram;
+
+          always @(posedge clkBus or negedge rstBus_n) begin
+              if (!rstBus_n) begin
+                  m_state <= M_IDLE;
+                  m_lat_addr <= 22'b0;
+                  m_lat_wdata <= 16'b0;
+                  m_lat_be <= 2'b0;
+                  m_lat_rd <= 1'b0;
+                  m_lat_wr <= 1'b0;
+                  req_toggle_bus <= 1'b0;
+                  done_sync_0 <= 1'b0;
+                  done_sync_1 <= 1'b0;
+                  done_prev_bus <= 1'b0;
+                  cap_rdata_sync_0 <= 16'b0;
+                  cap_rdata_sync_1 <= 16'b0;
+                  m_rdata <= 16'b0;
+                  m_valid <= 1'b0;
+              end else begin
+                  // 2-FF synchronise done toggle from clkSdram
+                  done_sync_0 <= done_toggle_sdram;
+                  done_sync_1 <= done_sync_0;
+                  done_prev_bus <= done_sync_1;
+
+                  // 2-FF sample cap_rdata from clkSdram. Only meaningful
+                  // when done_edge fires; otherwise it just tracks the
+                  // last completed read.
+                  cap_rdata_sync_0 <= cap_rdata_sdram;
+                  cap_rdata_sync_1 <= cap_rdata_sync_0;
+
+                  // Default: no valid pulse this cycle.
+                  m_valid <= 1'b0;
+
+                  case (m_state)
+                      M_IDLE: begin
+                          if (m_cs) begin
+                              m_lat_addr <= m_addr;
+                              m_lat_wdata <= m_wdata;
+                              m_lat_be <= m_be;
+                              m_lat_rd <= m_rd;
+                              m_lat_wr <= m_wr;
+                              req_toggle_bus <= ~req_toggle_bus;
+                              m_state <= M_BUSY;
+                          end
+                      end
+                      M_BUSY: begin
+                          if (done_edge_bus) begin
+                              if (m_lat_rd) begin
+                                  m_rdata <= cap_rdata_sync_1;
+                                  m_state <= M_DONE_R;
+                              end else begin
+                                  m_state <= M_DONE_W;
+                              end
+                          end
+                      end
+                      M_DONE_W: begin
+                          // Drop waitrequest this cycle; back to idle.
+                          m_state <= M_IDLE;
+                      end
+                      M_DONE_R: begin
+                          // waitrequest already dropped this cycle (state
+                          // is M_DONE_R, not M_BUSY). The adapter sees
+                          // waitrequest=0 and advances to SReadLoWait.
+                          // Pulse m_valid in the NEXT cycle (registered),
+                          // when adapter is in SReadLoWait and ready to
+                          // capture rdata.
+                          m_valid <= 1'b1;
+                          m_state <= M_IDLE;
+                      end
+                      default: m_state <= M_IDLE;
+                  endcase
+              end
+          end
+
+          // m_waitrequest is high while a transaction is in flight.
+          // Drops in M_DONE_W / M_DONE_R for one cycle so the adapter
+          // advances; back to high when M_IDLE if no new cs comes.
+          assign m_waitrequest = (m_state == M_BUSY);
+
+          // ─── Slave-side state machine ─────────────────────────────
+          localparam [1:0] S_IDLE        = 2'd0;
+          localparam [1:0] S_REQ         = 2'd1;
+          localparam [1:0] S_AWAIT_VALID = 2'd2;
+          localparam [1:0] S_DONE        = 2'd3;
+
+          reg [1:0]  s_state;
+          reg        req_sync_0_sdr, req_sync_1_sdr, req_prev_sdr;
+          wire       req_edge_sdr = req_sync_1_sdr ^ req_prev_sdr;
+          reg [21:0] s_lat_addr_buf;
+          reg [15:0] s_lat_wdata_buf;
+          reg [1:0]  s_lat_be_buf;
+          reg        s_lat_rd_buf;
+          reg        s_lat_wr_buf;
+
+          always @(posedge clkSdram or negedge rstSdram_n) begin
+              if (!rstSdram_n) begin
+                  s_state <= S_IDLE;
+                  req_sync_0_sdr <= 1'b0;
+                  req_sync_1_sdr <= 1'b0;
+                  req_prev_sdr <= 1'b0;
+                  done_toggle_sdram <= 1'b0;
+                  cap_rdata_sdram <= 16'b0;
+                  s_lat_addr_buf <= 22'b0;
+                  s_lat_wdata_buf <= 16'b0;
+                  s_lat_be_buf <= 2'b0;
+                  s_lat_rd_buf <= 1'b0;
+                  s_lat_wr_buf <= 1'b0;
+              end else begin
+                  // 2-FF synchronise req toggle from clkBus
+                  req_sync_0_sdr <= req_toggle_bus;
+                  req_sync_1_sdr <= req_sync_0_sdr;
+                  req_prev_sdr <= req_sync_1_sdr;
+
+                  case (s_state)
+                      S_IDLE: begin
+                          if (req_edge_sdr) begin
+                              // Sample latched signals from master domain.
+                              // Stable because master holds them in M_BUSY.
+                              s_lat_addr_buf <= m_lat_addr;
+                              s_lat_wdata_buf <= m_lat_wdata;
+                              s_lat_be_buf <= m_lat_be;
+                              s_lat_rd_buf <= m_lat_rd;
+                              s_lat_wr_buf <= m_lat_wr;
+                              s_state <= S_REQ;
+                          end
+                      end
+                      S_REQ: begin
+                          // Drive IP. Wait for !waitrequest to advance.
+                          if (!s_waitrequest) begin
+                              if (s_lat_rd_buf) begin
+                                  s_state <= S_AWAIT_VALID;
+                              end else begin
+                                  s_state <= S_DONE;
+                              end
+                          end
+                      end
+                      S_AWAIT_VALID: begin
+                          if (s_valid) begin
+                              cap_rdata_sdram <= s_rdata;
+                              s_state <= S_DONE;
+                          end
+                      end
+                      S_DONE: begin
+                          done_toggle_sdram <= ~done_toggle_sdram;
+                          s_state <= S_IDLE;
+                      end
+                      default: s_state <= S_IDLE;
+                  endcase
+              end
+          end
+
+          // Drive IP slave port combinationally from the latched-and-
+          // held registers when in S_REQ. Outside S_REQ the strobes
+          // (cs / rd / wr) go inactive so the IP sees a clean idle
+          // between transactions; address / wdata / be can keep their
+          // last value (the IP only samples them on cs+!waitrequest).
+          assign s_cs    = (s_state == S_REQ);
+          assign s_addr  = s_lat_addr_buf;
+          assign s_wdata = s_lat_wdata_buf;
+          assign s_be    = s_lat_be_buf;
+          assign s_rd    = (s_state == S_REQ) & s_lat_rd_buf;
+          assign s_wr    = (s_state == S_REQ) & s_lat_wr_buf;
+
+      endmodule
+
       module riski5_top (
           input  wire        CLOCK_50,
+          input  wire        CLOCK_27,
           input  wire [3:0]  KEY,
           input  wire [17:0] SW,
           output wire [17:0] LEDR,
@@ -771,41 +1063,62 @@ in
           output wire        DRAM_WE_N
       );
 
-        // ----- PLL: CLOCK_50 (50 MHz) → clkSys (40 MHz) --------------
-        // clk0 (clkSys):       40 MHz, 0°    — controller + core +
-        //                                       JTAG-UART + JTAG-Master
-        //                                       + SDRAM controller IP
-        // clk1 (clkSdramOut):  40 MHz, -3 ns — drives DRAM_CLK output
-        //                                       pin so the SDRAM chip
-        //                                       samples 3 ns AFTER the
-        //                                       controller drives signals,
-        //                                       covering Tco + trace
-        //                                       delays. Fixes intermittent
-        //                                       JTAG-Master write commit
-        //                                       (task #132). Standard
-        //                                       Altera SDRAM Controller
-        //                                       deployment pattern.
+        // ----- Multi-PLL clock topology (task #141) ------------------
+        // CLOCK_50 (50 MHz off-chip osc) → two ALTPLLs producing four
+        // independent clock outputs across three logical clock domains:
         //
-        // Naming note: the @clkSys@ rail is the only clock domain used
-        // today; the SDRAM controller IP shares it (just sees a
-        // -3 ns phase shift on its DRAM_CLK chip-side output via
-        // @clkSdramOut@). Task #141 plans to add a third PLL output
-        // for an entirely separate @clkSdram@ domain that the SDRAM
-        // IP+adapter can run on, with an async-FIFO Avalon-MM bridge
-        // back to @clkSys@. The names already anticipate that split:
-        // @clkSys@ stays for the system / core / peripheral domain,
-        // @clkSdramOut@ continues to be the chip-pin-side phase-shift
-        // output, and the future @clkSdram@ wire becomes the real
-        // independent clock for the IP slave.
+        //   u_altpll       (bus + core)
+        //     clk0  clkBus      40 MHz, 0°   — Avalon-MM bus, peripherals,
+        //                                       JTAG-UART, JTAG-Master,
+        //                                       Clash riski5 module
+        //     clk1  clkCore     40 MHz, 0°   — RISC-V core domain.
+        //                                       Currently tied electrically
+        //                                       to clkBus (Clash core+bus
+        //                                       refactor is a follow-up
+        //                                       commit). The PLL output
+        //                                       is generated separately
+        //                                       so a future change to
+        //                                       clk1_multiply_by alone
+        //                                       can clock the core faster
+        //                                       than the bus without
+        //                                       rewiring this file.
+        //
+        //   u_altpll_sdram (SDRAM IP)
+        //     clk0  clkSdram     30 MHz, 0°  — Altera SDRAM Controller
+        //                                       IP slave clock
+        //     clk1  clkSdramOut  30 MHz, -3 ns → DRAM_CLK pin (chip
+        //                                       samples 3 ns after the
+        //                                       FPGA-side IP drives
+        //                                       signals; standard Altera
+        //                                       deployment pattern, was
+        //                                       task #132's fix)
+        //
+        // The Clash riski5 module input ports are CLOCK_BUS / RESET_BUS_N
+        // (renamed from the previous CLOCK_SYS / RESET_SYS_N). Cross-
+        // domain Avalon-MM traffic to the SDRAM IP goes through the
+        // riski5_sdram_cdc_bridge module defined further below (toggle
+        // handshake on req/done flags + 2-FF synchronizers + stable
+        // latched signals across the boundary).
+        //
+        // The slowClock=true Nix flag drops the bus + core PLL outputs
+        // from 40 MHz to 30 MHz; the SDRAM PLL stays at 30 MHz. All
+        // three clocks then run at the same nominal frequency from
+        // independent PLLs (still independent CDC paths, since the
+        // PLLs free-run from the same crystal but with no defined
+        // phase relationship between u_altpll and u_altpll_sdram).
         wire [4:0] altpll_clk_vec;
-        wire       clkSys      = altpll_clk_vec[0];
-        wire       clkSdramOut = altpll_clk_vec[1];
-        wire       pll_locked;
+        wire [4:0] altpll_sdram_clk_vec;
+        wire       clkBus       = altpll_clk_vec[0];
+        wire       clkCore      = altpll_clk_vec[1];
+        wire       clkSdram     = altpll_sdram_clk_vec[0];
+        wire       clkSdramOut  = altpll_sdram_clk_vec[1];
+        wire       pll_bus_locked;
+        wire       pll_sdram_locked;
         altpll u_altpll (
             .areset (1'b0),
             .inclk  ({1'b0, CLOCK_50}),
             .clk    (altpll_clk_vec),
-            .locked (pll_locked),
+            .locked (pll_bus_locked),
             .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
             .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
             .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
@@ -816,30 +1129,78 @@ in
             .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
             .vcounderrange ()
         );
-        defparam u_altpll.bandwidth_type        = "AUTO";
-        defparam u_altpll.clk0_divide_by        = 5;
-        defparam u_altpll.clk0_duty_cycle       = 50;
-        defparam u_altpll.clk0_multiply_by      = ${toString pllMultBy};
-        defparam u_altpll.clk0_phase_shift      = "0";
-        defparam u_altpll.clk1_divide_by        = 5;
-        defparam u_altpll.clk1_duty_cycle       = 50;
-        defparam u_altpll.clk1_multiply_by      = ${toString pllMultBy};
-        defparam u_altpll.clk1_phase_shift      = "-3000";
-        defparam u_altpll.compensate_clock      = "CLK0";
+        defparam u_altpll.bandwidth_type         = "AUTO";
+        defparam u_altpll.clk0_divide_by         = 5;
+        defparam u_altpll.clk0_duty_cycle        = 50;
+        defparam u_altpll.clk0_multiply_by       = ${toString pllBusMultBy};
+        defparam u_altpll.clk0_phase_shift       = "0";
+        defparam u_altpll.clk1_divide_by         = 5;
+        defparam u_altpll.clk1_duty_cycle        = 50;
+        defparam u_altpll.clk1_multiply_by       = ${toString pllCoreMultBy};
+        defparam u_altpll.clk1_phase_shift       = "0";
+        defparam u_altpll.compensate_clock       = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
         defparam u_altpll.intended_device_family = "Cyclone II";
-        defparam u_altpll.lpm_type              = "altpll";
-        defparam u_altpll.operation_mode        = "NORMAL";
-        defparam u_altpll.port_clk0             = "PORT_USED";
-        defparam u_altpll.port_clk1             = "PORT_USED";
-        defparam u_altpll.port_inclk0           = "PORT_USED";
-        defparam u_altpll.port_locked           = "PORT_USED";
-        defparam u_altpll.port_areset           = "PORT_USED";
-        defparam u_altpll.width_clock           = 5;
+        defparam u_altpll.lpm_type               = "altpll";
+        defparam u_altpll.operation_mode         = "NORMAL";
+        defparam u_altpll.port_clk0              = "PORT_USED";
+        defparam u_altpll.port_clk1              = "PORT_USED";
+        defparam u_altpll.port_inclk0            = "PORT_USED";
+        defparam u_altpll.port_locked            = "PORT_USED";
+        defparam u_altpll.port_areset            = "PORT_USED";
+        defparam u_altpll.width_clock            = 5;
 
-        // Active-low reset: asserted (low) until the PLL locks AND KEY[0]
-        // has been released (KEY[0] is active-low on the DE2).
-        wire rstSys_n = KEY[0] & pll_locked;
+        altpll u_altpll_sdram (
+            .areset (1'b0),
+            .inclk  ({1'b0, CLOCK_27}),
+            .clk    (altpll_sdram_clk_vec),
+            .locked (pll_sdram_locked),
+            .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
+            .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
+            .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
+            .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
+            .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
+            .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
+            .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
+            .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
+            .vcounderrange ()
+        );
+        defparam u_altpll_sdram.bandwidth_type         = "AUTO";
+        defparam u_altpll_sdram.clk0_divide_by         = ${toString pllSdramDivBy};
+        defparam u_altpll_sdram.clk0_duty_cycle        = 50;
+        defparam u_altpll_sdram.clk0_multiply_by       = ${toString pllSdramMultBy};
+        defparam u_altpll_sdram.clk0_phase_shift       = "0";
+        defparam u_altpll_sdram.clk1_divide_by         = ${toString pllSdramDivBy};
+        defparam u_altpll_sdram.clk1_duty_cycle        = 50;
+        defparam u_altpll_sdram.clk1_multiply_by       = ${toString pllSdramMultBy};
+        defparam u_altpll_sdram.clk1_phase_shift       = "-3000";
+        defparam u_altpll_sdram.compensate_clock       = "CLK0";
+        defparam u_altpll_sdram.inclk0_input_frequency = 37037;  // 27 MHz period (ps)
+        defparam u_altpll_sdram.intended_device_family = "Cyclone II";
+        defparam u_altpll_sdram.lpm_type               = "altpll";
+        defparam u_altpll_sdram.operation_mode         = "NORMAL";
+        defparam u_altpll_sdram.port_clk0              = "PORT_USED";
+        defparam u_altpll_sdram.port_clk1              = "PORT_USED";
+        defparam u_altpll_sdram.port_inclk0            = "PORT_USED";
+        defparam u_altpll_sdram.port_locked            = "PORT_USED";
+        defparam u_altpll_sdram.port_areset            = "PORT_USED";
+        defparam u_altpll_sdram.width_clock            = 5;
+
+        // Combined async-low reset for the bus + core domain. Asserted
+        // (low) while either PLL hasn't locked or KEY[0] is held.
+        wire rstBus_n  = KEY[0] & pll_bus_locked & pll_sdram_locked;
+        wire rstCore_n = rstBus_n; // tied while clkCore=clkBus electrically
+
+        // Reset for the clkSdram domain. Async assert from rstBus_n,
+        // sync deassert in clkSdram domain via 2-FF synchroniser.
+        (* preserve *) reg [1:0] rstSdram_sync_chain;
+        always @(posedge clkSdram or negedge rstBus_n) begin
+            if (!rstBus_n)
+                rstSdram_sync_chain <= 2'b00;
+            else
+                rstSdram_sync_chain <= {rstSdram_sync_chain[0], 1'b1};
+        end
+        wire rstSdram_n = rstSdram_sync_chain[1];
 
         // ----- Bidirectional SRAM DQ resolution -----------------------
         wire [15:0] sram_dq_o;
@@ -870,8 +1231,8 @@ in
         wire        jtag_uart_read_n   = ~jtag_uart_rd;
 
         riski5_jtag_uart u_jtag_uart (
-            .clk            (clkSys),
-            .rst_n          (rstSys_n),
+            .clk            (clkBus),
+            .rst_n          (rstBus_n),
             .av_chipselect  (uart_sel),
             .av_address     (uart_addr[2]),
             .av_read_n      (jtag_uart_read_n),
@@ -900,6 +1261,9 @@ in
         // *_n strobes, so we invert at this boundary. The IP's
         // za_data / za_valid / za_waitrequest feed back to the Clash
         // adapter via the three SDRAM_* input ports on the core.
+        // ----- SDRAM bus signals -------------------------------------
+        // Clash master-side (clkBus domain), driven by Riski5.Sdram
+        // adapter inside the riski5 module.
         wire        sdram_cs;
         wire [21:0] sdram_addr_bus;
         wire [15:0] sdram_wdata;
@@ -907,6 +1271,16 @@ in
         wire        sdram_rd;
         wire        sdram_wr;
 
+        // SDRAM IP slave-side (clkSdram domain), driven by CDC bridge.
+        wire        sdram_ip_az_cs;
+        wire [21:0] sdram_ip_az_addr;
+        wire [15:0] sdram_ip_az_data;
+        wire [1:0]  sdram_ip_az_be;
+        wire        sdram_ip_az_rd;
+        wire        sdram_ip_az_wr;
+
+        // SDRAM IP slave-side reply signals (clkSdram domain), consumed
+        // by the CDC bridge and forwarded to the master side.
         wire [15:0] sdram_ip_readdata;
         wire        sdram_ip_valid;
         wire        sdram_ip_waitrequest;
@@ -917,29 +1291,81 @@ in
         // needs our own resolution because the core drives those
         // pins from pure logic without an Avalon-MM IP in between.)
 
-        // DRAM_CLK is driven from a phase-shifted PLL output (clk1,
-        // -3 ns relative to clkSys). This is the standard Altera
-        // SDRAM Controller deployment pattern: the chip samples 3 ns
-        // AFTER the controller drives signals, leaving plenty of time
-        // for FPGA Tco + board-trace delay. Without the phase shift,
-        // DRAM_CLK was forwarded directly from clkSys, which left
-        // setup/hold margin at the chip pin marginal under back-to-
-        // back JTAG-Avalon-Master burst writes — observed as random
-        // dropped writes in the L-3b debugging session (task #132).
-        // Revisit the phase shift if the target clock climbs past
-        // ~60 MHz.
+        // DRAM_CLK is driven from u_altpll_sdram|clk[1] (-3 ns phase
+        // shift relative to clkSdram). Standard Altera SDRAM
+        // Controller deployment: the chip samples 3 ns AFTER the
+        // FPGA-side IP drives signals, covering Tco + board trace
+        // delay. The phase shift originally landed in task #132
+        // when DRAM_CLK driven directly from the bus clock left the
+        // chip-pin setup/hold margin marginal under back-to-back
+        // JTAG-Master writes; that pattern is preserved here, just
+        // sourced from the SDRAM PLL instead.
         assign DRAM_CLK = clkSdramOut;
 
+        // ----- SDRAM CDC bridge: clkBus ↔ clkSdram -------------------
+        // The Clash riski5 module produces sdram_cs / sdram_addr_bus /
+        // sdram_wdata / sdram_be / sdram_rd / sdram_wr in the clkBus
+        // domain. The Altera SDRAM Controller IP slave port lives in
+        // the clkSdram domain. The bridge below uses a toggle-handshake
+        // CDC pattern: master side latches the request and toggles
+        // req_toggle_bus; slave side 2-FF synchronises the toggle,
+        // detects the rising edge, samples the latched signals (stable
+        // across the cross-domain combinational path because the
+        // master holds them through M_BUSY), drives the IP's slave
+        // port until !waitrequest (and for reads, until valid pulses
+        // with rdata), captures rdata into a stable register, and
+        // toggles done_toggle_sdram back. Master then 2-FF synchs the
+        // done toggle, drops bridge_waitrequest for one cycle so the
+        // adapter advances, and (for reads) pulses bridge_valid in the
+        // following cycle with the captured rdata.
+        wire [15:0] sdram_bridge_rdata;
+        wire        sdram_bridge_valid;
+        wire        sdram_bridge_waitrequest;
+
+        riski5_sdram_cdc_bridge u_sdram_cdc (
+            // Master side (clkBus domain)
+            .clkBus       (clkBus),
+            .rstBus_n     (rstBus_n),
+            .m_cs         (sdram_cs),
+            .m_addr       (sdram_addr_bus),
+            .m_wdata      (sdram_wdata),
+            .m_be         (sdram_be),
+            .m_rd         (sdram_rd),
+            .m_wr         (sdram_wr),
+            .m_rdata      (sdram_bridge_rdata),
+            .m_valid      (sdram_bridge_valid),
+            .m_waitrequest(sdram_bridge_waitrequest),
+            // Slave side (clkSdram domain)
+            .clkSdram     (clkSdram),
+            .rstSdram_n   (rstSdram_n),
+            .s_cs         (sdram_ip_az_cs),
+            .s_addr       (sdram_ip_az_addr),
+            .s_wdata      (sdram_ip_az_data),
+            .s_be         (sdram_ip_az_be),
+            .s_rd         (sdram_ip_az_rd),
+            .s_wr         (sdram_ip_az_wr),
+            .s_rdata      (sdram_ip_readdata),
+            .s_valid      (sdram_ip_valid),
+            .s_waitrequest(sdram_ip_waitrequest)
+        );
+
+        // The Clash module's three SDRAM_* return inputs see the
+        // bridge's master-side outputs, NOT the IP directly:
+        //   SDRAM_RDATA  ← sdram_bridge_rdata  (latched in clkBus)
+        //   SDRAM_VALID  ← sdram_bridge_valid  (1-cycle pulse)
+        //   SDRAM_READY  ← ~sdram_bridge_waitrequest
+        wire sdram_ready = ~sdram_bridge_waitrequest;
+
         riski5_sdram u_sdram (
-            .clk            (clkSys),
-            .reset_n        (rstSys_n),
-            // Avalon-MM slave (master-side driven by Clash adapter)
-            .az_cs          (sdram_cs),
-            .az_addr        (sdram_addr_bus),
-            .az_data        (sdram_wdata),
-            .az_be_n        (~sdram_be),
-            .az_rd_n        (~sdram_rd),
-            .az_wr_n        (~sdram_wr),
+            .clk            (clkSdram),
+            .reset_n        (rstSdram_n),
+            // Avalon-MM slave (driven by CDC bridge)
+            .az_cs          (sdram_ip_az_cs),
+            .az_addr        (sdram_ip_az_addr),
+            .az_data        (sdram_ip_az_data),
+            .az_be_n        (~sdram_ip_az_be),
+            .az_rd_n        (~sdram_ip_az_rd),
+            .az_wr_n        (~sdram_ip_az_wr),
             .za_data        (sdram_ip_readdata),
             .za_valid       (sdram_ip_valid),
             .za_waitrequest (sdram_ip_waitrequest),
@@ -954,7 +1380,6 @@ in
             .zs_ras_n       (DRAM_RAS_N),
             .zs_we_n        (DRAM_WE_N)
         );
-        wire sdram_ready = ~sdram_ip_waitrequest;
 
         // ----- Clash riski5 core --------------------------------------
         wire [31:0]  debug_pcfetch;
@@ -1017,8 +1442,8 @@ in
         assign jam_master_readdatavalid = jam_master_read & ~jam_master_waitrequest;
 
         riski5_jtag_master u_jtag_master (
-            .clk_clk              (clkSys),
-            .clk_reset_reset      (~rstSys_n),
+            .clk_clk              (clkBus),
+            .clk_reset_reset      (~rstBus_n),
             .master_address       (jam_master_address),
             .master_readdata      (jam_master_readdata),
             .master_read          (jam_master_read),
@@ -1031,16 +1456,16 @@ in
         );
 
         riski5 u_riski5 (
-            .CLOCK_SYS   (clkSys),
-            .RESET_SYS_N (rstSys_n),
+            .CLOCK_BUS   (clkBus),
+            .RESET_BUS_N (rstBus_n),
             .KEY         (KEY),
             .SW          (SW),
             .SRAM_DQ_I   (SRAM_DQ),
             .UART_RDATA  (uart_rdata),
             .UART_READY  (uart_ready),
             .UART_IRQ    (jtag_uart_irq),
-            .SDRAM_RDATA (sdram_ip_readdata),
-            .SDRAM_VALID (sdram_ip_valid),
+            .SDRAM_RDATA (sdram_bridge_rdata),
+            .SDRAM_VALID (sdram_bridge_valid),
             .SDRAM_READY (sdram_ready),
             .DEBUG_RESET_CAPTURE  (debug_reset_capture),
             .DEBUG_CAPTURE_OFFSET (debug_capture_offset),
@@ -1209,7 +1634,7 @@ in
         ) u_capture_reset_source (
             .probe        (),
             .source       (debug_reset_capture),
-            .source_clk   (clkSys),
+            .source_clk   (clkBus),
             .source_ena   (1'b1)
         );
 
@@ -1238,7 +1663,7 @@ in
         ) u_capture_offset_source (
             .probe        (),
             .source       (debug_capture_offset),
-            .source_clk   (clkSys),
+            .source_clk   (clkBus),
             .source_ena   (1'b1)
         );
 
@@ -1261,8 +1686,8 @@ in
         // doubling, JTAG transport).
         wire ip_commit_pulse = uart_sel & jtag_uart_wr & jtag_uart_waitrequest;
         reg [31:0] ip_commit_counter = 32'b0;
-        always @(posedge clkSys or negedge rstSys_n) begin
-            if (!rstSys_n)
+        always @(posedge clkBus or negedge rstBus_n) begin
+            if (!rstBus_n)
                 ip_commit_counter <= 32'b0;
             else if (debug_reset_capture)
                 ip_commit_counter <= 32'b0;
@@ -1294,8 +1719,8 @@ in
         // (= 0x42). Same reset semantics as the IP commit counter.
         wire byte_is_b = (uart_wdata[7:0] == 8'h42);
         reg [31:0] iter_counter = 32'b0;
-        always @(posedge clkSys or negedge rstSys_n) begin
-            if (!rstSys_n)
+        always @(posedge clkBus or negedge rstBus_n) begin
+            if (!rstBus_n)
                 iter_counter <= 32'b0;
             else if (debug_reset_capture)
                 iter_counter <= 32'b0;

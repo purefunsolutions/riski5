@@ -67,9 +67,9 @@ module Riski5.JtagAvalonMaster (
   topEntity,
 
   -- * Domain (40 MHz, async-reset, active-low — same physical clock
-  -- as @DomSys@ in @app/Top.hs@; declared separately here so this
+  -- as @DomBus@ in @app/Top.hs@; declared separately here so this
   -- module's Verilog topEntity stands alone with its own clock pin).
-  DomSysJam,
+  DomBusJam,
 
   -- * Re-exported helpers (mainly for tests)
   InS (..),
@@ -84,7 +84,7 @@ import Clash.Prelude hiding (not, (&&), (||))
 
 createDomain
   vSystem
-    { vName = "DomSysJam"
+    { vName = "DomBusJam"
     , vPeriod = 25000
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
@@ -638,29 +638,29 @@ jtagAvalonMaster = moore step outOf initS
 -- original Altera module name with the parameters the IP composition
 -- needs to override (@FAST_VER@, @FIFO_DEPTHS@, …).
 topEntity ::
-  "clk" ::: Clock DomSysJam ->
-  "reset_n" ::: Reset DomSysJam ->
-  "in_valid" ::: Signal DomSysJam Bool ->
-  "in_data" ::: Signal DomSysJam (BitVector 8) ->
-  "in_startofpacket" ::: Signal DomSysJam Bool ->
-  "in_endofpacket" ::: Signal DomSysJam Bool ->
-  "out_ready" ::: Signal DomSysJam Bool ->
-  "readdata" ::: Signal DomSysJam (BitVector 32) ->
-  "waitrequest" ::: Signal DomSysJam Bool ->
-  "readdatavalid" ::: Signal DomSysJam Bool ->
-  ( "in_ready" ::: Signal DomSysJam Bool
-  , "out_valid" ::: Signal DomSysJam Bool
-  , "out_data" ::: Signal DomSysJam (BitVector 8)
-  , "out_startofpacket" ::: Signal DomSysJam Bool
-  , "out_endofpacket" ::: Signal DomSysJam Bool
-  , "address" ::: Signal DomSysJam (BitVector 32)
-  , "read" ::: Signal DomSysJam Bool
-  , "write" ::: Signal DomSysJam Bool
-  , "byteenable" ::: Signal DomSysJam (BitVector 4)
-  , "writedata" ::: Signal DomSysJam (BitVector 32)
-  , "bytes_in_cnt" ::: Signal DomSysJam (BitVector 32)
-  , "writes_commit_cnt" ::: Signal DomSysJam (BitVector 32)
-  , "reads_commit_cnt" ::: Signal DomSysJam (BitVector 32)
+  "clk" ::: Clock DomBusJam ->
+  "reset_n" ::: Reset DomBusJam ->
+  "in_valid" ::: Signal DomBusJam Bool ->
+  "in_data" ::: Signal DomBusJam (BitVector 8) ->
+  "in_startofpacket" ::: Signal DomBusJam Bool ->
+  "in_endofpacket" ::: Signal DomBusJam Bool ->
+  "out_ready" ::: Signal DomBusJam Bool ->
+  "readdata" ::: Signal DomBusJam (BitVector 32) ->
+  "waitrequest" ::: Signal DomBusJam Bool ->
+  "readdatavalid" ::: Signal DomBusJam Bool ->
+  ( "in_ready" ::: Signal DomBusJam Bool
+  , "out_valid" ::: Signal DomBusJam Bool
+  , "out_data" ::: Signal DomBusJam (BitVector 8)
+  , "out_startofpacket" ::: Signal DomBusJam Bool
+  , "out_endofpacket" ::: Signal DomBusJam Bool
+  , "address" ::: Signal DomBusJam (BitVector 32)
+  , "read" ::: Signal DomBusJam Bool
+  , "write" ::: Signal DomBusJam Bool
+  , "byteenable" ::: Signal DomBusJam (BitVector 4)
+  , "writedata" ::: Signal DomBusJam (BitVector 32)
+  , "bytes_in_cnt" ::: Signal DomBusJam (BitVector 32)
+  , "writes_commit_cnt" ::: Signal DomBusJam (BitVector 32)
+  , "reads_commit_cnt" ::: Signal DomBusJam (BitVector 32)
   )
 topEntity clk rstN inValidS inDataS inSopS inEopS outReadyS readdataS waitreqS readvldS =
   withClockResetEnable clk rstN enableGen $
