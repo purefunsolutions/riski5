@@ -393,6 +393,15 @@
         inherit (pkgs) psmisc;
       };
 
+      # `nix run .#sdram-write-pattern-test` — exercises the
+      # JTAG-Master write path with known patterns and reports
+      # PASS/FAIL per case (task #146). Catches the hi-half-word
+      # write drop in seconds, no Linux boot needed.
+      sdram-write-pattern-test = pkgs.callPackage ../apps/sdram-write-pattern-test.nix {
+        inherit quartus-ii-13;
+        inherit (pkgs) psmisc;
+      };
+
       default = self'.packages.riski5-core;
     };
 
@@ -472,6 +481,10 @@
       sdram-state-probe = {
         type = "app";
         program = "${self'.packages.sdram-state-probe}/bin/sdram-state-probe";
+      };
+      sdram-write-pattern-test = {
+        type = "app";
+        program = "${self'.packages.sdram-write-pattern-test}/bin/sdram-write-pattern-test";
       };
     };
   };
