@@ -35,21 +35,29 @@ column. Datasheet timing (-7TL @ 108 MHz, period = 9.26 ns):
   T_REF  = 7.81 µs (= 4096 refreshes / 32 ms typical)
 @
 
-== Avalon-MM slave port (matches the Altera IP's pin shape)
+== Address mapping
 
-The SDRAM 32 ↔ 16 width adapter ('Riski5.Sdram') sees the same
-@az_*@ / @za_*@ signals it currently drives at the IP boundary,
-so swapping IP ↔ this module is a single-instantiation change.
+22-bit half-word Avalon-MM addr is split into:
+
+@
+  bits[7:0]   col   (8-bit column, lower bits = burst order)
+  bits[9:8]   bank  (2-bit bank)
+  bits[21:10] row   (12-bit row)
+@
+
+This puts adjacent half-word writes (the 32→16 adapter's lo + hi
+in 'Riski5.Sdram') in the same row + bank, so a 32-bit write only
+needs one ACTIVATE.
 
 == Implementation status
 
-- Init sequence: ✅ implemented (NOP × N → PRECHARGE-ALL → REFRESH × 8
-  → LOAD MODE REGISTER → idle).
-- Steady-state read/write: 🚧 stub (always asserts waitrequest).
-- Background refresh: 🚧 stub.
-
-The init FSM is testable against 'sdrChipModel' (the behavioral
-chip stand-in below) before we layer the steady-state path on top.
+- Init sequence: ✅
+- Steady-state read/write: ✅ (uses auto-precharge so PRECHARGE is
+  implicit per access).
+- Background auto-refresh: ✅ (counter triggers at T_REF; refresh
+  fires from PhIdle).
+- Behavioral chip model ('sdrChipModel'): ✅ Vec-backed memory +
+  CL-aware read response.
 -}
 module Riski5.SdrController (
   -- * Configuration
@@ -81,11 +89,10 @@ module Riski5.SdrController (
 import Clash.Prelude hiding ((||), (&&), not)
 import qualified Clash.Prelude as CP
 import Prelude ((||), (&&), not)
+import qualified Prelude as P
 
 -- * Configuration ---------------------------------------------------
 
--- | Static configuration for the controller. Defaults match the
--- DE2's IS42S16400-7TL @ 108 MHz CL=3.
 data SdrConfig = SdrConfig
   { sdrTrcdCycles :: Unsigned 4
   , sdrTrpCycles :: Unsigned 4
@@ -116,8 +123,6 @@ defaultDe2Config =
 
 -- * Chip-side I/O ---------------------------------------------------
 
--- | Chip-side pins. The Verilog top wrapper resolves @SDRAM_DQ@
--- (inout) from (sdrDqOut, sdrDqOe, sdrDqIn).
 data SdrPins = SdrPins
   { sdrAddr :: BitVector 12
   , sdrBa :: BitVector 2
@@ -133,8 +138,7 @@ data SdrPins = SdrPins
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Idle-cycle (deselect / NOP) chip pins. CKE held high; chip-
--- select de-asserted so the chip ignores command lines.
+-- | Idle / NOP cycle. CKE held high; chip-select de-asserted.
 sdrIdleCmd :: SdrPins
 sdrIdleCmd =
   SdrPins
@@ -142,18 +146,14 @@ sdrIdleCmd =
     , sdrBa = 0
     , sdrCasN = True
     , sdrCke = True
-    , sdrCsN = True -- deselected
+    , sdrCsN = True
     , sdrDqOut = 0
     , sdrDqOe = False
-    , sdrDqm = 0b11 -- bytes masked when not driving
+    , sdrDqm = 0b11
     , sdrRasN = True
     , sdrWeN = True
     }
 
--- | Build a NOP cmd (cs_n=0 but no command strobe). Equivalent to
--- 'sdrIdleCmd' for our purposes; kept separate so the FSM trace
--- distinguishes "deselected" from "selected, no command" if we
--- ever care.
 sdrNopCmd :: SdrPins
 sdrNopCmd = sdrIdleCmd
 
@@ -164,7 +164,7 @@ sdrPrechargeAllCmd =
     , sdrRasN = False
     , sdrCasN = True
     , sdrWeN = False
-    , sdrAddr = bit 10 -- A10 = 1 → all banks
+    , sdrAddr = bit 10
     }
 
 sdrAutoRefreshCmd :: SdrPins
@@ -176,13 +176,6 @@ sdrAutoRefreshCmd =
     , sdrWeN = True
     }
 
--- | LOAD MODE REGISTER. Programs CL, burst length, sequential / interleave.
--- Mode register bits (per JEDEC SDR SDRAM):
---   [2:0] burst length: 000=1, 001=2, 010=4, 011=8, 111=full page
---   [3]   burst type:  0=sequential, 1=interleave
---   [6:4] CAS latency: 010=2, 011=3
---   [8:7] op mode:     00 = standard
---   [9]   write burst: 0=programmed length, 1=single
 sdrLoadModeRegCmd :: Unsigned 4 -> SdrPins
 sdrLoadModeRegCmd cas =
   sdrIdleCmd
@@ -191,16 +184,52 @@ sdrLoadModeRegCmd cas =
     , sdrCasN = False
     , sdrWeN = False
     , sdrBa = 0
-    , -- BL=001 (=2; needed because the chip can't do BL=1 at high
-      -- frequencies on some -7T variants — pick BL=2 for safety
-      -- and ignore the 2nd word). CAS=cas. Burst type sequential.
-      -- write-burst-length = "single" so writes commit one half-word
-      -- per WRITE command (matches our access pattern; we don't
-      -- want write bursts).
-      sdrAddr =
-        bit 9 -- write burst = single
-          .|. (resize (pack cas) `shiftL` 4) -- CL bits [6:4]
-          .|. 0b001 -- BL = 2
+    , sdrAddr =
+        bit 9
+          .|. (resize (pack cas) `shiftL` 4)
+          .|. 0b001
+    }
+
+-- | ACTIVATE row in bank.
+sdrActivateCmd :: BitVector 2 -> BitVector 12 -> SdrPins
+sdrActivateCmd ba row =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = False
+    , sdrCasN = True
+    , sdrWeN = True
+    , sdrBa = ba
+    , sdrAddr = row
+    }
+
+-- | READ with auto-precharge (A10=1). Column in addr bits[7:0].
+-- DQM=0 (don't mask reads).
+sdrReadCmd :: BitVector 2 -> BitVector 8 -> SdrPins
+sdrReadCmd ba col =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = True
+    , sdrCasN = False
+    , sdrWeN = True
+    , sdrBa = ba
+    , sdrAddr = (bit 10) .|. resize col -- A10 = 1 → auto-precharge
+    , sdrDqm = 0b00
+    }
+
+-- | WRITE with auto-precharge (A10=1). Column in addr bits[7:0].
+-- DQM = byte-enable mask (active high — ~beN).
+sdrWriteCmd :: BitVector 2 -> BitVector 8 -> BitVector 16 -> BitVector 2 -> SdrPins
+sdrWriteCmd ba col wdata beN =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = True
+    , sdrCasN = False
+    , sdrWeN = False
+    , sdrBa = ba
+    , sdrAddr = (bit 10) .|. resize col
+    , sdrDqOut = wdata
+    , sdrDqOe = True
+    , sdrDqm = beN -- chip's DQM is active-high; beN is also active-high (Avalon byte-enable's "n" suffix is for the IP convention)
     }
 
 -- * Avalon-MM slave -------------------------------------------------
@@ -209,7 +238,7 @@ data SdrSlaveIn = SdrSlaveIn
   { ssiCs :: Bool
   , ssiAddr :: BitVector 22
   , ssiWdata :: BitVector 16
-  , ssiBeN :: BitVector 2 -- active-low
+  , ssiBeN :: BitVector 2
   , ssiRd :: Bool
   , ssiWr :: Bool
   }
@@ -227,16 +256,14 @@ data SdrSlaveOut = SdrSlaveOut
 -- * FSM state -------------------------------------------------------
 
 data SdrPhase
-  = -- * Power-up init
-    PhInitNop
+  = PhInitNop
   | PhInitPrecharge
   | PhInitTrp
   | PhInitRefresh
   | PhInitTrfc
   | PhInitLmr
   | PhInitTmrd
-  | -- * Steady state
-    PhIdle
+  | PhIdle
   | PhActivate
   | PhTrcd
   | PhRead
@@ -245,22 +272,25 @@ data SdrPhase
   | PhWrite
   | PhTwr
   | PhTrpAfter
-  | -- * Background refresh
-    PhRefresh
+  | PhRefresh
   | PhTrfc
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Internal FSM state.
 data SdrState = SdrState
   { sdrPhase :: SdrPhase
-  , -- | Generic countdown counter — used by every wait phase
-    -- (T_RCD, T_RP, T_RFC, T_WR, CL, T_MRD, init NOP).
-    sdrTimer :: Unsigned 16
-  , -- | Init refresh count remaining.
-    sdrInitRefreshLeft :: Unsigned 4
-  , -- | Cycle counter for periodic auto-refresh trigger.
-    sdrRefreshClock :: Unsigned 16
+  , sdrTimer :: Unsigned 16
+  , sdrInitRefreshLeft :: Unsigned 4
+  , sdrRefreshClock :: Unsigned 16
+  , sdrRefreshPending :: Bool
+  , -- Latched master request, used by PhActivate / PhRead / PhWrite.
+    sdrLatchedAddr :: BitVector 22
+  , sdrLatchedWdata :: BitVector 16
+  , sdrLatchedBeN :: BitVector 2
+  , sdrLatchedIsWrite :: Bool
+  , -- Read-data sample (set in PhCapture).
+    sdrLatchedRdata :: BitVector 16
+  , sdrLatchedValid :: Bool
   }
   deriving stock (Generic)
   deriving anyclass (NFDataX)
@@ -272,162 +302,434 @@ initState cfg =
     , sdrTimer = resize (sdrInitNopCycles cfg)
     , sdrInitRefreshLeft = sdrInitRefreshCount cfg
     , sdrRefreshClock = 0
+    , sdrRefreshPending = P.False
+    , sdrLatchedAddr = 0
+    , sdrLatchedWdata = 0
+    , sdrLatchedBeN = 0b11
+    , sdrLatchedIsWrite = P.False
+    , sdrLatchedRdata = 0
+    , sdrLatchedValid = P.False
     }
+
+-- * Address decomposition -----------------------------------------
+
+addrBank :: BitVector 22 -> BitVector 2
+addrBank a = slice d9 d8 a
+
+addrRow :: BitVector 22 -> BitVector 12
+addrRow a = slice d21 d10 a
+
+addrCol :: BitVector 22 -> BitVector 8
+addrCol a = slice d7 d0 a
 
 -- * Controller entity ----------------------------------------------
 
 {- |
 The SDR SDRAM controller. Single Avalon-MM slave port + chip-side
-pins. Init FSM is in place; steady-state read/write is a stub.
+pins + chip→controller DQ input.
 -}
 sdrController ::
   forall dom.
   (HiddenClockResetEnable dom) =>
   SdrConfig ->
+  -- | Master-side request.
   Signal dom SdrSlaveIn ->
+  -- | Chip → FPGA DQ input (= what the chip drives during reads).
+  Signal dom (BitVector 16) ->
   ( Signal dom SdrSlaveOut
   , Signal dom SdrPins
   )
-sdrController cfg inS = (replyS, pinsS)
+sdrController cfg inS dqInS = (replyS, pinsS)
  where
-  (replyS, pinsS) = unbundle (mealy step (initState cfg) inS)
+  inputBundle = bundle (inS, dqInS)
+  (replyS, pinsS) = unbundle (mealy step (initState cfg) inputBundle)
 
-  step :: SdrState -> SdrSlaveIn -> (SdrState, (SdrSlaveOut, SdrPins))
-  step st i = (st', (sso, pins))
+  step :: SdrState -> (SdrSlaveIn, BitVector 16) -> (SdrState, (SdrSlaveOut, SdrPins))
+  step st (i, dqIn) = (st', (sso, pins))
    where
-    (st', pins) = advance cfg st i
-    -- Until steady-state path is implemented, always assert
-    -- waitrequest. Read data is meaningless in this stub.
-    inSteady = case sdrPhase st of
-      PhIdle -> True
-      _ -> False
+    (st', pins) = advance cfg st i dqIn
+    -- waitrequest=1 except when in PhIdle and not currently latching
+    -- a request. The master asserts cs+rd/wr; we transition out of
+    -- PhIdle on the same cycle, so master sees waitrequest=1
+    -- starting next cycle and holds.
+    -- We drop waitrequest=0 only when returning to PhIdle.
+    wr = case sdrPhase st of
+      PhIdle -> P.False
+      _ -> P.True
     sso =
       SdrSlaveOut
-        { ssoRdata = 0
-        , ssoValid = False
-        , ssoWaitrequest = not inSteady || ssiCs i
-        -- ^ While not idle, hold the master. While idle, only
-        -- hold if the master is requesting (we don't service
-        -- requests yet, so any master cs holds forever — visible
-        -- in tests as a hang. Acceptable until phase-2 of this
-        -- module lands the steady-state FSM.)
+        { ssoRdata = sdrLatchedRdata st
+        , ssoValid = sdrLatchedValid st
+        , ssoWaitrequest = wr
         }
 
--- | Advance the FSM by one cycle. Pure step function for tests
--- to drive the FSM directly without simulating the model.
-advance :: SdrConfig -> SdrState -> SdrSlaveIn -> (SdrState, SdrPins)
-advance cfg st _i = case sdrPhase st of
-  PhInitNop ->
-    if sdrTimer st == 0
-      then
-        ( st {sdrPhase = PhInitPrecharge}
-        , sdrPrechargeAllCmd
-        )
-      else
-        ( st {sdrTimer = sdrTimer st - 1}
-        , sdrNopCmd
-        )
-  PhInitPrecharge ->
-    -- ALL-banks precharge issued this cycle; wait T_RP.
-    ( st
-        { sdrPhase = PhInitTrp
-        , sdrTimer = resize (sdrTrpCycles cfg) - 1
-        }
-    , sdrNopCmd
-    )
-  PhInitTrp ->
-    if sdrTimer st == 0
-      then
-        ( st {sdrPhase = PhInitRefresh}
-        , sdrAutoRefreshCmd
-        )
-      else
-        ( st {sdrTimer = sdrTimer st - 1}
-        , sdrNopCmd
-        )
-  PhInitRefresh ->
-    -- Refresh issued this cycle; wait T_RFC then either issue
-    -- another refresh or move on to LMR.
-    ( st
-        { sdrPhase = PhInitTrfc
-        , sdrTimer = resize (sdrTrfcCycles cfg) - 1
-        }
-    , sdrNopCmd
-    )
-  PhInitTrfc ->
-    if sdrTimer st == 0
-      then
-        if sdrInitRefreshLeft st > 1
-          then
-            ( st
-                { sdrPhase = PhInitRefresh
-                , sdrInitRefreshLeft = sdrInitRefreshLeft st - 1
-                }
-            , sdrAutoRefreshCmd
-            )
-          else
-            ( st {sdrPhase = PhInitLmr}
-            , sdrLoadModeRegCmd (sdrCasLatency cfg)
-            )
-      else
-        ( st {sdrTimer = sdrTimer st - 1}
-        , sdrNopCmd
-        )
-  PhInitLmr ->
-    -- LMR issued this cycle; wait T_MRD.
-    ( st
-        { sdrPhase = PhInitTmrd
-        , sdrTimer = resize (sdrTmrdCycles cfg) - 1
-        }
-    , sdrNopCmd
-    )
-  PhInitTmrd ->
-    if sdrTimer st == 0
-      then
-        ( st {sdrPhase = PhIdle}
-        , sdrNopCmd
-        )
-      else
-        ( st {sdrTimer = sdrTimer st - 1}
-        , sdrNopCmd
-        )
-  -- Steady-state phases: not implemented yet. Stay idle, drive NOPs.
-  -- This ensures the controller is at least safe (no spurious
-  -- commands) until the read/write path lands.
-  _ -> (st {sdrPhase = PhIdle}, sdrNopCmd)
+-- | Advance the FSM by one cycle. Pure step function; tests can
+-- drive directly without a chip model.
+advance ::
+  SdrConfig ->
+  SdrState ->
+  SdrSlaveIn ->
+  -- | dqIn (chip → controller, used by PhCl → PhCapture)
+  BitVector 16 ->
+  (SdrState, SdrPins)
+advance cfg st i dqIn =
+  -- Clear any single-cycle valid pulse before the per-phase logic
+  -- decides whether to set it again this cycle.
+  let st0 = st {sdrLatchedValid = P.False}
+   in case sdrPhase st0 of
+        --
+        -- INIT
+        --
+        PhInitNop ->
+          if sdrTimer st0 == 0
+            then (st0 {sdrPhase = PhInitPrecharge}, sdrPrechargeAllCmd)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhInitPrecharge ->
+          ( st0
+              { sdrPhase = PhInitTrp
+              , sdrTimer = resize (sdrTrpCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhInitTrp ->
+          if sdrTimer st0 == 0
+            then (st0 {sdrPhase = PhInitRefresh}, sdrAutoRefreshCmd)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhInitRefresh ->
+          ( st0
+              { sdrPhase = PhInitTrfc
+              , sdrTimer = resize (sdrTrfcCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhInitTrfc ->
+          if sdrTimer st0 == 0
+            then
+              if sdrInitRefreshLeft st0 > 1
+                then
+                  ( st0
+                      { sdrPhase = PhInitRefresh
+                      , sdrInitRefreshLeft = sdrInitRefreshLeft st0 - 1
+                      }
+                  , sdrAutoRefreshCmd
+                  )
+                else
+                  ( st0 {sdrPhase = PhInitLmr}
+                  , sdrLoadModeRegCmd (sdrCasLatency cfg)
+                  )
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhInitLmr ->
+          ( st0
+              { sdrPhase = PhInitTmrd
+              , sdrTimer = resize (sdrTmrdCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhInitTmrd ->
+          if sdrTimer st0 == 0
+            then (resetRefreshClock st0 {sdrPhase = PhIdle}, sdrNopCmd)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        --
+        -- IDLE — pick refresh, master request, or stay idle
+        --
+        PhIdle ->
+          let st1 = tickRefresh cfg st0
+           in if sdrRefreshPending st1
+                then
+                  ( st1
+                      { sdrPhase = PhRefresh
+                      , sdrRefreshPending = P.False
+                      }
+                  , sdrAutoRefreshCmd
+                  )
+                else
+                  if ssiCs i && (ssiRd i || ssiWr i)
+                    then
+                      ( st1
+                          { sdrPhase = PhActivate
+                          , sdrLatchedAddr = ssiAddr i
+                          , sdrLatchedWdata = ssiWdata i
+                          , sdrLatchedBeN = ssiBeN i
+                          , sdrLatchedIsWrite = ssiWr i
+                          }
+                      , sdrActivateCmd (addrBank (ssiAddr i)) (addrRow (ssiAddr i))
+                      )
+                    else (st1, sdrNopCmd)
+        --
+        -- READ / WRITE path
+        --
+        PhActivate ->
+          ( st0
+              { sdrPhase = PhTrcd
+              , sdrTimer = resize (sdrTrcdCycles cfg) - 2
+              -- ^ TRCD-2 NOPs in PhTrcd; ACTIVATE counted as cycle 0,
+              -- READ/WRITE issues TRCD cycles after ACTIVATE.
+              }
+          , sdrNopCmd
+          )
+        PhTrcd ->
+          if sdrTimer st0 == 0
+            then
+              if sdrLatchedIsWrite st0
+                then (st0 {sdrPhase = PhWrite}, writeCmdFromState st0)
+                else (st0 {sdrPhase = PhRead}, readCmdFromState st0)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhWrite ->
+          ( st0
+              { sdrPhase = PhTwr
+              , sdrTimer = resize (sdrTwrCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhTwr ->
+          if sdrTimer st0 == 0
+            then
+              ( st0
+                  { sdrPhase = PhTrpAfter
+                  , sdrTimer = resize (sdrTrpCycles cfg) - 1
+                  }
+              , sdrNopCmd
+              )
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhRead ->
+          ( st0
+              { sdrPhase = PhCl
+              , sdrTimer = resize (sdrCasLatency cfg) - 1
+              -- ^ READ counted as cycle 0; data on DQ at cycle CL.
+              }
+          , sdrNopCmd
+          )
+        PhCl ->
+          if sdrTimer st0 == 0
+            then
+              ( st0
+                  { sdrPhase = PhCapture
+                  , sdrLatchedRdata = dqIn
+                  , sdrLatchedValid = P.True
+                  }
+              , sdrNopCmd
+              )
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        PhCapture ->
+          ( st0
+              { sdrPhase = PhTrpAfter
+              , sdrTimer = resize (sdrTrpCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhTrpAfter ->
+          if sdrTimer st0 == 0
+            then (st0 {sdrPhase = PhIdle}, sdrNopCmd)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+        --
+        -- BACKGROUND REFRESH
+        --
+        PhRefresh ->
+          ( st0
+              { sdrPhase = PhTrfc
+              , sdrTimer = resize (sdrTrfcCycles cfg) - 1
+              }
+          , sdrNopCmd
+          )
+        PhTrfc ->
+          if sdrTimer st0 == 0
+            then (resetRefreshClock st0 {sdrPhase = PhIdle}, sdrNopCmd)
+            else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
+
+-- | Increment the refresh counter; set the pending flag when it
+-- crosses the configured interval. Always returns the (possibly
+-- updated) state.
+tickRefresh :: SdrConfig -> SdrState -> SdrState
+tickRefresh cfg st =
+  let next = sdrRefreshClock st + 1
+   in if next >= sdrRefreshIntervalCycles cfg
+        then
+          st
+            { sdrRefreshClock = 0
+            , sdrRefreshPending = P.True
+            }
+        else st {sdrRefreshClock = next}
+
+-- | Reset the refresh counter (called when a refresh has just
+-- been issued).
+resetRefreshClock :: SdrState -> SdrState
+resetRefreshClock st = st {sdrRefreshClock = 0, sdrRefreshPending = P.False}
+
+readCmdFromState :: SdrState -> SdrPins
+readCmdFromState st =
+  sdrReadCmd
+    (addrBank (sdrLatchedAddr st))
+    (addrCol (sdrLatchedAddr st))
+
+writeCmdFromState :: SdrState -> SdrPins
+writeCmdFromState st =
+  sdrWriteCmd
+    (addrBank (sdrLatchedAddr st))
+    (addrCol (sdrLatchedAddr st))
+    (sdrLatchedWdata st)
+    (sdrLatchedBeN st)
 
 -- * Chip behavioral model -------------------------------------------
 
--- | Output bundle from the chip behavioral model — the chip's
--- response to commands. We model just enough to verify the
--- controller's command sequence is correct: row-bank state
--- tracking, command validation, and a small storage backing
--- (so we can also verify writes/reads commit correctly once
--- the steady-state FSM lands).
+-- | Output bundle from the chip behavioral model.
 data ChipModelOut = ChipModelOut
-  { cmoDqOut :: BitVector 16 -- chip → controller (read data)
-  , cmoDqOe :: Bool -- chip drives DQ this cycle
-  , cmoStateLog :: BitVector 4 -- 0 = idle, 1 = active, 2 = error, 3 = busy
+  { cmoDqOut :: BitVector 16
+  , cmoDqOe :: Bool
+  -- ^ Currently always False — the model returns read data via
+  -- cmoDqOut on the cycle the controller's PhCl wait expires;
+  -- the controller's PhCl is wired to sample DQ then so dqOe is
+  -- redundant in this sim path.
+  , cmoStateLog :: BitVector 4
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Behavioral chip model. Tracks just enough state to validate
--- that the controller's command sequence respects the chip's
--- protocol. Sim-only; not synthesized.
+-- | Behavioral chip model. Tracks per-bank active row + a small
+-- Vec-backed memory. Read latency = CL (matches the controller's
+-- PhCl wait). Sim-only.
 sdrChipModel ::
   forall dom.
   (HiddenClockResetEnable dom) =>
+  SdrConfig ->
   Signal dom SdrPins ->
   Signal dom ChipModelOut
-sdrChipModel _pinsS =
-  -- Stub — chip model goes here as the FSM body matures. Returns
-  -- "no read data, idle" by default so unit tests can drive the
-  -- controller and check its command-pin sequence directly
-  -- (the chip-protocol validation grows in a follow-up commit).
-  pure
-    ChipModelOut
-      { cmoDqOut = 0
-      , cmoDqOe = False
-      , cmoStateLog = 0
+sdrChipModel cfg pinsS = outS
+ where
+  -- 1 KiB Vec backing — adequate for unit tests targeting a
+  -- handful of addresses. Real hardware has 4M half-words; the
+  -- model uses (addr `mod` 1024) so any test address maps somewhere.
+  outS = mealy chipStep initChip pinsS
+
+  initChip :: ChipState
+  initChip =
+    ChipState
+      { csMem = repeat 0
+      , csReadPipe = repeat 0
+      , csReadValidPipe = repeat P.False
+      , csActiveRow = repeat 0
+      , csActiveBankValid = repeat P.False
       }
+
+  chipStep :: ChipState -> SdrPins -> (ChipState, ChipModelOut)
+  chipStep cs pins =
+    let
+      -- decode command
+      cmd = decodeChipCmd pins
+      -- Shift the read pipeline (oldest entry comes out, drop it).
+      pipeShifted :: Vec 8 (BitVector 16)
+      pipeShifted = drop d1 (csReadPipe cs) :< 0
+      validShifted :: Vec 8 Bool
+      validShifted = drop d1 (csReadValidPipe cs) :< P.False
+      currOut = head (csReadPipe cs)
+      currValid = head (csReadValidPipe cs)
+      cs0 =
+        cs
+          { csReadPipe = pipeShifted
+          , csReadValidPipe = validShifted
+          }
+      cs1 = case cmd of
+        ChipActivate ba row ->
+          cs0
+            { csActiveRow = replace ba row (csActiveRow cs0)
+            , csActiveBankValid = replace ba P.True (csActiveBankValid cs0)
+            }
+        ChipRead ba col ->
+          let row = csActiveRow cs0 !! ba
+              addr = chipFlatAddr ba row col
+              memVal = csMem cs0 !! addr
+              -- Schedule the read response at offset CL into the pipe.
+              clIdx :: Index 8
+              clIdx = fromIntegral (sdrCasLatency cfg)
+              newPipe = replace clIdx memVal (csReadPipe cs0)
+              newValid = replace clIdx P.True (csReadValidPipe cs0)
+           in cs0 {csReadPipe = newPipe, csReadValidPipe = newValid}
+        ChipWrite ba col wdata dqm ->
+          let row = csActiveRow cs0 !! ba
+              addr = chipFlatAddr ba row col
+              old = csMem cs0 !! addr
+              -- Active-high DQM: dqm[k]=1 means MASK byte k.
+              new =
+                ( if testBit dqm 0
+                    then slice d7 d0 old
+                    else slice d7 d0 wdata
+                )
+                  ++# ( if testBit dqm 1
+                          then slice d15 d8 old
+                          else slice d15 d8 wdata
+                      )
+              new16 =
+                ( if testBit dqm 1
+                    then slice d15 d8 old
+                    else slice d15 d8 wdata
+                )
+                  ++# ( if testBit dqm 0
+                          then slice d7 d0 old
+                          else slice d7 d0 wdata
+                      )
+              _ = new -- avoid unused warning
+           in cs0 {csMem = replace addr new16 (csMem cs0)}
+        _ -> cs0
+     in
+      ( cs1
+      , ChipModelOut
+          { cmoDqOut = currOut
+          , cmoDqOe = currValid
+          , cmoStateLog = if currValid then 1 else 0
+          }
+      )
+
+-- | Internal chip-model state.
+data ChipState = ChipState
+  { csMem :: Vec 1024 (BitVector 16)
+  , csReadPipe :: Vec 8 (BitVector 16)
+  -- ^ pipeline of pending read responses, shifted each cycle.
+  -- Entry [k] is the read data due in k cycles. d8 covers any
+  -- CL up to 7 (chip max).
+  , csReadValidPipe :: Vec 8 Bool
+  , csActiveRow :: Vec 4 (BitVector 12)
+  -- ^ per-bank active row (one of 4 banks).
+  , csActiveBankValid :: Vec 4 Bool
+  }
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+-- | Flatten (bank, row, col) into a 1024-entry Vec index. Uses
+-- only the lower 10 bits of the (row * 1024 + bank * 256 + col)
+-- mapping so the model stays small. Tests target a few addresses
+-- chosen so they don't collide.
+chipFlatAddr :: Index 4 -> BitVector 12 -> BitVector 8 -> Index 1024
+chipFlatAddr _ba row col =
+  let rowU :: Unsigned 12 = unpack row
+      colU :: Unsigned 8 = unpack col
+      r2 :: Unsigned 2 = resize rowU
+      flat :: Unsigned 10 = (resize r2 `shiftL` 8) .|. resize colU
+   in fromIntegral flat
+
+-- | Decoded chip command shape.
+data ChipCmd
+  = ChipNop
+  | ChipActivate (Index 4) (BitVector 12)
+  | ChipRead (Index 4) (BitVector 8)
+  | ChipWrite (Index 4) (BitVector 8) (BitVector 16) (BitVector 2)
+  | ChipPrechargeAll
+  | ChipAutoRefresh
+  | ChipLoadMode
+  deriving (P.Eq, P.Show, Generic, NFDataX)
+
+decodeChipCmd :: SdrPins -> ChipCmd
+decodeChipCmd p
+  | sdrCsN p = ChipNop
+  | not (sdrRasN p) && sdrCasN p && sdrWeN p =
+      ChipActivate (fromIntegral (unpack (sdrBa p) :: Unsigned 2)) (sdrAddr p)
+  | sdrRasN p && not (sdrCasN p) && sdrWeN p =
+      ChipRead (fromIntegral (unpack (sdrBa p) :: Unsigned 2)) (slice d7 d0 (sdrAddr p))
+  | sdrRasN p && not (sdrCasN p) && not (sdrWeN p) =
+      ChipWrite
+        (fromIntegral (unpack (sdrBa p) :: Unsigned 2))
+        (slice d7 d0 (sdrAddr p))
+        (sdrDqOut p)
+        (sdrDqm p)
+  | not (sdrRasN p) && sdrCasN p && not (sdrWeN p) = ChipPrechargeAll
+  | not (sdrRasN p) && not (sdrCasN p) && sdrWeN p = ChipAutoRefresh
+  | not (sdrRasN p) && not (sdrCasN p) && not (sdrWeN p) = ChipLoadMode
+  | P.otherwise = ChipNop

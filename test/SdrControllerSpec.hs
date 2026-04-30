@@ -71,7 +71,7 @@ testCfg =
     , sdrTwrCycles = 2
     , sdrCasLatency = 3
     , sdrTmrdCycles = 2
-    , sdrRefreshIntervalCycles = 100
+    , sdrRefreshIntervalCycles = 60000 -- effectively disabled for init tests
     , sdrInitNopCycles = 10 -- short, just enough to verify the count
     , sdrInitRefreshCount = 8
     }
@@ -96,7 +96,8 @@ runInit cfg n =
     P.$ sampleN @System n
     P.$ withClockResetEnable @System clockGen resetGen enableGen
     P.$ ( let inS = CP.pure quiescentMaster
-              (replyS, pinsS) = sdrController cfg inS
+              dqInS = CP.pure 0   -- chip not driving DQ during init
+              (replyS, pinsS) = sdrController cfg inS dqInS
            in CP.bundle (replyS, pinsS)
         )
 
