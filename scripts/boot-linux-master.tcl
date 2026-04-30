@@ -191,11 +191,28 @@ proc verify_first_words {m path base_addr nwords label} {
 upload_file $m $kernel_path $kbase $kbytes "kernel"
 upload_file $m $dtb_path    $dbase $dbytes "dtb"
 
-# Verify the kernel image's first 64 words committed correctly.
-# Diagnostic: with bulk master_write_32 reliable, all 64 words
-# should match on first read. Mismatches indicate a residual
-# bulk-write drop pattern (the old "Fixup" workaround).
-verify_first_words $m $kernel_path $kbase 64 "kernel"
+# Verify the kernel image. Earlier versions verified just the
+# first 64 words (=256 bytes = 0x100 = the .head.text reset
+# vector + lottery + setup_trap_vector area), based on the belief
+# that bulk master_write_32 was reliable past that point.
+#
+# Task #144 SDRAM-readback diagnosis (2026-04-30) found persistent
+# corruption of 32-bit words' UPPER half-words in the 0x1A0..0x224
+# range — the Linux kernel's reset_regs FP-register-clear sequence
+# (fmv.w.x ft0..ft11). Lower 16 bits committed correctly; upper 16
+# bits stayed at random pre-existing SDRAM values. The kernel
+# happens to expose this only for SMP=n builds where the FP code
+# starts at 0x1A8 (the SMP=y kernel had GPR-clear instructions
+# there with upper bits = 0, which trivially matched). So the
+# bulk-write reliability claim was wrong; we just got lucky on
+# the SMP=y baseline.
+#
+# Bumping the verify to 1024 words (= 4 KB) covers all of
+# .head.text in the SMP=n kernel (head.text is 0x2DC bytes; 4 KB
+# is 5x that, generous margin for any future head.S growth).
+# Cost: ~1 sec at ~1ms/word read. Trivial vs. the 5-min upload.
+# If we ever measure systematic drops past 4 KB, extend further.
+verify_first_words $m $kernel_path $kbase 1024 "kernel"
 
 # Earlier versions ran a "Fixup" pass here that overwrote the
 # 0x800000A4..0x800000C0 region with hardcoded LINUX-KERNEL bytes
