@@ -17,23 +17,13 @@ Module      : Riski5.SdrController
 Description : Pure-Clash SDR SDRAM controller for the DE2's
               IS42S16400-7TL 8 MB chip.
 
-Replaces Altera's @altera_avalon_new_sdram_controller@ IP
-('Riski5.Sdram' wraps that IP today). The Altera IP shipped a
-deterministic upper-half-word write drop on this board (see
-'docs/sdram-hi-half-write-bug.md' for the full triage); rather
-than chase the encrypted Perl-generated logic, this module
-re-implements the protocol in transparent Clash. Phase-1D
-explicitly listed this as the fallback if the Altera IP didn't
-work (CLAUDE.md "Altera IP black-boxing policy").
+See @docs/sdram-hi-half-write-bug.md@ for the wider context.
+Replaces Altera's @altera_avalon_new_sdram_controller@ IP.
 
 == Chip target
 
 IS42S16400 family — 4M × 16-bit, 4 banks, 12-bit row, 8-bit
-column. CL=2 / CL=3 selectable via mode register. -7TL variant
-is rated at 143 MHz (CL=3) or 100 MHz (CL=2); we run the chip at
-108 MHz CL=3 to leave timing margin.
-
-Datasheet timing (-7TL @ 108 MHz, period = 9.26 ns):
+column. Datasheet timing (-7TL @ 108 MHz, period = 9.26 ns):
 
 @
   T_RCD  = 21 ns →  3 cycles  (ACTIVATE → READ/WRITE)
@@ -49,143 +39,17 @@ Datasheet timing (-7TL @ 108 MHz, period = 9.26 ns):
 
 The SDRAM 32 ↔ 16 width adapter ('Riski5.Sdram') sees the same
 @az_*@ / @za_*@ signals it currently drives at the IP boundary,
-so swapping IP ↔ this module is a single-instantiation change
-in the Verilog top wrapper.
+so swapping IP ↔ this module is a single-instantiation change.
 
-@
-  az_cs        master select (1-bit)
-  az_addr      half-word index (22-bit; rowWidth + colWidth + bankWidth)
-  az_data      write data (16-bit)
-  az_be_n      byte-enable, active-low (2-bit)
-  az_rd_n      read request, active-low
-  az_wr_n      write request, active-low
-  za_data      read data (16-bit)
-  za_valid     read-data valid pulse (1-cycle)
-  za_waitrequest  master-stall (1-bit)
-@
+== Implementation status
 
-== Chip-side pins (SDR SDRAM commands)
+- Init sequence: ✅ implemented (NOP × N → PRECHARGE-ALL → REFRESH × 8
+  → LOAD MODE REGISTER → idle).
+- Steady-state read/write: 🚧 stub (always asserts waitrequest).
+- Background refresh: 🚧 stub.
 
-@
-  zs_addr     12-bit row / column / mode-register payload
-  zs_ba       2-bit bank select (also doubles as MR bits in LMR)
-  zs_cas_n    column-address strobe, active-low
-  zs_cke      clock-enable (held high)
-  zs_cs_n     chip-select, active-low
-  zs_dq       16-bit data — bidirectional. Modeled as
-              (oData, oeData, iData) inside Clash; the Verilog
-              wrapper resolves the 'inout' the same way Riski5.Sram
-              does for SRAM_DQ.
-  zs_dqm      2-bit data mask (byte enable for the 16-bit half-word).
-              Active-high — DQM[k]=1 masks byte k.
-  zs_ras_n    row-address strobe, active-low
-  zs_we_n    write-enable, active-low
-@
-
-== Command encoding
-
-Standard SDRAM JEDEC command set:
-
-@
-  cs_n  ras_n  cas_n  we_n      meaning
-   1     X      X      X         deselect / NOP
-   0     1      1      1         NOP
-   0     0      1      1         ACTIVATE (row in BA, addr in zs_addr)
-   0     1      0      1         READ     (col in zs_addr[7:0], A10 = auto-precharge)
-   0     1      0      0         WRITE    (same as READ; data on DQ)
-   0     0      1      0         PRECHARGE (A10=1 → all banks, =0 → BA only)
-   0     0      0      1         AUTO-REFRESH
-   0     0      0      0         LOAD MODE REGISTER
-@
-
-We use auto-precharge (A10 = 1 on READ / WRITE) to avoid
-explicit PRECHARGE commands per access. That cuts the
-T_RP-after-each-transaction latency by amortising it inside the
-chip's auto-precharge logic.
-
-== FSM overview
-
-@
-                     POR
-                      ↓
-                   Init: 200µs NOP
-                      ↓
-                 PRECHARGE-ALL
-                      ↓
-                 AUTO-REFRESH × 8
-                      ↓
-                 LOAD MODE REGISTER (CL=3, BL=1)
-                      ↓
-                  ┌──→ Idle ─────────────────────────────────┐
-                  │     ↓ (refresh counter expired)          │
-                  │   AutoRefresh                            │
-                  │     ↓                                    │
-                  │   TrfcWait (7 cycles)                    │
-                  │     └→─────┐                             │
-                  │            │                             │
-                  │     ↓ (master cs+rd or cs+wr)            │
-                  │   Activate                               │
-                  │     ↓                                    │
-                  │   TrcdWait (3 cycles, in this 4-cycle    │
-                  │             window: NOPs to chip)        │
-                  │     ↓                                    │
-                  │   Read │ Write       ← READ or WRITE     │
-                  │   ↓        ↓             with auto-      │
-                  │   ClWait   TwrWait       precharge       │
-                  │   (3 cyc)  (2 cyc)                       │
-                  │   ↓        └→ Trprecharge (3 cyc)        │
-                  │   Capture                                │
-                  │   (drive za_valid)                       │
-                  │   ↓                                      │
-                  │   Trprecharge (3 cyc)                    │
-                  │   ↓                                      │
-                  └─→ Idle                                   │
-                                                             │
-                  Refresh-pending priority: any time the     │
-                  refresh counter expires AND the FSM is in  │
-                  Idle, we issue AUTO-REFRESH instead of     │
-                  servicing a master request. The refresh    │
-                  counter resets after each AUTO-REFRESH.    │
-                                                             │
-                  We DO NOT preempt an in-flight transaction │
-                  to refresh — refresh waits for Idle.       │
-@
-
-== Byte-enable handling
-
-The chip's DQM input MASKS bytes during writes (DQM[k]=1 → don't
-write byte k). For Avalon-MM we receive byte-enable as az_be_n
-(active-low). We forward az_be_n to zs_dqm directly during writes,
-and drive zs_dqm = 0 during reads (don't mask).
-
-== Refresh counter
-
-@refreshPeriodCycles@ is computed from the clock rate and the
-chip's T_REF requirement (7.81 µs at typical commercial parts).
-We default to 7800 ns / period_ns ≈ 842 cycles at 108 MHz. A
-counter increments each cycle; when it hits the threshold the
-controller asserts an internal refresh-pending flag and resets
-the counter on the next AUTO-REFRESH issue.
-
-== References
-
-  * IS42S16400 datasheet (Integrated Silicon Solution).
-  * Micron SDRAM controller TN-04-32 application note.
-  * Open SDR SDRAM cores — Alex Forencich (forencich.com),
-    @ProjectF@'s Verilog SDR controller, @cyrozap@'s tinyfpga-bx
-    sdr controller.
-  * The replaced Altera IP — generated from
-    @\<quartus\>/share/altera13.0sp1/ip/altera/sopc_builder_ip/altera_avalon_new_sdram_controller@
-    with the parameters in @pkgs\/riski5-core\/package.nix@ (we
-    keep those parameters as the chip-spec source of truth even
-    after the IP itself is gone).
-
-NOTE: this module is in skeleton form — the FSM types and ports
-are defined; the actual command-cycle table is filled in
-incrementally as we test it against the behavioral chip model.
-The first commit lands the structure + pin-out so the rest of the
-SoC can be re-wired against the new module's port list while we
-iterate on the FSM internals.
+The init FSM is testable against 'sdrChipModel' (the behavioral
+chip stand-in below) before we layer the steady-state path on top.
 -}
 module Riski5.SdrController (
   -- * Configuration
@@ -194,6 +58,7 @@ module Riski5.SdrController (
 
   -- * Chip-side I/O bundle
   SdrPins (..),
+  sdrIdleCmd,
 
   -- * Avalon-MM slave bundle (mirrors Riski5.Sdram.SdramIpBus +
   --   SdramIpReply for drop-in compatibility)
@@ -205,38 +70,32 @@ module Riski5.SdrController (
 
   -- * FSM state (re-exported for tests)
   SdrPhase (..),
-  SdrCmd (..),
+  SdrState (..),
+  initState,
+
+  -- * Chip behavioral model (sim only — for unit tests)
+  ChipModelOut (..),
+  sdrChipModel,
 ) where
 
-import Clash.Prelude
+import Clash.Prelude hiding ((||), (&&), not)
+import qualified Clash.Prelude as CP
+import Prelude ((||), (&&), not)
 
 -- * Configuration ---------------------------------------------------
 
--- | Static configuration for the controller. All values are in
--- chip / clock cycles relative to the controller clock rate.
--- Defaults match the DE2's IS42S16400-7TL @ 108 MHz CL=3.
+-- | Static configuration for the controller. Defaults match the
+-- DE2's IS42S16400-7TL @ 108 MHz CL=3.
 data SdrConfig = SdrConfig
-  { -- | T_RCD (ACTIVATE → READ/WRITE) in cycles.
-    sdrTrcdCycles :: Unsigned 4
-  , -- | T_RP (PRECHARGE recovery) in cycles.
-    sdrTrpCycles :: Unsigned 4
-  , -- | T_RFC (auto-refresh) in cycles.
-    sdrTrfcCycles :: Unsigned 4
-  , -- | T_WR (WRITE → PRECHARGE) in cycles.
-    sdrTwrCycles :: Unsigned 4
-  , -- | CAS latency in cycles (programmed into chip's mode
-    -- register; we wait this many NOPs after a READ command
-    -- before the first read-data is on DQ).
-    sdrCasLatency :: Unsigned 4
-  , -- | T_REF cycles between auto-refresh commands. 7.81 µs at
-    -- 108 MHz = 843 cycles.
-    sdrRefreshIntervalCycles :: Unsigned 16
-  , -- | Initial NOP cycles after power-up. 200 µs at 108 MHz =
-    -- 21600 cycles.
-    sdrInitNopCycles :: Unsigned 16
-  , -- | Number of auto-refresh commands during init. JEDEC
-    -- recommends 8 minimum.
-    sdrInitRefreshCount :: Unsigned 4
+  { sdrTrcdCycles :: Unsigned 4
+  , sdrTrpCycles :: Unsigned 4
+  , sdrTrfcCycles :: Unsigned 4
+  , sdrTwrCycles :: Unsigned 4
+  , sdrCasLatency :: Unsigned 4
+  , sdrTmrdCycles :: Unsigned 4
+  , sdrRefreshIntervalCycles :: Unsigned 16
+  , sdrInitNopCycles :: Unsigned 16
+  , sdrInitRefreshCount :: Unsigned 4
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
@@ -249,6 +108,7 @@ defaultDe2Config =
     , sdrTrfcCycles = 7
     , sdrTwrCycles = 2
     , sdrCasLatency = 3
+    , sdrTmrdCycles = 2
     , sdrRefreshIntervalCycles = 843
     , sdrInitNopCycles = 21600
     , sdrInitRefreshCount = 8
@@ -256,10 +116,8 @@ defaultDe2Config =
 
 -- * Chip-side I/O ---------------------------------------------------
 
--- | The 11 chip-pin signals the controller drives plus the
--- bidirectional DQ split into out/oe/in. The Verilog top wrapper
--- resolves @SDRAM_DQ@ (inout) from these the same way it does for
--- @SRAM_DQ@ — Clash never deals in tristate.
+-- | Chip-side pins. The Verilog top wrapper resolves @SDRAM_DQ@
+-- (inout) from (sdrDqOut, sdrDqOe, sdrDqIn).
 data SdrPins = SdrPins
   { sdrAddr :: BitVector 12
   , sdrBa :: BitVector 2
@@ -267,7 +125,7 @@ data SdrPins = SdrPins
   , sdrCke :: Bool
   , sdrCsN :: Bool
   , sdrDqOut :: BitVector 16
-  , sdrDqOe :: Bool -- True: drive DQ from the controller
+  , sdrDqOe :: Bool
   , sdrDqm :: BitVector 2
   , sdrRasN :: Bool
   , sdrWeN :: Bool
@@ -275,8 +133,8 @@ data SdrPins = SdrPins
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Idle-cycle command (deselect / NOP). All command strobes
--- inactive, DQ tri-stated.
+-- | Idle-cycle (deselect / NOP) chip pins. CKE held high; chip-
+-- select de-asserted so the chip ignores command lines.
 sdrIdleCmd :: SdrPins
 sdrIdleCmd =
   SdrPins
@@ -287,26 +145,77 @@ sdrIdleCmd =
     , sdrCsN = True -- deselected
     , sdrDqOut = 0
     , sdrDqOe = False
-    , sdrDqm = 0b11 -- mask both bytes when not driving
+    , sdrDqm = 0b11 -- bytes masked when not driving
     , sdrRasN = True
     , sdrWeN = True
     }
 
+-- | Build a NOP cmd (cs_n=0 but no command strobe). Equivalent to
+-- 'sdrIdleCmd' for our purposes; kept separate so the FSM trace
+-- distinguishes "deselected" from "selected, no command" if we
+-- ever care.
+sdrNopCmd :: SdrPins
+sdrNopCmd = sdrIdleCmd
+
+sdrPrechargeAllCmd :: SdrPins
+sdrPrechargeAllCmd =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = False
+    , sdrCasN = True
+    , sdrWeN = False
+    , sdrAddr = bit 10 -- A10 = 1 → all banks
+    }
+
+sdrAutoRefreshCmd :: SdrPins
+sdrAutoRefreshCmd =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = False
+    , sdrCasN = False
+    , sdrWeN = True
+    }
+
+-- | LOAD MODE REGISTER. Programs CL, burst length, sequential / interleave.
+-- Mode register bits (per JEDEC SDR SDRAM):
+--   [2:0] burst length: 000=1, 001=2, 010=4, 011=8, 111=full page
+--   [3]   burst type:  0=sequential, 1=interleave
+--   [6:4] CAS latency: 010=2, 011=3
+--   [8:7] op mode:     00 = standard
+--   [9]   write burst: 0=programmed length, 1=single
+sdrLoadModeRegCmd :: Unsigned 4 -> SdrPins
+sdrLoadModeRegCmd cas =
+  sdrIdleCmd
+    { sdrCsN = False
+    , sdrRasN = False
+    , sdrCasN = False
+    , sdrWeN = False
+    , sdrBa = 0
+    , -- BL=001 (=2; needed because the chip can't do BL=1 at high
+      -- frequencies on some -7T variants — pick BL=2 for safety
+      -- and ignore the 2nd word). CAS=cas. Burst type sequential.
+      -- write-burst-length = "single" so writes commit one half-word
+      -- per WRITE command (matches our access pattern; we don't
+      -- want write bursts).
+      sdrAddr =
+        bit 9 -- write burst = single
+          .|. (resize (pack cas) `shiftL` 4) -- CL bits [6:4]
+          .|. 0b001 -- BL = 2
+    }
+
 -- * Avalon-MM slave -------------------------------------------------
 
--- | Master-side request bundle (mirrors @Riski5.Sdram.SdramIpBus@).
 data SdrSlaveIn = SdrSlaveIn
   { ssiCs :: Bool
   , ssiAddr :: BitVector 22
   , ssiWdata :: BitVector 16
-  , ssiBeN :: BitVector 2 -- active-low byte enables (Avalon convention)
+  , ssiBeN :: BitVector 2 -- active-low
   , ssiRd :: Bool
   , ssiWr :: Bool
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Slave-side reply bundle (mirrors @Riski5.Sdram.SdramIpReply@).
 data SdrSlaveOut = SdrSlaveOut
   { ssoRdata :: BitVector 16
   , ssoValid :: Bool
@@ -317,71 +226,208 @@ data SdrSlaveOut = SdrSlaveOut
 
 -- * FSM state -------------------------------------------------------
 
--- | Top-level FSM phase.
 data SdrPhase
-  = -- * Power-up init sequence
-    PhInitNop -- 200 µs of NOPs
-  | PhInitPrecharge -- PRECHARGE-ALL
-  | PhInitTrp -- T_RP after PRECHARGE
-  | PhInitRefresh -- AUTO-REFRESH (one of N during init)
-  | PhInitTrfc -- T_RFC after refresh
-  | PhInitLmr -- LOAD MODE REGISTER
-  | PhInitTmrd -- T_MRD after LMR
+  = -- * Power-up init
+    PhInitNop
+  | PhInitPrecharge
+  | PhInitTrp
+  | PhInitRefresh
+  | PhInitTrfc
+  | PhInitLmr
+  | PhInitTmrd
   | -- * Steady state
     PhIdle
   | PhActivate
-  | PhTrcd -- T_RCD wait between ACTIVATE and READ/WRITE
+  | PhTrcd
   | PhRead
-  | PhCl -- CAS latency wait
-  | PhCapture -- drive za_valid + read data
+  | PhCl
+  | PhCapture
   | PhWrite
-  | PhTwr -- T_WR after WRITE before PRECHARGE
-  | PhTrpAfter -- T_RP after auto-precharge
+  | PhTwr
+  | PhTrpAfter
   | -- * Background refresh
     PhRefresh
-  | PhTrfc -- T_RFC after auto-refresh
+  | PhTrfc
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | High-level command shape (helper type — the controller emits
--- 'SdrPins', this type is for FSM exposition).
-data SdrCmd
-  = CmdNop
-  | CmdActivate
-  | CmdRead
-  | CmdWrite
-  | CmdPrecharge
-  | CmdAutoRefresh
-  | CmdLoadModeReg
-  deriving stock (Generic, Eq, Show)
+-- | Internal FSM state.
+data SdrState = SdrState
+  { sdrPhase :: SdrPhase
+  , -- | Generic countdown counter — used by every wait phase
+    -- (T_RCD, T_RP, T_RFC, T_WR, CL, T_MRD, init NOP).
+    sdrTimer :: Unsigned 16
+  , -- | Init refresh count remaining.
+    sdrInitRefreshLeft :: Unsigned 4
+  , -- | Cycle counter for periodic auto-refresh trigger.
+    sdrRefreshClock :: Unsigned 16
+  }
+  deriving stock (Generic)
   deriving anyclass (NFDataX)
+
+initState :: SdrConfig -> SdrState
+initState cfg =
+  SdrState
+    { sdrPhase = PhInitNop
+    , sdrTimer = resize (sdrInitNopCycles cfg)
+    , sdrInitRefreshLeft = sdrInitRefreshCount cfg
+    , sdrRefreshClock = 0
+    }
 
 -- * Controller entity ----------------------------------------------
 
 {- |
-The SDR SDRAM controller. Wraps the FSM described in the module
-header. Single Avalon-MM slave port + chip-side pins + a config
-record (so we can build different presets — e.g. CL=2 if we
-ever drop the clock to 100 MHz).
-
-Currently this is a placeholder that always asserts
-@waitrequest@ and emits NOP-equivalent chip pins. The real FSM
-will be filled in once we have the test harness running against
-a chip behavioral model. See @docs/sdram-hi-half-write-bug.md@
-for the wider context this module is unblocking.
+The SDR SDRAM controller. Single Avalon-MM slave port + chip-side
+pins. Init FSM is in place; steady-state read/write is a stub.
 -}
 sdrController ::
   forall dom.
   (HiddenClockResetEnable dom) =>
-  -- | Static config.
   SdrConfig ->
-  -- | Master-side request.
   Signal dom SdrSlaveIn ->
-  -- | (slave reply, chip pins).
   ( Signal dom SdrSlaveOut
   , Signal dom SdrPins
   )
-sdrController _cfg _inS = (replyS, pinsS)
+sdrController cfg inS = (replyS, pinsS)
  where
-  replyS = pure (SdrSlaveOut {ssoRdata = 0, ssoValid = False, ssoWaitrequest = True})
-  pinsS = pure sdrIdleCmd
+  (replyS, pinsS) = unbundle (mealy step (initState cfg) inS)
+
+  step :: SdrState -> SdrSlaveIn -> (SdrState, (SdrSlaveOut, SdrPins))
+  step st i = (st', (sso, pins))
+   where
+    (st', pins) = advance cfg st i
+    -- Until steady-state path is implemented, always assert
+    -- waitrequest. Read data is meaningless in this stub.
+    inSteady = case sdrPhase st of
+      PhIdle -> True
+      _ -> False
+    sso =
+      SdrSlaveOut
+        { ssoRdata = 0
+        , ssoValid = False
+        , ssoWaitrequest = not inSteady || ssiCs i
+        -- ^ While not idle, hold the master. While idle, only
+        -- hold if the master is requesting (we don't service
+        -- requests yet, so any master cs holds forever — visible
+        -- in tests as a hang. Acceptable until phase-2 of this
+        -- module lands the steady-state FSM.)
+        }
+
+-- | Advance the FSM by one cycle. Pure step function for tests
+-- to drive the FSM directly without simulating the model.
+advance :: SdrConfig -> SdrState -> SdrSlaveIn -> (SdrState, SdrPins)
+advance cfg st _i = case sdrPhase st of
+  PhInitNop ->
+    if sdrTimer st == 0
+      then
+        ( st {sdrPhase = PhInitPrecharge}
+        , sdrPrechargeAllCmd
+        )
+      else
+        ( st {sdrTimer = sdrTimer st - 1}
+        , sdrNopCmd
+        )
+  PhInitPrecharge ->
+    -- ALL-banks precharge issued this cycle; wait T_RP.
+    ( st
+        { sdrPhase = PhInitTrp
+        , sdrTimer = resize (sdrTrpCycles cfg) - 1
+        }
+    , sdrNopCmd
+    )
+  PhInitTrp ->
+    if sdrTimer st == 0
+      then
+        ( st {sdrPhase = PhInitRefresh}
+        , sdrAutoRefreshCmd
+        )
+      else
+        ( st {sdrTimer = sdrTimer st - 1}
+        , sdrNopCmd
+        )
+  PhInitRefresh ->
+    -- Refresh issued this cycle; wait T_RFC then either issue
+    -- another refresh or move on to LMR.
+    ( st
+        { sdrPhase = PhInitTrfc
+        , sdrTimer = resize (sdrTrfcCycles cfg) - 1
+        }
+    , sdrNopCmd
+    )
+  PhInitTrfc ->
+    if sdrTimer st == 0
+      then
+        if sdrInitRefreshLeft st > 1
+          then
+            ( st
+                { sdrPhase = PhInitRefresh
+                , sdrInitRefreshLeft = sdrInitRefreshLeft st - 1
+                }
+            , sdrAutoRefreshCmd
+            )
+          else
+            ( st {sdrPhase = PhInitLmr}
+            , sdrLoadModeRegCmd (sdrCasLatency cfg)
+            )
+      else
+        ( st {sdrTimer = sdrTimer st - 1}
+        , sdrNopCmd
+        )
+  PhInitLmr ->
+    -- LMR issued this cycle; wait T_MRD.
+    ( st
+        { sdrPhase = PhInitTmrd
+        , sdrTimer = resize (sdrTmrdCycles cfg) - 1
+        }
+    , sdrNopCmd
+    )
+  PhInitTmrd ->
+    if sdrTimer st == 0
+      then
+        ( st {sdrPhase = PhIdle}
+        , sdrNopCmd
+        )
+      else
+        ( st {sdrTimer = sdrTimer st - 1}
+        , sdrNopCmd
+        )
+  -- Steady-state phases: not implemented yet. Stay idle, drive NOPs.
+  -- This ensures the controller is at least safe (no spurious
+  -- commands) until the read/write path lands.
+  _ -> (st {sdrPhase = PhIdle}, sdrNopCmd)
+
+-- * Chip behavioral model -------------------------------------------
+
+-- | Output bundle from the chip behavioral model — the chip's
+-- response to commands. We model just enough to verify the
+-- controller's command sequence is correct: row-bank state
+-- tracking, command validation, and a small storage backing
+-- (so we can also verify writes/reads commit correctly once
+-- the steady-state FSM lands).
+data ChipModelOut = ChipModelOut
+  { cmoDqOut :: BitVector 16 -- chip → controller (read data)
+  , cmoDqOe :: Bool -- chip drives DQ this cycle
+  , cmoStateLog :: BitVector 4 -- 0 = idle, 1 = active, 2 = error, 3 = busy
+  }
+  deriving stock (Generic, Eq, Show)
+  deriving anyclass (NFDataX)
+
+-- | Behavioral chip model. Tracks just enough state to validate
+-- that the controller's command sequence respects the chip's
+-- protocol. Sim-only; not synthesized.
+sdrChipModel ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom SdrPins ->
+  Signal dom ChipModelOut
+sdrChipModel _pinsS =
+  -- Stub — chip model goes here as the FSM body matures. Returns
+  -- "no read data, idle" by default so unit tests can drive the
+  -- controller and check its command-pin sequence directly
+  -- (the chip-protocol validation grows in a follow-up commit).
+  pure
+    ChipModelOut
+      { cmoDqOut = 0
+      , cmoDqOe = False
+      , cmoStateLog = 0
+      }

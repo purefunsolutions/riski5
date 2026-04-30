@@ -220,6 +220,7 @@ test-suite riski5-test
     RegfileSpec
     SdramExecSpec
     SdramSpec
+    SdrControllerSpec
     SocHwSim
     SocSpec
     SpikeDiffSpec

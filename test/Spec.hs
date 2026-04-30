@@ -33,6 +33,7 @@ import ReferenceSpec qualified
 import RegfileSpec qualified
 import SdramExecSpec qualified
 import SdramSpec qualified
+import SdrControllerSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
 import SpikeDiffSpec qualified
@@ -75,6 +76,7 @@ main =
       , SramStallForwardSpec.tests
       , SdramSpec.tests
       , SdramExecSpec.tests
+      , SdrControllerSpec.tests
       , HelloSpec.tests
       , IFetchSpec.tests
       , JalrStackSpec.tests
