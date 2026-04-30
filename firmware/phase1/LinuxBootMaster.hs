@@ -160,6 +160,29 @@ linuxBootMasterFirmware = do
   sw uartR tmpReg 0
   srli tmpReg csrTmp 24
   sw uartR tmpReg 0
+  -- misa — verifies silicon's misa value matches our hard-wired
+  -- 0x40001101 (RV32IMA, no F, no D). Linux head.S reset_regs
+  -- ANDs misa with 0x28 to decide whether to clear FP regs;
+  -- if silicon's misa is non-zero in bits 3 (D) or 5 (F), the
+  -- kernel runs fmv.w.x's that decode as illegal-instr traps.
+  csrrs csrTmp x0 csrMisa
+  sw uartR csrTmp 0
+  srli tmpReg csrTmp 8
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 16
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 24
+  sw uartR tmpReg 0
+  -- mscratch — distinguishes cold-boot (zero) from kernel-side
+  -- writes (kernel head.S clears mscratch in setup_trap_vector).
+  csrrs csrTmp x0 csrMscratch
+  sw uartR csrTmp 0
+  srli tmpReg csrTmp 8
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 16
+  sw uartR tmpReg 0
+  srli tmpReg csrTmp 24
+  sw uartR tmpReg 0
 
   -- == INVALIDATE STALE TRIGGER ==
   -- FPGA reset clears the SDRAM IP but the chip keeps refreshing
