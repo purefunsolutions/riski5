@@ -139,6 +139,63 @@ linuxBootMasterFirmware = do
   addi tmpReg x0 0x4A
   sw uartR tmpReg 0
 
+  -- == DIAGNOSTIC: read kbytes from SDRAM[0x807F_FFF0] ==
+  -- This is in row 4095 (the same row as the trigger). If the
+  -- core can read this back as the host-written kbytes value,
+  -- it confirms host master_write to high SDRAM rows commits to
+  -- the chip and core lw can see it. Then we know any low-row
+  -- read failures are row-specific.
+  -- Format: 'K' marker, then 4 raw bytes (LE) of kbytes value.
+  addi tmpReg x0 0x4B             -- 'K'
+  sw uartR tmpReg 0
+  lw kbytes goAddr 0              -- kbytes := SDRAM[0x807F_FFF0]
+  sw uartR kbytes 0               -- emit byte 0
+  srli tmpReg kbytes 8
+  sw uartR tmpReg 0               -- byte 1
+  srli tmpReg kbytes 16
+  sw uartR tmpReg 0               -- byte 2
+  srli tmpReg kbytes 24
+  sw uartR tmpReg 0               -- byte 3
+
+  -- == ROW SWEEP ==
+  -- Force the SDRAM controller to ACTIVATE many different rows
+  -- before the diagnostic dump. Hypothesis: the IP buffers writes
+  -- in a row-data register and only commits to chip cells on
+  -- PRECHARGE (row switch). If the host's writes land in the
+  -- buffer but never get flushed, reads of the SAME row hit the
+  -- buffer (correct data), reads of OTHER rows force ACTIVATE
+  -- which brings stale chip cells into a fresh buffer.
+  --
+  -- By sweeping reads across many rows post-trigger (and BEFORE
+  -- the diagnostic dump), each row gets its buffer flushed via
+  -- PRECHARGE-on-next-ACTIVATE. The dump then sees committed
+  -- chip data, which should match what the host uploaded.
+  --
+  -- 'S' marker after sweep so we can time it on the UART.
+  let sweepAddr = goAddr            -- reuse — overwrite below
+      sweepDummy = goSlot
+  -- Read from row 0, row 1, row 2 (each ~512 bytes apart at 16-bit data)
+  -- Ensure we hit different physical rows: SDRAM is 4 banks × 4096 rows
+  -- × 256 cols × 16 bits = 8 MB. Row stride = 512 bytes.
+  li sweepAddr 0x80000000
+  lw sweepDummy sweepAddr 0
+  lw sweepDummy sweepAddr 0x200    -- row stride 512 = 0x200
+  lw sweepDummy sweepAddr 0x400
+  lw sweepDummy sweepAddr 0x600
+  li sweepAddr 0x80100000
+  lw sweepDummy sweepAddr 0
+  li sweepAddr 0x80200000
+  lw sweepDummy sweepAddr 0
+  li sweepAddr 0x80400000
+  lw sweepDummy sweepAddr 0
+  li sweepAddr 0x807F0000
+  lw sweepDummy sweepAddr 0
+  addi tmpReg x0 0x53             -- 'S' (sweep done)
+  sw uartR tmpReg 0
+
+  -- Restore goAddr for the dump.
+  li goAddr 0x807F_FFF0
+
   -- == DIAGNOSTIC: kernel-early-path cells ==
   -- Dump 4 kernel cells the early init path touches: JAL header,
   -- csrw mtvec, the AMO at +0x100 (hart_lottery), and the .data
