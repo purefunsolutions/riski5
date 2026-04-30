@@ -345,6 +345,68 @@ linuxBootMasterFirmware = do
   addi tmpReg x0 0x5A             -- 'Z'
   sw uartR tmpReg 0
 
+  -- == AMO RD-VALUE PROBE (task #144) ==
+  -- Diagnostic: replicate the kernel's amoadd.w pattern at a
+  -- known-clean SDRAM address and emit both the rd value and
+  -- the post-AMO memory value over UART. Pure-Haskell sim
+  -- already shows rd=OLD (=0) for this sequence; if silicon
+  -- shows rd=NEW (=1) we've reproduced the kernel's bnez bug
+  -- in isolation, away from any kernel-fetch contention.
+  --
+  -- Test address 0x803F_FFE8: in the BSS-scrubbed range above
+  -- (kbytes is < 0x40_0000 in practice), well clear of trigger
+  -- record at 0x807F_FFF0 and the DTB at 0x8040_0000. Already
+  -- zeroed by the scrub loop, so MEM[testAddr] == 0 entering
+  -- the AMO.
+  --
+  -- We mirror the kernel's exact instruction shape:
+  --   amoadd.w rd, rs1, rs2  -- rd ← MEM[rs1]; MEM[rs1] ← rd + rs2
+  -- with rs1=&testAddr, rs2=1, rd=t3.
+  --
+  -- Output sequence (reading UART byte-stream):
+  --   'O' 0xZZ 0xZZ 0xZZ 0xZZ      -- rd value LE
+  --   'P' 0xZZ 0xZZ 0xZZ 0xZZ      -- MEM[testAddr] post-AMO LE
+  -- Expected (correct):  O 00 00 00 00 P 01 00 00 00
+  -- Bug fingerprint:     O 01 00 00 00 P 01 00 00 00
+  let testAddr = a0Reg            -- reuse — restore later
+      amoIncr  = a1Reg            -- reuse — restore later
+      rdReg    = x28              -- t3, matches kernel's a3 alias size
+  li testAddr 0x803F_FFE8
+  -- Belt-and-braces: explicitly zero the cell (scrub already did
+  -- this but a fresh SW + row-flush guarantees the read starts
+  -- from 0 regardless of any stale buffer state).
+  sw testAddr x0 0
+  -- Row sweep to flush the SW commit, mirroring the trigger-clear
+  -- pattern earlier in this stub.
+  li tmpReg 0x80000000
+  lw tmpReg tmpReg 0
+  li tmpReg 0x80100000
+  lw tmpReg tmpReg 0
+  -- The AMO itself.
+  addi amoIncr x0 1
+  amoadd_w rdReg testAddr amoIncr 0
+  -- Emit 'O' + rd value (4 LE bytes).
+  addi tmpReg x0 0x4F             -- 'O'
+  sw uartR tmpReg 0
+  sw uartR rdReg 0                -- byte 0
+  srli tmpReg rdReg 8
+  sw uartR tmpReg 0               -- byte 1
+  srli tmpReg rdReg 16
+  sw uartR tmpReg 0               -- byte 2
+  srli tmpReg rdReg 24
+  sw uartR tmpReg 0               -- byte 3
+  -- Emit 'P' + MEM[testAddr] (4 LE bytes).
+  addi tmpReg x0 0x50             -- 'P'
+  sw uartR tmpReg 0
+  lw rdReg testAddr 0
+  sw uartR rdReg 0
+  srli tmpReg rdReg 8
+  sw uartR tmpReg 0
+  srli tmpReg rdReg 16
+  sw uartR tmpReg 0
+  srli tmpReg rdReg 24
+  sw uartR tmpReg 0
+
   -- == LINUX nommu BOOT ABI ==
   --   a0 = 0           (single-core hartid)
   --   a1 = 0x8040_0000 (DTB pointer — well past the kernel's
