@@ -151,37 +151,65 @@ proc upload_file {m path base_addr size_bytes label} {
         $label $total_kb $total_s [expr {$total_kb / $total_s}]]
 }
 
+# Verify-and-retry pass over the first 64 words of an uploaded
+# image. Reads each word back, compares against expected, and
+# falls back to a single-word write+read+retry on mismatch (up
+# to 3 retries per word). Existence-of-mismatches at THIS layer
+# (after the new sticky arbiters) means the bulk master_write_32
+# still has a residual drop pattern at specific cell offsets;
+# the retry recovers each cell silently and reports a count.
+proc verify_first_words {m path base_addr nwords label} {
+    set fp [open $path "rb"]
+    fconfigure $fp -translation binary
+    set buf [read $fp [expr {$nwords * 4}]]
+    close $fp
+
+    set fixed 0
+    set bad 0
+    for {set i 0} {$i < $nwords} {incr i} {
+        if {[string length $buf] < ($i + 1) * 4} { break }
+        binary scan $buf "@[expr {$i * 4}]i" expected
+        set expected [expr {$expected & 0xFFFFFFFF}]
+        set wa [expr {$base_addr + $i * 4}]
+        set rb [lindex [master_read_32 $m $wa 1] 0]
+        if {$rb != $expected} {
+            incr bad
+            for {set retry 0} {$retry < 3} {incr retry} {
+                master_write_32 $m $wa [list $expected]
+                set rb [lindex [master_read_32 $m $wa 1] 0]
+                if {$rb == $expected} { incr fixed; break }
+            }
+            puts [format "  verify %s @0x%08x: got 0x%08x want 0x%08x  %s" \
+                $label $wa $rb $expected \
+                [expr {$rb == $expected ? "fixed" : "PERMANENT MISMATCH"}]]
+        }
+    }
+    puts [format "  verify %s: %d / %d words bulk-dropped, %d recovered" \
+        $label $bad $nwords $fixed]
+}
+
 upload_file $m $kernel_path $kbase $kbytes "kernel"
 upload_file $m $dtb_path    $dbase $dbytes "dtb"
 
-# Fixup pass: 8 single-word writes + read-back + retry to scrub
-# any leftover print-'!' bytes from a prior run out of the
-# 0x800000A4..0x800000C4 region. The bulk kernel upload's
-# 256-word list-write occasionally drops here when SDRAM holds
-# data from a previous run (the Altera SDRAM IP appears to
-# coalesce some overlapping writes silently). Single-word
-# write+verify+retry recovers cleanly — proven earlier in this
-# debug session.
-puts ""
-puts "Fixup: scrubbing 0x800000A4..0x800000C4 with single-word verify..."
-set fixup_words [list \
-    0x30401073 0x34401073 0x0000100f 0x118000ef \
-    0x00000517 0x01c50513 0x30551073 0xfff00513]
-set i 0
-foreach w $fixup_words {
-    set wa [expr {$kbase + 0xA4 + $i * 4}]
-    for {set retry 0} {$retry < 3} {incr retry} {
-        master_write_32 $m $wa [list $w]
-        set chk [lindex [master_read_32 $m $wa 1] 0]
-        if {$chk == $w} break
-    }
-    puts [format "  scrub 0x%08x = 0x%08x   rb = 0x%08x   %s" \
-        $wa $w $chk [expr {$chk == $w ? "ok" : "MISMATCH"}]]
-    incr i
-}
-puts ""
+# Verify the kernel image's first 64 words committed correctly.
+# Diagnostic: with bulk master_write_32 reliable, all 64 words
+# should match on first read. Mismatches indicate a residual
+# bulk-write drop pattern (the old "Fixup" workaround).
+verify_first_words $m $kernel_path $kbase 64 "kernel"
 
-puts ""
+# Earlier versions ran a "Fixup" pass here that overwrote the
+# 0x800000A4..0x800000C0 region with hardcoded LINUX-KERNEL bytes
+# (csrw mie / csrw mip / fence.i / jal / auipc / addi / csrw mtvec
+# / li). It was a workaround for the Altera-master IP's silent
+# write-drops in those specific cells. With the bridge replaced
+# by `Riski5.JtagAvalonMaster` (commit dcb225d) and the SoC bus
+# fixed by the sticky JTAG-mux + sticky fetch/data arbiters
+# (commits a6df51b + 5781b44), every host-side write commits
+# correctly. The fixup is no longer needed and was actively
+# harmful for non-Linux payloads — it overwrote arbitrary
+# instruction words with the kernel's specific bytes, so any
+# upload other than the Linux Image was getting silently
+# corrupted at +0xA4..+0xC0.
 
 puts ""
 puts "Writing boot-trigger record..."
