@@ -51,7 +51,15 @@ set dwords [expr {$dbytes_pad / 4}]
 # computes a1 from the kbytes value we write to SRAM, so we
 # write the unpadded byte count.
 set kbase     0x80000000
-set dbase     [expr {$kbase + $kbytes_pad}]
+# Park the DTB at 0x8040_0000 — well past the kernel's __bss_stop
+# (~0x8036_F258 for our linux-rv32-nommu build). Placing it
+# immediately after the kernel image (kbase + kbytes_pad) overlaps
+# the kernel's BSS region; @clear_bss@ then zeroes the trailing
+# part of the DTB before @setup_arch@ parses it, and Linux either
+# panics or silently hangs depending on which DTB nodes survive.
+# The boot stub at firmware/phase1/LinuxBootMaster.hs hard-codes
+# the same address into @a1@ — keep them in sync.
+set dbase     0x80400000
 # The L-3a JTAG-load path routes JTAG-Avalon-Master writes only to
 # SDRAM, so the trigger record has to live in SDRAM too. Park it
 # at the very top of the 8 MB chip — a real kernel image can't
