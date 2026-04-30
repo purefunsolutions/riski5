@@ -1258,18 +1258,63 @@ core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   dmemWdataOutS :: Signal dom (BitVector 32)
   dmemWdataOutS = effDmemWdataS
 
+  -- Quench the data-port drive once the slave has accepted the
+  -- current transaction but the pipeline is still stalled (e.g.
+  -- waiting for a multi-cycle fetch to settle). Without this gate,
+  -- the X-stage's bus signals stay asserted through the whole
+  -- pipeline-hold window, the SoC's bus arbiter sees @cs=1@ on
+  -- every cycle, and the data slave processes the SAME store /
+  -- load over and over until the pipeline finally advances. Each
+  -- re-issue is a separate Avalon-MM transaction; the kernel's
+  -- BSS-clear loop at PC=0x80000124 was hanging because every SW
+  -- to a fresh address re-fired indefinitely while the next
+  -- instruction's fetch crawled through SDRAM behind the sticky
+  -- arbiter (task #143 silicon hang follow-up). Gating only the
+  -- regular drives — when @amoBusyS@ is True the AMO FU's own
+  -- FSM self-quenches in @AmoDone@, so we leave its drives
+  -- alone here.
+  dataDoneS :: Signal dom Bool
+  dataDoneS = register False dataDoneNextS
+
+  dataDoneNextS :: Signal dom Bool
+  dataDoneNextS =
+    ( \done stall ds amoB -> case (done, stall, ds, amoB) of
+        (_, False, _, _) -> False
+        -- ^ pipeline advancing → clear
+        (True, True, _, _) -> True
+        -- ^ sustained stall → hold
+        (False, True, False, False) -> True
+        -- ^ regular data transaction settled, pipeline still
+        -- stalled → quench from here on
+        _ -> False
+    )
+      <$> dataDoneS
+      <*> stallInternalS
+      <*> dataStallS
+      <*> amoBusyS
+
+  -- True when we should quench the regular X-stage data drives.
+  -- AMO bus drives pass through unchanged.
+  quenchDataS :: Signal dom Bool
+  quenchDataS =
+    (\done amoB -> done && not amoB) <$> dataDoneS <*> amoBusyS
+
   -- Gate the byte-enable by @idValid@ so bubble cycles can't
-  -- spuriously store through.
+  -- spuriously store through, and by @quenchDataS@ to prevent
+  -- multi-cycle data slaves from re-firing while the pipeline
+  -- is held by an unrelated stall (e.g. fetch-side).
   dmemBeOutS :: Signal dom (BitVector 4)
   dmemBeOutS =
-    (\v be -> if v then be else 0)
+    (\v q be -> if v && not q then be else 0)
       <$> (idValid <$> idExS)
+      <*> quenchDataS
       <*> effDmemBeS
 
   dmemRenOutS :: Signal dom Bool
   dmemRenOutS =
-    (\v re -> v && re)
+    (\v q re -> v && not q && re)
       <$> (idValid <$> idExS)
+      <*> quenchDataS
       <*> effDmemRenS
 
   -- ====================================================================
