@@ -163,10 +163,26 @@
   # (riski5_sdram_cdc_bridge) at the 16-bit Avalon-MM boundary.
   pllBusMultBy = if slowClock then 3 else 4;  # bus, core: 50 × M / 5
   pllCoreMultBy = if slowClock then 3 else 4; # tied to bus initially
-  # SDRAM: input is 27 MHz (CLOCK_27), output 30 MHz, ratio 10/9.
-  pllSdramMultBy = 10;
-  pllSdramDivBy  = 9;
-  sdramIpClockRate = 30000000;                # always 30 MHz under multi-PLL
+  # SDRAM: input is 27 MHz (CLOCK_27, sourced from TV Decoder
+  # ADV7180), output 108 MHz, clean 4× ratio. Cyclone II's PLL M/N
+  # can't synthesise 100/27 directly (M=400 / N=27 exceeds the
+  # device's PLL M-counter limit), so 27 × 4 = 108 MHz is the
+  # closest clean operating point to the chip's 100 MHz CL=2 spec
+  # — just over the CL=2 rated 100 MHz limit, so we use
+  # casLatency=3 (chip rated 143 MHz at CL=3). Datasheet margins
+  # at 108 MHz period 9.26 ns:
+  #   TRCD/TRP at 20 ns = 3 cycles (= 27.8 ns) ≥ 15 ns spec ✓
+  #   TRFC at 70 ns = 8 cycles (= 74 ns) ≥ 60 ns spec ✓
+  #   TWR at 14 ns = 2 cycles (= 18.5 ns) ≥ 14 ns spec ✓
+  # The earlier 108 MHz attempt failed slow-corner timing on the
+  # CDC bridge's cross-domain register paths because the SDC's
+  # set_false_path patterns weren't matching the actual register
+  # hierarchy names; switching to set_clock_groups -asynchronous
+  # at the clkBus / clkSdram boundary cleanly resolves it.
+  pllSdramMultBy = 4;
+  pllSdramDivBy  = 1;
+  sdramIpClockRate = 108000000;
+  sdramIpCasLatency = 3;
   slowSuffix = lib.optionalString slowClock "-slow";
 in
   stdenv.mkDerivation {
@@ -633,7 +649,10 @@ in
             # DE2's chip and the 30 MHz @clkSdram@ clock, leaving
             # generous margin:
             #
-            #   casLatency       = 2   — fine below ~133 MHz for a -7 part
+            #   casLatency       = 3   — required at 108 MHz for the
+            #                              IS42S16400-7 part (CL=2 only
+            #                              rated to 100 MHz; CL=3 rated
+            #                              to 143 MHz)
             #   TRCD             = 20  ns (≥ 15 ns data-sheet min)
             #   TRP              = 20  ns (≥ 15 ns)
             #   TRFC             = 70  ns (Altera default; ≥ 60 ns needed)
@@ -675,7 +694,7 @@ in
               --language=VERILOG \
               --system-info=DEVICE_FAMILY=CYCLONEII \
               --system-info=DEVICE=EP2C35F672C6 \
-              --component-parameter=casLatency=2 \
+              --component-parameter=casLatency=${toString sdramIpCasLatency} \
               --component-parameter=columnWidth=8 \
               --component-parameter=rowWidth=12 \
               --component-parameter=dataWidth=16 \
@@ -841,7 +860,20 @@ in
           output wire        s_wr,
           input  wire [15:0] s_rdata,
           input  wire        s_valid,
-          input  wire        s_waitrequest
+          input  wire        s_waitrequest,
+
+          // Debug taps for altsource_probe SLD instances at the top
+          // level (task #142). All flags / state signals live in
+          // their owning clock domain; the probe SLD samples a
+          // moment-in-time snapshot that the host reads via JTAG,
+          // which is much slower than either clock — so cross-
+          // domain races on the snapshot itself don't matter.
+          output wire [1:0]  dbg_m_state,
+          output wire [1:0]  dbg_s_state,
+          output wire        dbg_req_toggle_bus,
+          output wire        dbg_done_toggle_sdram,
+          output wire [15:0] dbg_cap_rdata_sdram,
+          output wire [21:0] dbg_m_lat_addr
       );
 
           // ─── Master-side state ────────────────────────────────────
@@ -1026,11 +1058,21 @@ in
           assign s_rd    = (s_state == S_REQ) & s_lat_rd_buf;
           assign s_wr    = (s_state == S_REQ) & s_lat_wr_buf;
 
+          // Debug taps for top-level altsource_probe SLD nodes.
+          assign dbg_m_state           = m_state;
+          assign dbg_s_state           = s_state;
+          assign dbg_req_toggle_bus    = req_toggle_bus;
+          assign dbg_done_toggle_sdram = done_toggle_sdram;
+          assign dbg_cap_rdata_sdram   = cap_rdata_sdram;
+          assign dbg_m_lat_addr        = m_lat_addr;
+
       endmodule
 
       module riski5_top (
           input  wire        CLOCK_50,
           input  wire        CLOCK_27,
+          input  wire        TD_CLK27,    // unused; assigned per DE2 manual §4.4
+          output wire        TD_RESET,    // drive HIGH to keep TV Decoder running
           input  wire [3:0]  KEY,
           input  wire [17:0] SW,
           output wire [17:0] LEDR,
@@ -1186,6 +1228,19 @@ in
         defparam u_altpll_sdram.port_areset            = "PORT_USED";
         defparam u_altpll_sdram.width_clock            = 5;
 
+        // Drive TD_RESET high so the TV Decoder ADV7180 keeps
+        // generating the 27 MHz CLOCK_27 (DE2 User Manual §4.4).
+        // Without this, the decoder sits in reset and CLOCK_27 is
+        // effectively dead, which kills u_altpll_sdram's lock and
+        // halts the entire SDRAM domain.
+        assign TD_RESET = 1'b1;
+
+        // TD_CLK27 is the alternate copy of CLOCK_27. We don't use it,
+        // but the manual requires it be assigned to keep the I/O cell
+        // in a defined state. Reading the input ensures Quartus
+        // doesn't optimise the pin away; the value goes nowhere.
+        wire td_clk27_obs = TD_CLK27;  // sink the pin so it's not pruned
+
         // Combined async-low reset for the bus + core domain. Asserted
         // (low) while either PLL hasn't locked or KEY[0] is held.
         wire rstBus_n  = KEY[0] & pll_bus_locked & pll_sdram_locked;
@@ -1322,6 +1377,15 @@ in
         wire        sdram_bridge_valid;
         wire        sdram_bridge_waitrequest;
 
+        // Debug-tap wires — pulled out by the bridge for top-level
+        // altsource_probe SLD instances (task #142, SDST + SDIO).
+        wire [1:0]  bridge_m_state;
+        wire [1:0]  bridge_s_state;
+        wire        bridge_req_toggle_bus;
+        wire        bridge_done_toggle_sdram;
+        wire [15:0] bridge_cap_rdata_sdram;
+        wire [21:0] bridge_m_lat_addr;
+
         riski5_sdram_cdc_bridge u_sdram_cdc (
             // Master side (clkBus domain)
             .clkBus       (clkBus),
@@ -1346,7 +1410,17 @@ in
             .s_wr         (sdram_ip_az_wr),
             .s_rdata      (sdram_ip_readdata),
             .s_valid      (sdram_ip_valid),
-            .s_waitrequest(sdram_ip_waitrequest)
+            .s_waitrequest(sdram_ip_waitrequest),
+            // Debug taps (task #142) — surfaced at top level so the
+            // SDST / SDIO altsource_probe SLD nodes below can sample
+            // them, and so quartus_stp can read them after a hang
+            // freeze to learn which side stalled.
+            .dbg_m_state(bridge_m_state),
+            .dbg_s_state(bridge_s_state),
+            .dbg_req_toggle_bus(bridge_req_toggle_bus),
+            .dbg_done_toggle_sdram(bridge_done_toggle_sdram),
+            .dbg_cap_rdata_sdram(bridge_cap_rdata_sdram),
+            .dbg_m_lat_addr(bridge_m_lat_addr)
         );
 
         // The Clash module's three SDRAM_* return inputs see the
@@ -1741,6 +1815,108 @@ in
             .enable_metastability     ("NO")
         ) u_iter_counter_probe (
             .probe        (iter_counter),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — SDRAM CDC bridge state (task #142) ---
+        // 32-bit packed snapshot of the bridge's master + slave FSM
+        // states + handshake toggles + last latched address. Read via
+        // @quartus_stp@'s @read_probe_data@ on instance index 8 to
+        // diagnose the silicon Linux hang at PC=0x80000108: pair the
+        // SDST snapshot with PCFE / DBGF / SDIO to see whether the
+        // bridge has parked itself in M_BUSY (waiting for the slave
+        // side that the IP isn't ack'ing) or S_REQ / S_AWAIT_VALID
+        // (slave side waiting for the IP that's stuck in some
+        // command-issue state of its own).
+        //
+        // Bit layout (LSB-first):
+        //   [1:0]   m_state           — M_IDLE / M_BUSY / M_DONE_W / M_DONE_R
+        //   [3:2]   s_state           — S_IDLE / S_REQ / S_AWAIT_VALID / S_DONE
+        //   [4]     req_toggle_bus    — flips when master kicks slave
+        //   [5]     done_toggle_sdram — flips when slave finishes
+        //   [6]     bridge_waitrequest_to_master (sdram_bridge_waitrequest)
+        //   [7]     bridge_valid_to_master       (sdram_bridge_valid)
+        //   [8]     sdram_ip_az_cs               (slave-side, in clkSdram)
+        //   [9]     sdram_ip_az_rd
+        //   [10]    sdram_ip_az_wr
+        //   [11]    sdram_ip_waitrequest         (IP output, in clkSdram)
+        //   [12]    sdram_ip_valid               (IP output, in clkSdram)
+        //   [13]    sdram_cs                     (master-side, in clkBus)
+        //   [14]    sdram_rd                     (master-side, in clkBus)
+        //   [15]    sdram_wr                     (master-side, in clkBus)
+        //   [31:16] m_lat_addr[15:0]             — last word the
+        //                                          master pushed
+        wire [31:0] sdram_bridge_state_pack = {
+            bridge_m_lat_addr[15:0],
+            sdram_wr,
+            sdram_rd,
+            sdram_cs,
+            sdram_ip_valid,
+            sdram_ip_waitrequest,
+            sdram_ip_az_wr,
+            sdram_ip_az_rd,
+            sdram_ip_az_cs,
+            sdram_bridge_valid,
+            sdram_bridge_waitrequest,
+            bridge_done_toggle_sdram,
+            bridge_req_toggle_bus,
+            bridge_s_state,
+            bridge_m_state
+        };
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("SDST"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (8),
+            .enable_metastability     ("NO")
+        ) u_sdram_bridge_state_probe (
+            .probe        (sdram_bridge_state_pack),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — SDRAM IO data snapshot (task #142) ---
+        // Companion to the SDST state probe: pack 16-bit values that
+        // are wider than will fit in the SDST flag pack, plus the
+        // upper bits of the last latched address. Use SDST + SDIO
+        // together via @quartus_stp@'s @read_probe_data@ for a
+        // complete picture of what was on the bus + IP-slave port at
+        // the moment the host samples.
+        //
+        // Bit layout (LSB-first):
+        //   [15:0]  bridge_cap_rdata_sdram — last 16-bit word the
+        //                                     IP returned via valid
+        //                                     pulse on a read
+        //   [21:16] bridge_m_lat_addr[21:16] — top 6 address bits
+        //                                       missed by SDST's
+        //                                       16-bit window
+        //   [31:22] padding
+        wire [31:0] sdram_io_pack = {
+            10'b0,
+            bridge_m_lat_addr[21:16],
+            bridge_cap_rdata_sdram
+        };
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("SDIO"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (9),
+            .enable_metastability     ("NO")
+        ) u_sdram_io_probe (
+            .probe        (sdram_io_pack),
             .source       (),
             .source_clk   (1'b0),
             .source_ena   (1'b0)

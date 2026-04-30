@@ -26,12 +26,16 @@ set_false_path -from [get_ports KEY[0]] -to [all_registers]
 # instantiations for the full clock map.
 #
 # DRAM_CLK is sourced from u_altpll_sdram|clk[1] — a -3 ns
-# phase-shifted copy of clkSdram (30 MHz). The phase shift puts the
-# SDRAM chip's rising edge ~3 ns AFTER the FPGA-side controller's
-# rising edge, covering Tco + trace delay. Standard Altera SDRAM
-# Controller deployment pattern; this is the pattern that
-# task #132 introduced to fix intermittent JTAG-Master write
-# commit failures.
+# phase-shifted copy of clkSdram (100 MHz under task #141 final
+# config; previously 30 MHz, before that 40 MHz from the bus PLL).
+# The phase shift puts the SDRAM chip's rising edge ~3 ns AFTER
+# the FPGA-side controller's rising edge, covering Tco + trace
+# delay. At 100 MHz period 10 ns, 3 ns is 30% of the period —
+# substantial but well within the chip's setup/hold tolerance for
+# the IS42S16400-7 part on the DE2.
+# Standard Altera SDRAM Controller deployment pattern; this is
+# the pattern that task #132 introduced to fix intermittent
+# JTAG-Master write commit failures.
 #
 # `derive_pll_clocks` picks up both ALTPLL outputs automatically.
 # This `create_generated_clock` tags the dram_clk net so STA
@@ -43,27 +47,19 @@ create_generated_clock -name dram_clk \
 
 # -- SDRAM CDC bridge — clkBus ↔ clkSdram cross-domain --------------
 # The riski5_sdram_cdc_bridge module uses a toggle-handshake CDC
-# pattern. The toggled flags (req_toggle_bus, done_toggle_sdram)
-# go through 2-FF synchronisers on the destination side; the
-# accompanying data registers (m_lat_*, cap_rdata_sdram) are
-# sampled by the destination side AFTER the synchronised toggle
-# edge, so they're stable across the boundary even though the
-# combinational paths are unconstrained.
+# pattern: toggled flags through 2-FF synchronisers on the
+# destination side, plus accompanying data registers (m_lat_*,
+# cap_rdata_sdram) sampled by the destination side AFTER the
+# synchronised toggle edge — so they're stable across the
+# boundary by construction.
 #
-# These false-path constraints tell STA to ignore the
-# cross-domain combinational paths between latched-on-source and
-# sampled-on-dest registers. Without them, Quartus would either
-# fail timing on impossible-to-meet 25-ns / 33-ns single-clock
-# transfers or insert metastability hazards by retiming.
-set_false_path \
-    -from [get_registers {*u_sdram_cdc|m_lat_*}] \
-    -to   [get_registers {*u_sdram_cdc|s_lat_*_buf}]
-set_false_path \
-    -from [get_registers {*u_sdram_cdc|cap_rdata_sdram*}] \
-    -to   [get_registers {*u_sdram_cdc|cap_rdata_sync_0*}]
-set_false_path \
-    -from [get_registers {*u_sdram_cdc|req_toggle_bus*}] \
-    -to   [get_registers {*u_sdram_cdc|req_sync_0_sdr*}]
-set_false_path \
-    -from [get_registers {*u_sdram_cdc|done_toggle_sdram*}] \
-    -to   [get_registers {*u_sdram_cdc|done_sync_0*}]
+# Declare the clkBus domain and the clkSdram-family of clocks
+# (clkSdram, clkSdramOut, dram_clk) as asynchronous clock groups.
+# This tells TimeQuest to ignore all paths between the two
+# domains, which is what we want — the bridge handles CDC in
+# its own logic via toggles + 2-FF synchronisers, and STA has
+# nothing useful to say about combinational paths whose
+# launch/capture clocks have no defined phase relationship.
+set_clock_groups -asynchronous \
+    -group { u_altpll|pll|clk[0] } \
+    -group { u_altpll_sdram|pll|clk[0] u_altpll_sdram|pll|clk[1] dram_clk }

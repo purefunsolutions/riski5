@@ -46,6 +46,24 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_50
 set_location_assignment PIN_D13 -to CLOCK_27
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to CLOCK_27
 
+# Per DE2 User Manual §4.4: CLOCK_27 is sourced from the TV Decoder
+# ADV7180. Two requirements to keep that signal valid:
+#   1. TD_RESET (PIN_C4) must be driven HIGH so the decoder isn't
+#      held in reset (otherwise it doesn't generate the 27 MHz
+#      clock). Wired in riski5_top.v as a top-level output set to
+#      logic 1.
+#   2. TD_CLK27 (PIN_C16, the alternate copy of the same 27 MHz
+#      clock) must be assigned (or set to "AS input tri-stated"
+#      via the unused-pin policy) so the FPGA doesn't put the pad
+#      into a state that disturbs the TV decoder's clock generation
+#      circuit. We tie it to a top-level input named TD_CLK27 in
+#      the wrapper but never read it; Quartus places the pin and
+#      leaves it floating into the design.
+set_location_assignment PIN_C4 -to TD_RESET
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to TD_RESET
+set_location_assignment PIN_C16 -to TD_CLK27
+set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to TD_CLK27
+
 # -- Pushbuttons KEY[3:0] ------------------------------------------
 # KEY[0] is the async active-LOW reset (gated against PLL lock to
 # form rstBus_n in riski5_top.v). KEY[1..3] are general buttons the
