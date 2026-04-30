@@ -128,6 +128,39 @@ nextJtagMuxOwner JmxJtag True False True = JmxCore
 nextJtagMuxOwner JmxJtag False False True = JmxNone
 
 {- |
+Next-state for the inner fetch/data 'SramOwner' arbiter (the one
+that picks between the core's data port and its IF-stage fetch
+port when @enableSdramFetch=True@). Args: current owner,
+@sdramSelDataS@ (data port wants SDRAM), @sdramFetchAnyS@ (fetch
+port wants SDRAM), @sdramReadyS'@ (transaction-complete pulse).
+
+Same shape as 'nextJtagMuxOwner' but at the fetch/data layer:
+hold ownership across the @!idle@ window so the SDRAM IP doesn't
+see its master signals flip mid-transaction. Without this, an
+@amoadd.w@ targeting SDRAM whose ALU phase happens to coincide
+with an in-flight IF-stage fetch flips the IP's owner from
+OwnData → OwnFetch and back; the IP's row buffer then gets
+the AMO Write at a stale address and the Linux kernel's
+@hart_lottery@ at offset +0x100 hangs the boot process before
+@start_kernel@ fires. Data-port has priority on simultaneous
+arrival (matches the original combinational behaviour and is
+needed so a load doesn't stall behind a fetch that the IF stage
+is just about to retire).
+-}
+nextSramOwner :: SramOwner -> Bool -> Bool -> Bool -> SramOwner
+nextSramOwner OwnNone True _ _ = OwnData
+nextSramOwner OwnNone False True _ = OwnFetch
+nextSramOwner OwnNone False False _ = OwnNone
+nextSramOwner OwnData _ _ False = OwnData
+nextSramOwner OwnData True _ True = OwnData
+nextSramOwner OwnData False True True = OwnFetch
+nextSramOwner OwnData False False True = OwnNone
+nextSramOwner OwnFetch _ _ False = OwnFetch
+nextSramOwner OwnFetch True _ True = OwnData
+nextSramOwner OwnFetch False True True = OwnFetch
+nextSramOwner OwnFetch False False True = OwnNone
+
+{- |
 Inputs the SoC reads from the board.
 
 The UART read-data channel @siUartRdata@ is an externalised bus tap:
@@ -1007,15 +1040,26 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       if enableSdramFetch
         then
           let
+            -- Registered (sticky) fetch/data arbiter — only re-picks
+            -- ownership on @sdramReadyS'@ idle/complete edges so the
+            -- SDRAM IP sees stable master signals for the duration of
+            -- each transaction. The combinational version this
+            -- replaced flipped the IP's master mid-flight whenever
+            -- the core's M-stage signals oscillated (notably during
+            -- an AMO's Read → ALU → Write phases, where dRenS/dBeS
+            -- toggle in the gap between phases), and the SDRAM
+            -- controller's row buffer got muddled when the IP's
+            -- @selS@/@addr@ changed underneath it. Mirrors the
+            -- 'JtagMuxOwner' pattern at the fetch/data layer; see
+            -- 'nextSramOwner' for the transition rules.
             sdramOwnerS :: Signal dom SramOwner
             sdramOwnerS =
-              ( \dReq fReq ->
-                  if dReq
-                    then OwnData
-                    else if fReq then OwnFetch else OwnNone
-              )
-                <$> sdramSelDataS
+              register OwnNone
+                $ nextSramOwner
+                <$> sdramOwnerS
+                <*> sdramSelDataS
                 <*> sdramFetchAnyS
+                <*> sdramReadyS'
             sdramSelArbS =
               ( \o dReq -> case o of
                   OwnFetch -> True
