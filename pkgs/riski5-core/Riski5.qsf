@@ -365,3 +365,16 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_CKE
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_CLK
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_WE_N
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_CS_N
+
+# Task #146: Tried FAST_OUTPUT_REGISTER on DRAM_* outputs and
+# FAST_OUTPUT_ENABLE_REGISTER on DRAM_DQ to give clean I/O-cell-
+# placed flops with consistent Tco. On silicon this made the FIRST
+# master_write_32 hang — the I/O register on DRAM_DQ delays the
+# write data by one cycle relative to the WRITE command that the
+# chip latches on the same edge, so the chip captured stale DQ.
+# Reverted; the controller's writes work correctly with combinational
+# DRAM_DQ output (chip's setup/hold margin at 40 MHz absorbs the
+# Tco variance). Future work: if we re-enable I/O-cell DQ output
+# registers, also bump the chip's sample cycle in 'sdrWriteCmd'
+# to issue the data one cycle BEFORE the WRITE command so the
+# delays align — but that's a more invasive FSM change.
