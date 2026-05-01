@@ -390,6 +390,25 @@ data SocInSim = SocInSim
   -- @mip.MEIP@ → handler) drive this 'True' on selected cycles.
   -- Existing tests can leave it 'False' (the default for the
   -- record-with-defaults pattern below).
+  , sisJtagLoadMode :: Bool
+  -- ^ Per-cycle override for L-3 JTAG-load mode bit. Forwarded
+  -- to 'SocIn.siJtagLoadMode'. The L-3 sticky arbiter only
+  -- routes JTAG signals to the SDRAM bus when this is asserted
+  -- and the JTAG path actually wins arbitration; tests use it
+  -- alongside the four siJtagLoad* signals below to drive the
+  -- 'jtagMuxedSdram' mux directly. Defaults 'False'.
+  , sisJtagLoadAddr :: BitVector 32
+  -- ^ Forwarded to 'SocIn.siJtagLoadAddr'. Defaults 0.
+  , sisJtagLoadWdata :: BitVector 32
+  -- ^ Forwarded to 'SocIn.siJtagLoadWdata'. Defaults 0.
+  , sisJtagLoadWe :: Bool
+  -- ^ Forwarded to 'SocIn.siJtagLoadWe'. Defaults 'False'.
+  , sisJtagLoadRd :: Bool
+  -- ^ Forwarded to 'SocIn.siJtagLoadRd'. Defaults 'False'.
+  , sisJtagLoadBe :: BitVector 4
+  -- ^ Forwarded to 'SocIn.siJtagLoadBe'. Defaults 0; tests that
+  -- exercise sub-word JTAG-Master writes set this to 0b0011 / 0b1100
+  -- / 0b0001 / etc.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -405,6 +424,12 @@ defaultSocInSim =
     , sisKeys = 0xF
     , sisSramDqIn = 0
     , sisUartIrq = False
+    , sisJtagLoadMode = False
+    , sisJtagLoadAddr = 0
+    , sisJtagLoadWdata = 0
+    , sisJtagLoadWe = False
+    , sisJtagLoadRd = False
+    , sisJtagLoadBe = 0
     }
 
 {- |
@@ -1624,12 +1649,12 @@ socSim progInit dataInit inSimS = outSimS
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
-          , siJtagLoadMode = False
-          , siJtagLoadAddr = 0
-          , siJtagLoadWdata = 0
-          , siJtagLoadWe = False
-          , siJtagLoadRd = False
-          , siJtagLoadBe = 0
+          , siJtagLoadMode = sisJtagLoadMode
+          , siJtagLoadAddr = sisJtagLoadAddr
+          , siJtagLoadWdata = sisJtagLoadWdata
+          , siJtagLoadWe = sisJtagLoadWe
+          , siJtagLoadRd = sisJtagLoadRd
+          , siJtagLoadBe = sisJtagLoadBe
           }
     )
       <$> inSimS
@@ -1823,12 +1848,12 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
           , siSdramReply = sdr
           , siCaptureReset = False
           , siCaptureOffset = 0
-          , siJtagLoadMode = False
-          , siJtagLoadAddr = 0
-          , siJtagLoadWdata = 0
-          , siJtagLoadWe = False
-          , siJtagLoadRd = False
-          , siJtagLoadBe = 0
+          , siJtagLoadMode = sisJtagLoadMode
+          , siJtagLoadAddr = sisJtagLoadAddr
+          , siJtagLoadWdata = sisJtagLoadWdata
+          , siJtagLoadWe = sisJtagLoadWe
+          , siJtagLoadRd = sisJtagLoadRd
+          , siJtagLoadBe = sisJtagLoadBe
           }
     )
       <$> inSimS

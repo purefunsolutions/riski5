@@ -25,6 +25,7 @@ import DecodeSpec qualified
 import HelloSpec qualified
 import IFetchSpec qualified
 import JalrStackSpec qualified
+import JtagLoadByteEnableSpec qualified
 import LcdSpec qualified
 import PipelineSpec qualified
 import PlicSocSpec qualified
@@ -80,6 +81,7 @@ main =
       , HelloSpec.tests
       , IFetchSpec.tests
       , JalrStackSpec.tests
+      , JtagLoadByteEnableSpec.tests
       , UartBackpressureSpec.tests
       , SocHwSim.tests
       , SpikeDriverSpec.tests
