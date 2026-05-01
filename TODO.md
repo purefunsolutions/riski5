@@ -1786,9 +1786,75 @@ state.**
     Commits: `9b73726` (SoC integration), `8b0eda6` (BL=1 +
     refresh interval + init NOP scaled for 40 MHz), `5d8a9fe`
     (FAST_OUTPUT_REGISTER negative-result note), `dcfa067` (this
-    TODO).
+    TODO), **`5ec5829`** (durable timing infrastructure: SDC
+    source-sync constraints + FAST_*_REGISTER on every DRAM_*
+    output + `+90°` DRAM_CLK from PLL clk2 + new
+    `sdrControllerAsAlteraIpRegistered` wrapper that gives
+    Quartus a clean FF directly feeding each pad), **`3d3dcb2`**
+    (LSWP altsource_probe — 64-bit pin-capture probe on chip-
+    bound DRAM_* edges + JTAG-Master byteenable bug fix —
+    `jtagMuxedSdram` no longer hardcodes `sibBe=0xF` when JTAG
+    owns the SDRAM bus), **`04635b6`** (regression test for the
+    byteenable fix in `test/JtagLoadByteEnableSpec.hs`).
   - 268/268 cabal tests green (sim is clean for both even and
     odd columns, both round-trip and integration tests).
+  - **Pattern test now reports 8/29 PASSED** (was 4/29) — every
+    "16-bit LO write" sub-test passes after the byteenable fix.
+
+  ### Root cause hypothesis: chip is in BL=2 INTERLEAVED mode
+
+  Confirmed 2026-05-01 via the LSWP probe + a targeted
+  three-step Tcl experiment (`/tmp/sc-bl2-test.tcl`):
+
+  1. Issue ONE 16-bit LO write of `0xAAAA` via the JTAG-Master
+     IP (with the be-fix, this is exactly **one chip WRITE
+     command**: addr=0x480, dq=0xAAAA, dqm=0; LSWP confirmed
+     `write_count` advances by exactly 1, not 2).
+  2. Read back the full 32-bit word: returns `0xAAAAAAAA` —
+     i.e. **both** the targeted halfword cell (col=0x80) and
+     the adjacent halfword cell (col=0x81) hold `0xAAAA`.
+  3. Issue ONE 16-bit HI write of `0xBBBB` (single chip WRITE
+     to col=0x81). Read back: full = `0xBBBBBBBB`. Critically,
+     col=0x80 (the cell at A0=0) flipped to `0xBBBB` even
+     though we wrote at col=0x81 (A0=1) — that's the
+     **interleaved** burst order (`col, col XOR 1`), not
+     sequential (`col, col+1`).
+
+  This is exactly **BL=2 INTERLEAVED**. The IS42S16400 chip is
+  bursting two cells per WRITE command, in interleaved address
+  order. Our LMR programs A9=1 (single-write override) +
+  A2:A0=000 (BL=1) + A3=0 (sequential) — none of which are
+  taking effect. Either (a) the chip isn't receiving our LMR
+  command at all, or (b) the LMR command bits are arriving
+  garbled.
+
+  The original `wrote 0xdeadbeef → read 0xdeaddead` failure
+  for 32-bit writes is a direct consequence: the Sdram adapter
+  splits a 32-bit write into two chip WRITEs (lo at col=N,
+  then hi at col=N+1). Under BL=2 INT each WRITE bursts both
+  cells — first chip WRITE writes lo to col=N + col=N+1, second
+  chip WRITE then writes hi to col=N+1 + col=N (interleave from
+  col=N+1 wraps to col=N). Last write wins → both cells = hi.
+
+  ### Next step
+
+  Determine whether the chip is *receiving* our LMR at all:
+  - Change `sdrLoadModeRegCmd` to set CL=2 (= A6:A4=010)
+    instead of CL=3 (=011), keeping the controller's `PhCl`
+    wait at the same number of cycles. If LMR is honored,
+    chip will drive READ data 1 cycle earlier than our wait
+    state expects → reads return wrong data (probably garbage
+    or BL=2 INT's second beat).
+  - If reads break in this CL=2 build → LMR is honored, then
+    chase why our intended A9 / BL / burst-type values aren't
+    being latched (signal-integrity on LMR-only address bits?
+    BA pin? T_MRD violated?).
+  - If reads do NOT change → LMR isn't being received at all.
+    Investigate init sequence: bump `sdrInitNopCycles` from
+    4100 (= 102 µs at 40 MHz) to 8000 (= 200 µs); double
+    `sdrTmrdCycles`; try issuing the LMR twice; experiment
+    with the BA pins during LMR (datasheet says BA=00 is
+    reserved for MRS — try BA=01 to see if chip rejects it).
 
   ### What the bug looks like on silicon
   - **Both JTAG-Master path *and* core path show the same SDRAM
