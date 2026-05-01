@@ -1777,7 +1777,7 @@ state.**
 
 ## Blocked / parked
 
-- **task #146 — Pure-Clash SdrController silicon-only write/read corruption (paused for hardware migration).**
+- **task #146 — Pure-Clash SdrController silicon write/read corruption — RESOLVED 2026-05-01 (commit landing momentarily).** SDRAM pattern test now reports `summary: 29 passed, 0 failed of 29 total` against the `riski5-core-coremark` variant. Single-line fix (`defaultDe2Config.sdrCasLatency = 2`, was 3) on top of the durable timing infrastructure (5ec5829), the JTAG-Master byteenable fix (3d3dcb2), and the SocSim-side regression test (04635b6). Task header retained below for the historical investigation log; the "Where to pick up" / "Next step" sections under it are now obsolete (= "Run the test, watch all 29 pass"). Linux-on-riski5 (L-0..L-9) is unblocked next.
 
   ### What landed
   - Altera SDRAM Controller IP + CDC bridge + second PLL all

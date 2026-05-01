@@ -146,7 +146,23 @@ defaultDe2Config =
     , sdrTrpCycles = 3
     , sdrTrfcCycles = 7
     , sdrTwrCycles = 2
-    , sdrCasLatency = 3
+    , sdrCasLatency = 2
+    -- ^ CL=2 (was 3 at startup of task #146). Empirically, programming
+    --   the IS42S16400 mode register with CL=3 (A6:A4 = 011) put the
+    --   chip into BL=2 INTERLEAVED mode despite the LMR's BL field
+    --   (A2:A0=000) and single-write override (A9=1) — confirmed by
+    --   the LSWP probe + the BL=2 hypothesis test on 2026-05-01:
+    --   a single chip WRITE was bursting both col and col XOR 1 with
+    --   the same data, and the lo+hi pair of a 32-bit master_write_32
+    --   collapsed to (last write wins) = `0xdeaddead` for the
+    --   `0xdeadbeef` test pattern. Switching the LMR to CL=2 (=
+    --   A6:A4=010) made the chip behave as the LMR's other bits
+    --   asked (BL=1, sequential, single-write), and every test
+    --   pattern reads back correctly. At 40 MHz / 25 ns period
+    --   either CL=2 or CL=3 satisfies t_AC, so CL=2 is just
+    --   conservative. The controller's PhCl wait still uses
+    --   `sdrCasLatency cfg + sdrPipelineLatency cfg - 1` so this
+    --   change is self-consistent.
     , sdrTmrdCycles = 2
     , sdrRefreshIntervalCycles = 600
     , sdrInitNopCycles = 4100 -- ≥100 µs at 40 MHz period 25 ns (= 4000 cycles)
