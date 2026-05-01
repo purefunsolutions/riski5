@@ -252,6 +252,17 @@ data SocIn = SocIn
   -- ^ L-3 JTAG-load: pulse-high to issue a read from
   --   siJtagLoadAddr. Source @JLRD@. The result lands on
   --   'soJtagLoadRdata' once 'soJtagLoadBusy' deasserts.
+  , siJtagLoadBe :: BitVector 4
+  -- ^ L-3 JTAG-load: active-high byte-enable for the JTAG-Master
+  --   write. Wired through to 'jtagMuxedSdram' so 'master_write_8'
+  --   and 'master_write_16' from system-console actually mask the
+  --   chip-side byte writes correctly. With the JTAG-Master IP
+  --   issuing all four bytes for a 'master_write_32', this comes
+  --   in as @0xF@; for sub-word writes the IP sets only the
+  --   active byte lanes. The Tcl-script L-3 path that drives this
+  --   port directly via altsource_probe (no IP in the loop) just
+  --   ties this to @0xF@ for its kernel-image upload path, which
+  --   is 32-bit-aligned by construction.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -919,6 +930,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
   sdramJtagWdataS = siJtagLoadWdata <$> inS
   sdramJtagWeS = siJtagLoadWe <$> inS
   sdramJtagRdS = siJtagLoadRd <$> inS
+  sdramJtagBeS = siJtagLoadBe <$> inS
 
   -- Sticky-arbiter source signals.
   --
@@ -1013,13 +1025,25 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
             <*> wdataS_
             <*> sdramJtagWdataS
         be' =
-          ( \o b je -> case o of
-              JmxJtag -> if je then 0xF else 0
+          ( \o b je jbe -> case o of
+              -- JTAG owns the bus: forward the JTAG-Master IP's
+              -- byteenable so master_write_8 / master_write_16
+              -- actually mask the inactive byte lanes. Earlier
+              -- revisions hard-coded this to @0xF@ on the JTAG
+              -- arm, which silently promoted every JTAG sub-word
+              -- write into a full 32-bit write — surfaced by the
+              -- LSWP probe (write_count incremented by 2 for a
+              -- 16-bit master_write_16 instead of 1, with the
+              -- second chip write driving stale wdata). Goes to
+              -- @0@ when JTAG isn't actively writing — same shape
+              -- as before.
+              JmxJtag -> if je then jbe else 0
               _ -> b
           )
             <$> jtagMuxOwnerS
             <*> beS_
             <*> sdramJtagWeS
+            <*> sdramJtagBeS
         ren' =
           ( \o r jr -> case o of
               JmxJtag -> jr
@@ -1605,6 +1629,7 @@ socSim progInit dataInit inSimS = outSimS
           , siJtagLoadWdata = 0
           , siJtagLoadWe = False
           , siJtagLoadRd = False
+          , siJtagLoadBe = 0
           }
     )
       <$> inSimS
@@ -1727,6 +1752,7 @@ socSimFullWith enableSramFetch enableSdramFetch progInit dataInit sramInit inFul
           , siJtagLoadWdata = 0
           , siJtagLoadWe = False
           , siJtagLoadRd = False
+          , siJtagLoadBe = 0
           }
     )
       <$> inFullS
@@ -1802,6 +1828,7 @@ socSimAlteraUart progInit dataInit inSimS = outSimS
           , siJtagLoadWdata = 0
           , siJtagLoadWe = False
           , siJtagLoadRd = False
+          , siJtagLoadBe = 0
           }
     )
       <$> inSimS

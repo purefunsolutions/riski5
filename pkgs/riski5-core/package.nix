@@ -1040,6 +1040,7 @@ in
             .JTAG_LOAD_WDATA (jtag_load_wdata),
             .JTAG_LOAD_WE    (jtag_load_we),
             .JTAG_LOAD_RD    (jtag_load_rd),
+            .JTAG_LOAD_BE    (jam_master_byteenable),
             .LEDR        (LEDR),
             .LEDG        (LEDG),
             .LCD_DATA    (LCD_DATA),
@@ -1316,13 +1317,114 @@ in
             .source_ena   (1'b0)
         );
 
-        // Task #146: SDST + SDIO altsource_probe SLD nodes (which
-        // exposed riski5_sdram_cdc_bridge state for task #142
-        // diagnostics) were removed when the bridge + Altera SDRAM
-        // IP were dropped. The pure-Clash 'Riski5.SdrController'
-        // is small enough to instrument directly inside the Clash
-        // module if we ever need finer-grained SDRAM diagnostics
-        // again.
+        // ----- altsource_probe — last DRAM_* WRITE / READ snapshot --
+        // Task #146 hardware-fault diagnostic: capture the DRAM_*
+        // pin values at every WRITE / READ command edge so we can
+        // compare what the FPGA *actually* drove (= the I/O-cell
+        // flop output going onto the pad) against what the
+        // SdrController INTENDED to drive. Pre-fix the chip was
+        // returning the correct hi-half + dropped lo-half pattern
+        // (`wrote 0xdeadbeef → read 0xdeaddead`). After the SDC +
+        // FAST_OUTPUT_REGISTER + +90° DRAM_CLK landed, STA closed
+        // (+2.4 ns slack) but the silicon symptom is unchanged —
+        // and a DRAM_ADDR[0] ↔ DRAM_ADDR[1] pin-swap test (move
+        // the col-LSB to chip A1 instead of chip A0) didn't change
+        // the failure pattern either, ruling out single-pin stuck
+        // faults on PIN_T6 / chip A0. Reading LSWP after a known
+        // master_write_32 will show whether the FPGA pin-side ADDR
+        // / DQ / BA / DQM actually toggle as expected, or whether
+        // something inside the wrapper / fabric path is collapsing
+        // the col-LSB.
+        //
+        // LSWP layout (LSB-first, easy to bit-extract from Tcl):
+        //   [7:0]    write_count   (8-bit count of WRITE commands seen, wraps)
+        //   [15:8]   read_count    (8-bit count of READ commands seen, wraps)
+        //   [27:16]  last_write_addr (DRAM_ADDR[11:0] at WRITE edge)
+        //   [29:28]  last_write_ba   (DRAM_BA[1:0] at WRITE edge)
+        //   [31:30]  last_write_dqm  ({DRAM_UDQM, DRAM_LDQM} at WRITE edge)
+        //   [47:32]  last_write_dq   (DRAM_DQ[15:0] at WRITE edge)
+        //   [59:48]  last_read_addr  (DRAM_ADDR[11:0] at READ edge)
+        //   [63:60]  reserved
+        //
+        // Trigger condition: WRITE = CS_N=0, RAS_N=1, CAS_N=0, WE_N=0.
+        //                    READ  = CS_N=0, RAS_N=1, CAS_N=0, WE_N=1.
+        // Both sample the values directly off the (registered) chip-
+        // bound pins so the Tco of the FAST_OUTPUT_REGISTER cell IS
+        // already accounted for — what we capture is what the chip
+        // pad sees on the same edge.
+        wire dram_is_write_cmd = (DRAM_CS_N == 1'b0)
+                              && (DRAM_RAS_N == 1'b1)
+                              && (DRAM_CAS_N == 1'b0)
+                              && (DRAM_WE_N == 1'b0);
+        wire dram_is_read_cmd  = (DRAM_CS_N == 1'b0)
+                              && (DRAM_RAS_N == 1'b1)
+                              && (DRAM_CAS_N == 1'b0)
+                              && (DRAM_WE_N == 1'b1);
+
+        reg [11:0] last_write_addr_r = 12'h000;
+        reg [1:0]  last_write_ba_r   = 2'b00;
+        reg [15:0] last_write_dq_r   = 16'h0000;
+        reg [1:0]  last_write_dqm_r  = 2'b00;
+        reg [11:0] last_read_addr_r  = 12'h000;
+        reg [7:0]  write_count_r     = 8'h00;
+        reg [7:0]  read_count_r      = 8'h00;
+
+        always @(posedge clkBus or negedge rstBus_n) begin
+            if (!rstBus_n) begin
+                last_write_addr_r <= 12'h000;
+                last_write_ba_r   <= 2'b00;
+                last_write_dq_r   <= 16'h0000;
+                last_write_dqm_r  <= 2'b00;
+                last_read_addr_r  <= 12'h000;
+                write_count_r     <= 8'h00;
+                read_count_r      <= 8'h00;
+            end else begin
+                if (dram_is_write_cmd) begin
+                    // DRAM_DQ is bidirectional; during the WRITE edge
+                    // the FPGA owns it (DqOe=True for that cycle), so
+                    // sampling the pad value gives us the data the
+                    // chip is supposed to latch.
+                    last_write_addr_r <= DRAM_ADDR;
+                    last_write_ba_r   <= DRAM_BA;
+                    last_write_dq_r   <= DRAM_DQ;
+                    last_write_dqm_r  <= {DRAM_UDQM, DRAM_LDQM};
+                    write_count_r     <= write_count_r + 8'h01;
+                end
+                if (dram_is_read_cmd) begin
+                    last_read_addr_r <= DRAM_ADDR;
+                    read_count_r    <= read_count_r + 8'h01;
+                end
+            end
+        end
+
+        wire [63:0] sdram_pin_probe = {
+            4'b0000,            // [63:60] reserved
+            last_read_addr_r,   // [59:48]
+            last_write_dq_r,    // [47:32]
+            last_write_dqm_r,   // [31:30]
+            last_write_ba_r,    // [29:28]
+            last_write_addr_r,  // [27:16]
+            read_count_r,       // [15:8]
+            write_count_r       // [7:0]
+        };
+
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (64),
+            .instance_id              ("LSWP"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (8),
+            .enable_metastability     ("NO")
+        ) u_sdram_pin_probe (
+            .probe        (sdram_pin_probe),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
 
       endmodule
       EOF

@@ -229,6 +229,15 @@ topEntity ::
   --   The result lands on @JTAG_LOAD_RDATA@ once
   --   @JTAG_LOAD_BUSY@ deasserts.
   "JTAG_LOAD_RD" ::: Signal DomBus Bool ->
+  -- | L-3 JTAG-load: 4-bit byte-enable for the JTAG-Master write
+  --   (active-high). Wired straight from the Altera
+  --   JTAG-Avalon-Master IP's @master_byteenable@ output via the
+  --   wrapper. Lets master_write_8 / master_write_16 actually mask
+  --   the chip-side byte lanes; an earlier revision hard-coded
+  --   this to @0xF@ inside @jtagMuxedSdram@ which silently
+  --   promoted every JTAG sub-word write into a 32-bit write
+  --   (surfaced by the LSWP probe on 2026-05-01).
+  "JTAG_LOAD_BE" ::: Signal DomBus (BitVector 4) ->
   ""
     ::: ( "LEDR" ::: Signal DomBus (BitVector 18)
         , "LEDG" ::: Signal DomBus (BitVector 9)
@@ -314,7 +323,8 @@ topEntity
   jtagLoadAddrS
   jtagLoadWdataS
   jtagLoadWeS
-  jtagLoadRdS =
+  jtagLoadRdS
+  jtagLoadBeS =
   withClockResetEnable clkBus rstBus enableGen
     $ let -- The SoC consumes 'sdramReplyS' inside 'inS' and produces
           -- the matching 'sdramBusS' inside 'outS'; we close the loop
@@ -324,7 +334,7 @@ topEntity
           -- because the controller and the SoC each carry registers
           -- on this path.
           inS =
-            ( \sw key dq ur urRdy urIrq sdr cr co jlm jla jlw jlwe jlrd ->
+            ( \sw key dq ur urRdy urIrq sdr cr co jlm jla jlw jlwe jlrd jlbe ->
                 SocIn
                   { siSwitches = sw
                   , siKeys = key
@@ -350,6 +360,7 @@ topEntity
                   , siJtagLoadWdata = jlw
                   , siJtagLoadWe = jlwe
                   , siJtagLoadRd = jlrd
+                  , siJtagLoadBe = jlbe
                   })
               <$> swS
               <*> keyS
@@ -365,6 +376,7 @@ topEntity
               <*> jtagLoadWdataS
               <*> jtagLoadWeS
               <*> jtagLoadRdS
+              <*> jtagLoadBeS
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           sdramBusS = soSdramBus <$> outS
           (sdramReplyS, sdramPinsS) =
