@@ -1777,45 +1777,128 @@ state.**
 
 ## Blocked / parked
 
-- **task #146 — JTAG-Master upper-16-bit write drop (still in
-  progress; needs board power-cycle).**
-  - Pure-Clash `Riski5.SdrController` is wired into the SoC,
-    Altera SDRAM Controller IP + CDC bridge + second PLL all
-    removed (commits `9b73726`, `8b0eda6`, `5d8a9fe`).
-  - Original Altera-IP "upper-16 dropped" symptom is gone
-    (e.g. wrote 0xdeadbeef → read 0x0030beef on the IP build).
-  - New deterministic silicon symptom under `Riski5.SdrController`:
-    even-column writes (col[0]=0) silently drop, odd-column writes
-    commit. Reads of even columns return whatever the most recent
-    odd-column write committed. Manifests as
-    `wrote 0xdeadbeef → read 0xdeaddead` on `nix run .#sdram-write-pattern-test`,
-    25/29 fail.
-  - Cabal sim (`case_loHiPair`, `case_alteraIpWrapper`) passes
-    even+odd cols round-trip cleanly — the bug is silicon-only.
-  - Tried + reverted: manual PRECHARGE-ALL between transactions
-    (made first write hang); FAST_OUTPUT_REGISTER on DRAM_DQ
-    (delayed write data 1 cycle, chip captured stale DQ, first
-    write hung); FPGA-side input register on dqInS (no change).
-    Real fixes that landed alongside: BL=1 mode register (was
-    BL=2, tail of previous attempts; deterministic pattern was
-    unmasked by this), refresh interval scaled for 40 MHz
-    (was 21 µs > 15.6 µs spec), init NOP delay scaled for
-    40 MHz (was 540 µs at 108 MHz cycles, now 102.5 µs).
-  - **CURRENT BLOCKER**: after the most recent round of
-    experiments, every JTAG-Master transaction times out at 60 s
-    even on a re-flash of a known-partial-passing bitstream. The
-    chip's row-buffer state appears wedged — JTAG re-flash does
-    NOT power-cycle the SDRAM chip itself. Power-cycle the DE2
-    via the on-board switch, then re-run
-    `nix run .#sdram-write-pattern-test` to get back to the 4/29
-    partial-pass baseline before continuing investigation.
-  - **Next diagnostic ideas**: SignalTap waveform of DRAM_*
-    pins during a Test 1 transaction (need to add a SignalTap
-    block to the wrapper); compare what the OLD Altera IP
-    drives on DRAM_ADDR[0] during WRITE vs my SdrController
-    (since the IP got even-col writes correct); check whether
-    SDRAM_DQ_OE drops too early relative to the chip's hold
-    window — this remains the most plausible "simple" cause.
+- **task #146 — Pure-Clash SdrController silicon-only write/read corruption (paused for hardware migration).**
+
+  ### What landed
+  - Altera SDRAM Controller IP + CDC bridge + second PLL all
+    dropped. Pure-Clash `Riski5.SdrController` runs single-domain
+    on `clkBus` (40 MHz), drives DRAM_* chip pins directly.
+    Commits: `9b73726` (SoC integration), `8b0eda6` (BL=1 +
+    refresh interval + init NOP scaled for 40 MHz), `5d8a9fe`
+    (FAST_OUTPUT_REGISTER negative-result note), `dcfa067` (this
+    TODO).
+  - 268/268 cabal tests green (sim is clean for both even and
+    odd columns, both round-trip and integration tests).
+
+  ### What the bug looks like on silicon
+  - **Both JTAG-Master path *and* core path show the same SDRAM
+    corruption** — confirmed by running both
+    `nix run .#sdram-write-pattern-test` (JTAG-Master) and
+    `nix run .#flash-riski5` + `nix run .#console` (MemTest
+    firmware running on the core).
+  - Pattern test (single-word writes, 4/29 partial pass on the
+    "lucky" bitstream `r0s549995qp1zcss47fphlk5wpg4pdkx`):
+    `wrote 0xdeadbeef → read 0xdeaddead` — even-column writes
+    drop, odd-column writes commit, reads of even cols return
+    the corresponding odd-col data.
+  - MemTest first failure (this rules out JTAG-Master entirely):
+    `F@80000000  G=807F807F  E=80000000` — addr-as-data verify
+    finds the first SDRAM cell holds `0x807F807F` instead of
+    `0x80000000` after a region-wide write pass. The 0x807F807F
+    pattern doesn't match my JTAG-test "lo-reads-return-odd-col"
+    model and is currently unexplained — almost certainly a
+    different state of the chip's row-buffer under the wider
+    core-driven write traffic.
+
+  ### What's been ruled out
+  - Not JTAG-Master / not the SoC's JTAG-load mux (MemTest
+    confirms the bug is below those layers).
+  - Not the bus mux's address bit handling (Riski5.Sdram's
+    32→16 split round-trips correctly in sim).
+  - Not pin-assignment (the OLD Altera IP using the SAME .qsf
+    pin map handled even-col writes correctly).
+
+  ### What's been tried + reverted
+  - Manual PRECHARGE-ALL between transactions (no auto-precharge
+    on R/W) → first write hung. Reverted.
+  - `FAST_OUTPUT_REGISTER ON` on `DRAM_DQ[*]` → I/O-cell flop
+    delays write data 1 cycle vs the WRITE command latched on
+    the same edge → chip captures stale DQ → first write hung.
+    Reverted (negative result documented in `5d8a9fe`).
+  - FPGA-side `register 0 dqInS` → no observed change in silicon
+    behaviour. Reverted.
+
+  ### What's been tried + landed
+  - **BL=1 in LMR** (was `A2:A0=001 = BL=2`). The chip was
+    driving 2 beats per READ; controller sampled only the first;
+    the chip then sat in the second-beat / auto-precharge window
+    during cycles the controller assumed were idle. Manifested
+    on silicon as a hang after a few master_read_32 calls. Fix
+    in commit `8b0eda6`.
+  - **Refresh interval scaled for 40 MHz**: `843 → 600` cycles.
+    The original 843 was correct at 108 MHz (7.81 µs); at 40 MHz
+    it works out to 21 µs > 15.625 µs spec.
+  - **Init NOP delay scaled for 40 MHz**: `21600 → 4100` cycles
+    (= 102.5 µs at 40 MHz, just over the chip's 100 µs spec).
+
+  ### Quartus non-determinism (silicon-side surprise)
+  - Quartus 13.0sp1 produces *different* bitstreams for
+    *byte-identical* Verilog. `r0s549995qp1zcss47fphlk5wpg4pdkx`
+    has 11473 LEs and gives the deterministic `0xdeaddead`
+    pattern (4/29 partial pass). A later rebuild with same
+    source produces 11434 LEs and hangs every transaction. The
+    Verilog diff between the two is ONLY source-comment line
+    numbers — actual logic identical. Lottery on placement +
+    timing margin. Without proper SDC `set_input_delay` /
+    `set_output_delay` constraints on DRAM_*, the fitter is
+    free to pick layouts where even-col writes happen to win or
+    lose the chip's setup/hold race.
+
+  ### Where to pick up (next computer + power-cycle capability)
+  1. Power-cycle the DE2 board (the JTAG re-flash path doesn't
+     reset the SDRAM chip's internal state).
+  2. `nix run .#flash-riski5-linux-master` (or `flash-riski5`
+     for MemTest).
+  3. Confirm `nix run .#sdram-write-pattern-test` returns to the
+     4/29 partial-pass baseline with `0xdeaddead` pattern. (If
+     the bitstream hangs all transactions, rebuild — Quartus
+     non-determinism may have produced a "bad" placement on the
+     last build; try `nix build --rebuild .#riski5-core-linux-master`
+     a few times until you get a working one, OR re-flash the
+     known-good `/nix/store/r0s549995qp1zcss47fphlk5wpg4pdkx-riski5-core-linux-master-0.1.0/Riski5.sof`
+     directly with `quartus_pgm`.)
+  4. Bug investigation menu (in rough order of cheap → expensive):
+     - **a)** Bump T_RCD / T_RP / T_WR by ~3× in
+       `defaultDe2Config` (e.g. 8 / 8 / 4 cycles) and re-flash.
+       If the pattern changes, the bug is silicon timing margin
+       (not logic). If it doesn't change, it's logic and the
+       investigation goes elsewhere.
+     - **b)** Add proper SDC constraints
+       (`set_output_delay`, `set_input_delay`) on `DRAM_*` so
+       Quartus's fitter has a defined timing target → builds
+       become reproducible across runs (eliminates the LE-count
+       lottery seen above).
+     - **c)** Add a SignalTap II block to `riski5_top.v` capturing
+       `DRAM_ADDR[0]`, `DRAM_DQ[15:0]`, `DRAM_DQ_OE`,
+       `DRAM_RAS_N`, `DRAM_CAS_N`, `DRAM_WE_N`, and the WRITE
+       command cycle. This is the only way to see what the chip
+       actually sees on a misbehaving even-col write — sim and
+       altsource_probe just confirm what the controller
+       *intended* to drive.
+     - **d)** verilambda full-SoC sim (#140) — Verilator with
+       a behavioural SDRAM chip model would let us reproduce
+       the silicon failure cycle-by-cycle in the host without
+       needing the board.
+  5. Once the bug is fixed, re-run `nix run .#boot-linux-master`
+     end-to-end and confirm the kernel banner appears over
+     JTAG-UART.
+
+  ### Don't re-try
+  - Manual PRECHARGE-ALL.
+  - FAST_OUTPUT_REGISTER on DRAM_DQ.
+  - The `PhRead → PhCl direct` shortcut (broke chip-model sim;
+    a sim-friendly version requires also adjusting CL counter
+    and the chip model in lockstep, which the test catches).
 
 ## Open questions
 
