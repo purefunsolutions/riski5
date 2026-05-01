@@ -1777,7 +1777,63 @@ state.**
 
 ## Blocked / parked
 
-- **task #146 — Pure-Clash SdrController silicon write/read corruption — RESOLVED 2026-05-01 (commit landing momentarily).** SDRAM pattern test now reports `summary: 29 passed, 0 failed of 29 total` against the `riski5-core-coremark` variant. Single-line fix (`defaultDe2Config.sdrCasLatency = 2`, was 3) on top of the durable timing infrastructure (5ec5829), the JTAG-Master byteenable fix (3d3dcb2), and the SocSim-side regression test (04635b6). Task header retained below for the historical investigation log; the "Where to pick up" / "Next step" sections under it are now obsolete (= "Run the test, watch all 29 pass"). Linux-on-riski5 (L-0..L-9) is unblocked next.
+- **task #146 — Pure-Clash SdrController silicon write/read corruption — PARTIALLY FIXED 2026-05-01.**
+  - ✅ **JTAG-Master pattern test:** `nix run .#sdram-write-pattern-test`
+    reports `summary: 29 passed, 0 failed of 29 total` against the
+    `riski5-core-coremark` variant. The col=0 drop / BL=2 INTERLEAVED
+    chip-mode bug is FIXED in commit dda25b2 (`sdrCasLatency = 2`).
+    Reproduces across power-cycles.
+  - ❌ **Core-side MemTest (riski5-core variant):** the firmware
+    walks all 8 MB of SDRAM doing back-to-back 32-bit writes + reads
+    at the core's 40 MHz rate. SRAM passes; SDRAM fails intermittently
+    at a different address each run (e.g. `F@80000478 G=8000FB57
+    E=7FFFFB57` — lo half correct, hi half = previous pattern's
+    value, classic upper-half-write drop). Looks like the original
+    pre-fix task #146 symptom but at a different layer.
+  - ❌ **Linux boot via JTAG-Master upload:** `nix run .#boot-linux-master`
+    streams the 3.2 MB kernel + 1.5 KB DTB to SDRAM in 256-word (1 KB)
+    `master_write_32` chunks. The first chunk hangs the SDRAM
+    controller after ~10 s (`SEVERE: master_write_32: This transaction
+    did not complete in 60 seconds`). The chunk is 512 consecutive
+    chip-WRITE commands; one of them apparently jams the controller.
+
+  Hypothesis: the original task #146 symptom was two bugs layered.
+  We've only fixed the first (BL=2 INT chip-mode from a CL=3 LMR).
+  The second is a sustained-back-to-back-writes failure that the
+  slow JTAG-Master pattern test (~ms gap between each 32-bit op)
+  never exercised. Both core MemTest (40 MHz back-to-back) and the
+  JTAG kernel upload (256-word burst) DO exercise it and fail.
+
+  Possible causes for the rate-related second bug (in rough order
+  of probability):
+  - Refresh interval (`sdrRefreshIntervalCycles = 600`) is too
+    aggressive — every ~600 cycles we slip a refresh into the
+    PhIdle→PhRefresh path. Maybe the chip sometimes loses a write
+    that lands during the same window the controller is about to
+    refresh. Bumping to 800 (or rate-limiting refresh-into-active
+    transitions) is a cheap test.
+  - T_RC violation across two consecutive 32-bit writes — between
+    the hi-half WRITE-with-AP of transaction N and the lo-half
+    ACTIVATE of transaction N+1, our controller waits T_WR=2 +
+    T_RP=3 + 1 idle cycle = 6 chip cycles. T_RC datasheet min for
+    IS42S16400-7TL is 67.5 ns = 3 cycles at 40 MHz. So we're 2x
+    over spec, but the chip might need more margin in practice.
+  - The double-latch case in PhIdle (controller transitions to
+    PhActivate at the same cycle Sdram is about to switch from
+    SWriteLoReq to SWriteHiReq) — needs careful waveform analysis
+    to confirm whether the controller actually executes a duplicate
+    lo write that LSWP's `write_count` somehow doesn't observe.
+    The LSWP shows `+2` per master_write_32, not `+3`, so this
+    might not be real, but worth re-checking with extended LSWP
+    (capture FIRST write per CAPR pulse, not just LATEST).
+
+  ### Next step
+
+  Run `nix run .#flash-riski5` (MemTest) again with bumped
+  refresh-interval (e.g. 800 cycles) — if the SDRAM-walk failure
+  rate changes, refresh is implicated. If unchanged, look at T_WR
+  / T_RP / T_RC bumps. Then re-run boot-linux-master to confirm
+  the kernel upload completes.
 
   ### What landed
   - Altera SDRAM Controller IP + CDC bridge + second PLL all
