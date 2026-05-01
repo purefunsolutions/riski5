@@ -1777,7 +1777,45 @@ state.**
 
 ## Blocked / parked
 
-- (nothing)
+- **task #146 — JTAG-Master upper-16-bit write drop (still in
+  progress; needs board power-cycle).**
+  - Pure-Clash `Riski5.SdrController` is wired into the SoC,
+    Altera SDRAM Controller IP + CDC bridge + second PLL all
+    removed (commits `9b73726`, `8b0eda6`, `5d8a9fe`).
+  - Original Altera-IP "upper-16 dropped" symptom is gone
+    (e.g. wrote 0xdeadbeef → read 0x0030beef on the IP build).
+  - New deterministic silicon symptom under `Riski5.SdrController`:
+    even-column writes (col[0]=0) silently drop, odd-column writes
+    commit. Reads of even columns return whatever the most recent
+    odd-column write committed. Manifests as
+    `wrote 0xdeadbeef → read 0xdeaddead` on `nix run .#sdram-write-pattern-test`,
+    25/29 fail.
+  - Cabal sim (`case_loHiPair`, `case_alteraIpWrapper`) passes
+    even+odd cols round-trip cleanly — the bug is silicon-only.
+  - Tried + reverted: manual PRECHARGE-ALL between transactions
+    (made first write hang); FAST_OUTPUT_REGISTER on DRAM_DQ
+    (delayed write data 1 cycle, chip captured stale DQ, first
+    write hung); FPGA-side input register on dqInS (no change).
+    Real fixes that landed alongside: BL=1 mode register (was
+    BL=2, tail of previous attempts; deterministic pattern was
+    unmasked by this), refresh interval scaled for 40 MHz
+    (was 21 µs > 15.6 µs spec), init NOP delay scaled for
+    40 MHz (was 540 µs at 108 MHz cycles, now 102.5 µs).
+  - **CURRENT BLOCKER**: after the most recent round of
+    experiments, every JTAG-Master transaction times out at 60 s
+    even on a re-flash of a known-partial-passing bitstream. The
+    chip's row-buffer state appears wedged — JTAG re-flash does
+    NOT power-cycle the SDRAM chip itself. Power-cycle the DE2
+    via the on-board switch, then re-run
+    `nix run .#sdram-write-pattern-test` to get back to the 4/29
+    partial-pass baseline before continuing investigation.
+  - **Next diagnostic ideas**: SignalTap waveform of DRAM_*
+    pins during a Test 1 transaction (need to add a SignalTap
+    block to the wrapper); compare what the OLD Altera IP
+    drives on DRAM_ADDR[0] during WRITE vs my SdrController
+    (since the IP got even-col writes correct); check whether
+    SDRAM_DQ_OE drops too early relative to the chip's hold
+    window — this remains the most plausible "simple" cause.
 
 ## Open questions
 
