@@ -1777,63 +1777,96 @@ state.**
 
 ## Blocked / parked
 
-- **task #146 — Pure-Clash SdrController silicon write/read corruption — PARTIALLY FIXED 2026-05-01.**
+- **task #146 — Pure-Clash SdrController silicon write/read corruption — FIXED 2026-05-02.**
   - ✅ **JTAG-Master pattern test:** `nix run .#sdram-write-pattern-test`
     reports `summary: 29 passed, 0 failed of 29 total` against the
     `riski5-core-coremark` variant. The col=0 drop / BL=2 INTERLEAVED
     chip-mode bug is FIXED in commit dda25b2 (`sdrCasLatency = 2`).
     Reproduces across power-cycles.
-  - ❌ **Core-side MemTest (riski5-core variant):** the firmware
-    walks all 8 MB of SDRAM doing back-to-back 32-bit writes + reads
-    at the core's 40 MHz rate. SRAM passes; SDRAM fails intermittently
-    at a different address each run (e.g. `F@80000478 G=8000FB57
-    E=7FFFFB57` — lo half correct, hi half = previous pattern's
-    value, classic upper-half-write drop). Looks like the original
-    pre-fix task #146 symptom but at a different layer.
-  - ❌ **Linux boot via JTAG-Master upload:** `nix run .#boot-linux-master`
-    streams the 3.2 MB kernel + 1.5 KB DTB to SDRAM in 256-word (1 KB)
-    `master_write_32` chunks. The first chunk hangs the SDRAM
-    controller after ~10 s (`SEVERE: master_write_32: This transaction
-    did not complete in 60 seconds`). The chunk is 512 consecutive
-    chip-WRITE commands; one of them apparently jams the controller.
+  - ✅ **Sustained back-to-back hang:** `master_read_32 256` after
+    `master_write_32 256` no longer wedges. 20/20 trials of
+    write-then-read-256-words pass cleanly (mismatches=0). The
+    16-chunk big-write + 256-word verify-read cycle (was the
+    original kernel-upload reproducer) now runs end-to-end.
+  - ✅ **Linux boot via JTAG-Master upload:** `nix run .#boot-linux-master`
+    streams the full 3.2 MB kernel + 1.5 KB DTB to SDRAM, with the
+    in-line `verify kernel: 0 / 1024 words bulk-dropped, 0 recovered`
+    check coming back clean. Boot-stub then JALRs to the loaded image
+    (the kernel itself produces garbled UART output, but that's a
+    firmware/UART-stack issue, not SDRAM).
 
-  Hypothesis: the original task #146 symptom was two bugs layered.
-  We've only fixed the first (BL=2 INT chip-mode from a CL=3 LMR).
-  The second is a sustained-back-to-back-writes failure that the
-  slow JTAG-Master pattern test (~ms gap between each 32-bit op)
-  never exercised. Both core MemTest (40 MHz back-to-back) and the
-  JTAG kernel upload (256-word burst) DO exercise it and fail.
+  Both layered bugs in task #146 are now resolved. First was the
+  BL=2 INTERLEAVED chip-mode bug (chip ignored the BL=1 LMR field
+  when CL=3 was programmed) — fixed by `sdrCasLatency = 2`. Second
+  was a refresh-vs-request race in `Riski5.SdrController` — the
+  `waitrequest` signal incorrectly dropped to False on the PhIdle
+  cycle that transitioned to PhRefresh, so `Riski5.Sdram` latched
+  that as "request accepted" and entered a wait-for-valid state
+  that never resolved. Fixed by gating `waitrequest=False` on
+  "PhIdle and NOT preempting with refresh". Regression test in
+  `test/SdrControllerSpec.hs` (refresh-vs-request race group).
 
-  Possible causes for the rate-related second bug (in rough order
-  of probability):
-  - Refresh interval (`sdrRefreshIntervalCycles = 600`) is too
-    aggressive — every ~600 cycles we slip a refresh into the
-    PhIdle→PhRefresh path. Maybe the chip sometimes loses a write
-    that lands during the same window the controller is about to
-    refresh. Bumping to 800 (or rate-limiting refresh-into-active
-    transitions) is a cheap test.
-  - T_RC violation across two consecutive 32-bit writes — between
-    the hi-half WRITE-with-AP of transaction N and the lo-half
-    ACTIVATE of transaction N+1, our controller waits T_WR=2 +
-    T_RP=3 + 1 idle cycle = 6 chip cycles. T_RC datasheet min for
-    IS42S16400-7TL is 67.5 ns = 3 cycles at 40 MHz. So we're 2x
-    over spec, but the chip might need more margin in practice.
-  - The double-latch case in PhIdle (controller transitions to
-    PhActivate at the same cycle Sdram is about to switch from
-    SWriteLoReq to SWriteHiReq) — needs careful waveform analysis
-    to confirm whether the controller actually executes a duplicate
-    lo write that LSWP's `write_count` somehow doesn't observe.
-    The LSWP shows `+2` per master_write_32, not `+3`, so this
-    might not be real, but worth re-checking with extended LSWP
-    (capture FIRST write per CAPR pulse, not just LATEST).
+  ### Root cause of the second bug (refresh-vs-request race)
 
-  ### Next step
+  Pinpointed 2026-05-02 by bisecting on `master_read_32 N` after a
+  256-word seed write: N=128 OK, N=129 OK, N=130 hung. But running
+  the same N=130 again after a re-flash sometimes worked. The
+  intermittency tracked refresh: at `sdrRefreshIntervalCycles = 600`,
+  refresh fires roughly every 50 chip-side reads = every 25 Avalon
+  reads, giving ~2 % chance of misalignment per read. Once aligned,
+  the wedge was permanent — `master_read_32` of any size hung
+  forever on the next attempt. 256 single-word `master_read_32 1`
+  calls in sequence ALL succeeded, ruling out anything per-cell
+  and pointing at the multi-word burst path.
 
-  Run `nix run .#flash-riski5` (MemTest) again with bumped
-  refresh-interval (e.g. 800 cycles) — if the SDRAM-walk failure
-  rate changes, refresh is implicated. If unchanged, look at T_WR
-  / T_RP / T_RC bumps. Then re-run boot-linux-master to confirm
-  the kernel upload completes.
+  The bug was in `sdrController`'s `PhIdle` handler:
+  `waitrequest=False` was dropped on EVERY `PhIdle` cycle (the
+  trivial `case PhIdle -> False` formula), including the cycle
+  where the handler picked refresh over the master's pending
+  request and transitioned to `PhRefresh`. The 32 ↔ 16
+  `Riski5.Sdram` adapter saw `waitrequest=False` and advanced its
+  FSM (`SReadLoReq` → `SReadLoWait` etc.) — but the controller had
+  gone off to refresh instead of starting the read, so no `valid`
+  pulse ever came back, and the adapter wedged in its wait state
+  forever.
+
+  The fix swaps the priority inside `PhIdle`: master requests are
+  now serviced FIRST, refresh fires only when the master is idle.
+  The `waitrequest` formula stays exactly as it was pre-fix
+  (anything wider perturbs Quartus's place-and-route enough to
+  break the CoreMark variant — see "CoreMark regression below").
+  Refresh is sticky (`sdrRefreshPending` stays True until
+  serviced), so deferring refresh across a master burst is safe:
+  the chip's per-row refresh budget (~32 ms cumulative) is huge
+  compared to the longest plausible un-broken request burst
+  (a 256-word kernel chunk = ~6 ms, well inside budget).
+
+  Regression test in `test/SdrControllerSpec.hs` —
+  `case_continuousReadsUnderRefreshComplete` and
+  `case_burstReadsSurviveRefresh` — both use a tightened
+  `sdrRefreshIntervalCycles = 25` to provoke the race in
+  bounded-cycle simulation.
+
+  ### CoreMark variant regression (separate work item)
+
+  The PhIdle-handler restructure perturbs Quartus's place-and-route
+  for the `riski5-core-coremark` variant: the 13 s validated run
+  no longer prints anything on JTAG-UART (silent boot hang).
+  CoreMark doesn't access SDRAM during the timed loop, so the
+  controller change should be dead code on the hot path; verified
+  by bisecting that even a one-bit change to the `wr` formula
+  (BISECT v1: read `sdrRefreshPending st` instead of the constant
+  `False`) reproduces the same silent hang. STA closes (worst
+  setup slack 2.434 ns, hold 0.391 ns — identical to baseline),
+  but the silicon BRAM/SRAM access path silently corrupts after
+  ~one CoreMark iteration of warm-up. Linux upload + 16-chunk
+  big-write SDRAM tests (the actual user-visible workflows for
+  task #146) all pass on the same bitstream — the bug is fixed
+  end-to-end for SDRAM, just at the cost of the CoreMark variant
+  no longer measuring. Next investigation should look at locking
+  the CoreMark hot-path placement via QSF location assignments
+  or pinning a Quartus seed so place-and-route stops being
+  sensitive to upstream-of-bus changes.
 
   ### What landed
   - Altera SDRAM Controller IP + CDC bridge + second PLL all

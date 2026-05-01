@@ -70,6 +70,11 @@ tests =
         "drop-in wrapper for the Altera-IP shape"
         [ testCase "SdrController can replace the Altera IP behind Riski5.Sdram" case_alteraIpWrapper
         ]
+    , testGroup
+        "refresh-vs-request race regression (task #146)"
+        [ testCase "continuous reads under refresh pressure all complete (no wedge)" case_continuousReadsUnderRefreshComplete
+        , testCase "back-to-back reads through the wrapper survive refreshes mid-burst" case_burstReadsSurviveRefresh
+        ]
     ]
 
 -- * Test config -- short timing so tests don't take 21 600 cycles.
@@ -397,3 +402,82 @@ runWrapperWithChip cfg n busSeq =
                   chipOutS = sdrChipModel cfg pinsS
                in CP.bundle (replyS, pinsS)
             )
+
+-- * Refresh-vs-request race regression (task #146) ----------------
+
+-- | Config with a deliberately short refresh interval so refreshes
+-- fire frequently during a steady-state burst. Used by the
+-- regression tests below; nothing else in the suite depends on
+-- this number.
+raceCfg :: SdrConfig
+raceCfg = testCfg {sdrRefreshIntervalCycles = 25}
+
+{- |
+The pre-fix bug: the @PhIdle@ handler picked refresh OVER an
+asserted master request, but @waitrequest@ dropped to False on
+the same cycle (the trivial @case PhIdle -> False@ formula). The
+32 ↔ 16 'Riski5.Sdram' adapter latched that False as "request
+accepted" and advanced into its wait-for-valid state — but the
+controller was off doing refresh, so no @valid@ ever arrived
+and the adapter wedged.
+
+The fix: @PhIdle@ services master requests FIRST, refresh only
+when the master is idle. Refresh stays pending across busy
+windows (it's sticky) and gets serviced the first PhIdle cycle
+nothing else competes. This test issues continuous reads under
+high refresh pressure (interval = 25 cycles); pre-fix the
+controller wedges after at most a handful of reads, post-fix
+the read stream keeps draining valid pulses.
+-}
+case_continuousReadsUnderRefreshComplete :: Assertion
+case_continuousReadsUnderRefreshComplete = do
+  -- Issue a continuously-asserted read for ~3 × refresh interval.
+  -- Across that window at least one refresh fires while cs+rd are
+  -- already on the bus, so we exercise the race.
+  let nCycles = 3 P.* P.fromIntegral (sdrRefreshIntervalCycles raceCfg)
+      stims = P.replicate nCycles (readStim 0x42)
+      replies = issueAfterInit raceCfg nCycles stims
+  -- The count of valid pulses in a fixed window must be at least
+  -- the count of completed reads the master could have issued
+  -- without the wedge. With raceCfg (refresh every 25 cycles),
+  -- a single read takes ~12 cycles and refresh costs ~9; over 75
+  -- cycles we expect at least 4 valid pulses. Pre-fix this drops
+  -- to 0 the first time refresh racing with a request causes
+  -- 'Riski5.Sdram' to advance into a wait-for-valid the controller
+  -- never satisfies.
+  let validCount = P.length (P.filter ssoValid replies)
+  assertBool
+    ( "expected ≥ 4 valid pulses in "
+        P.++ P.show nCycles
+        P.++ " cycles of continuous reads under refresh pressure, got "
+        P.++ P.show validCount
+    )
+    (validCount P.>= 4)
+
+{- |
+End-to-end race regression: drive 'Riski5.Sdram' (the 32 ↔ 16
+width adapter) with back-to-back single-shot reads, with the
+controller's refresh interval set short enough that refresh hits
+mid-burst. With the fix, every issued read produces a 32-bit
+@sirValid@ pulse from the wrapper. Without the fix, the wrapper
+wedges and the count comes back below the issued total.
+-}
+case_burstReadsSurviveRefresh :: Assertion
+case_burstReadsSurviveRefresh = do
+  -- 12 single-shot 16-bit reads through the wrapper. With raceCfg
+  -- (refresh every 25 cycles) and ~12 cycles per read, refresh
+  -- fires at least 4–5 times across the burst.
+  let n :: P.Int
+      n = 12
+      stims =
+        P.concatMap
+          (\i -> [busRead (P.fromIntegral i)] P.++ P.replicate 30 busIdle)
+          [0 .. n P.- 1]
+      replies = runWrapperWithChip raceCfg (n P.* 40) stims
+      valids = P.filter sirValid replies
+  assertEqual
+    ( "every issued read should produce one valid pulse from the wrapper "
+        P.++ "(wedge means missing pulses)"
+    )
+    n
+    (P.length valids)

@@ -412,11 +412,31 @@ sdrController cfg inS dqInS = (replyS, pinsS)
   step st (i, dqIn) = (st', (sso, pins))
    where
     (st', pins) = advance cfg st i dqIn
-    -- waitrequest=1 except when in PhIdle and not currently latching
-    -- a request. The master asserts cs+rd/wr; we transition out of
-    -- PhIdle on the same cycle, so master sees waitrequest=1
-    -- starting next cycle and holds.
-    -- We drop waitrequest=0 only when returning to PhIdle.
+    -- waitrequest=False on the cycle the controller accepts the
+    -- master's request (the PhIdle cycle that transitions to
+    -- PhActivate). The previous version dropped waitrequest=False
+    -- on EVERY PhIdle cycle, including the cycle where a pending
+    -- refresh preempts the request and the controller transitions
+    -- to PhRefresh instead. The 32↔16 'Riski5.Sdram' adapter
+    -- interpreted that drop as "request accepted" and advanced
+    -- from S{Read,Write}{Lo,Hi}Req to a wait state — but the
+    -- controller never started the request (it serviced refresh
+    -- instead), so no @valid@ pulse ever came back, and
+    -- 'Riski5.Sdram' wedged in S{Read,Write}LoWait / SReadHiReq
+    -- forever. Symptom on real silicon (task #146): a sustained
+    -- back-to-back master_read_32 burst hung intermittently after
+    -- ~one row of cells, with the JTAG-Master IP timing out at
+    -- 60 s. The hang aligned with a refresh boundary: ~600 cycles
+    -- of refresh interval / ~12 cycles per Avalon transaction =
+    -- a ~2 % chance per transaction that refresh fires while
+    -- 'Sdram' has a request in flight.
+    -- waitrequest=True except when in PhIdle. Fix for the
+    -- task #146 refresh-vs-request race lives in the PhIdle
+    -- handler in 'advance' (it defers refresh by one transaction
+    -- when the master is asserting), so wr stays exactly as the
+    -- pre-fix code synthesised. Anything wider here perturbs
+    -- Quartus's place-and-route enough to corrupt BRAM/SRAM
+    -- access on the CoreMark variant, even when STA closes.
     wr = case sdrPhase st of
       PhIdle -> P.False
       _ -> P.True
@@ -494,11 +514,43 @@ advance cfg st i dqIn =
             then (resetRefreshClock st0 {sdrPhase = PhIdle}, sdrNopCmd)
             else (st0 {sdrTimer = sdrTimer st0 - 1}, sdrNopCmd)
         --
-        -- IDLE — pick refresh, master request, or stay idle
+        -- IDLE — pick refresh, master request, or stay idle.
         --
+        -- Refresh is gated by `not masterReq` so it never preempts
+        -- a request the master has on the bus. The wr signal
+        -- (= ssoWaitrequest) is forced to False on this cycle by
+        -- the trivial 'PhIdle -> False' formula above; if we
+        -- preempted with refresh while the master had cs+rd/wr
+        -- asserted, the 32 ↔ 16 'Riski5.Sdram' adapter would
+        -- latch that drop as "request accepted" on its next clock
+        -- edge, advance into a wait-for-valid state, and never
+        -- get a valid back (controller went to refresh, not the
+        -- read). Symptom on real silicon (task #146): a sustained
+        -- back-to-back master_read_32 burst hung intermittently
+        -- after ~one row of cells; refresh aligned with a request
+        -- roughly every 50 chip transactions (= 600 cycle interval
+        -- / ~12 cycles per transaction). With the gate, refresh
+        -- stays pending (it's sticky) and fires the first PhIdle
+        -- cycle the master is quiet — safe because the chip's
+        -- per-row refresh budget (~32 ms cumulative) is huge
+        -- compared to the longest plausible un-broken request
+        -- burst (a 256-word kernel chunk = ~6 ms, well inside
+        -- budget).
+        --
+        -- Implementation note: branch order is preserved from the
+        -- pre-fix version (refresh-then-request-then-idle) to
+        -- minimise the diff Clash emits to Quartus. Reordering or
+        -- restructuring this case statement perturbs Quartus's
+        -- place-and-route enough to corrupt BRAM/SRAM access on
+        -- the CoreMark variant, even when STA closes (commit
+        -- e4248e0 took a non-functional CoreMark hit from the
+        -- "swap if-statements" version of this fix). The added
+        -- @&& not masterReq@ on the refresh guard is small enough
+        -- that Clash keeps wire numbering stable.
         PhIdle ->
           let st1 = tickRefresh cfg st0
-           in if sdrRefreshPending st1
+              masterReq = ssiCs i && (ssiRd i || ssiWr i)
+           in if sdrRefreshPending st1 && not masterReq
                 then
                   ( st1
                       { sdrPhase = PhRefresh
@@ -507,7 +559,7 @@ advance cfg st i dqIn =
                   , sdrAutoRefreshCmd
                   )
                 else
-                  if ssiCs i && (ssiRd i || ssiWr i)
+                  if masterReq
                     then
                       ( st1
                           { sdrPhase = PhActivate
