@@ -88,6 +88,11 @@ testCfg =
     , sdrRefreshIntervalCycles = 60000 -- effectively disabled for init tests
     , sdrInitNopCycles = 10 -- short, just enough to verify the count
     , sdrInitRefreshCount = 8
+    , -- 'sdrControllerAsAlteraIp' / chip-model paths in this test
+      -- module drive DRAM_DQ combinationally — no I/O-cell flops
+      -- between the controller and the chip — so the controller
+      -- waits exactly CL cycles for read data.
+      sdrPipelineLatency = 0
     }
 
 -- | Idle master input: cs/rd/wr all low for the duration.

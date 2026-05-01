@@ -1854,48 +1854,123 @@ state.**
     free to pick layouts where even-col writes happen to win or
     lose the chip's setup/hold race.
 
-  ### Where to pick up (next computer + power-cycle capability)
-  1. Power-cycle the DE2 board (the JTAG re-flash path doesn't
-     reset the SDRAM chip's internal state).
-  2. `nix run .#flash-riski5-linux-master` (or `flash-riski5`
-     for MemTest).
-  3. Confirm `nix run .#sdram-write-pattern-test` returns to the
-     4/29 partial-pass baseline with `0xdeaddead` pattern. (If
-     the bitstream hangs all transactions, rebuild — Quartus
-     non-determinism may have produced a "bad" placement on the
-     last build; try `nix build --rebuild .#riski5-core-linux-master`
-     a few times until you get a working one, OR re-flash the
-     known-good `/nix/store/r0s549995qp1zcss47fphlk5wpg4pdkx-riski5-core-linux-master-0.1.0/Riski5.sof`
-     directly with `quartus_pgm`.)
-  4. Bug investigation menu (in rough order of cheap → expensive):
-     - **a)** Bump T_RCD / T_RP / T_WR by ~3× in
-       `defaultDe2Config` (e.g. 8 / 8 / 4 cycles) and re-flash.
-       If the pattern changes, the bug is silicon timing margin
-       (not logic). If it doesn't change, it's logic and the
-       investigation goes elsewhere.
-     - **b)** Add proper SDC constraints
-       (`set_output_delay`, `set_input_delay`) on `DRAM_*` so
-       Quartus's fitter has a defined timing target → builds
-       become reproducible across runs (eliminates the LE-count
-       lottery seen above).
-     - **c)** Add a SignalTap II block to `riski5_top.v` capturing
-       `DRAM_ADDR[0]`, `DRAM_DQ[15:0]`, `DRAM_DQ_OE`,
-       `DRAM_RAS_N`, `DRAM_CAS_N`, `DRAM_WE_N`, and the WRITE
-       command cycle. This is the only way to see what the chip
-       actually sees on a misbehaving even-col write — sim and
-       altsource_probe just confirm what the controller
-       *intended* to drive.
-     - **d)** verilambda full-SoC sim (#140) — Verilator with
-       a behavioural SDRAM chip model would let us reproduce
-       the silicon failure cycle-by-cycle in the host without
-       needing the board.
-  5. Once the bug is fixed, re-run `nix run .#boot-linux-master`
-     end-to-end and confirm the kernel banner appears over
-     JTAG-UART.
+  ### What landed 2026-05-01 — durable timing infrastructure (b done, lottery removed)
+
+  Three changes that have to land together — the corruption is
+  unchanged on silicon (see "Hardware-fault hypothesis" below),
+  but the lottery is gone and STA now reports +2.4 ns setup
+  slack on `dram_clk` so subsequent builds are deterministic.
+
+  - **PLL `u_altpll` clk2 = +90° (+6250 ps) on DRAM_CLK output.**
+    `pkgs/riski5-core/package.nix` adds a third PLL counter,
+    routed straight to the `DRAM_CLK` pin (no fabric clock comes
+    from it). Chip's clock edge now falls in the middle of the
+    FPGA's stable DQ / command window after the I/O-cell Tco.
+  - **Riski5.qsf — `FAST_OUTPUT_REGISTER ON` on every chip-bound
+    `DRAM_*` output, `FAST_OUTPUT_ENABLE_REGISTER` + `FAST_INPUT_REGISTER`
+    on DRAM_DQ.** Earlier attempt (commit `5d8a9fe`) only set
+    this on DRAM_DQ — broke writes because the I/O-cell flop
+    delayed DQ by one cycle vs the still-combinational WRITE
+    command. The fix is uniform registration across DQ + every
+    command/address pin (DRAM_CLK is *not* registered — it's a
+    direct PLL → pad combinational path).
+  - **`Riski5.SdrController.sdrControllerAsAlteraIpRegistered`** —
+    new wrapper that registers chip-side outputs with
+    `register sdrIdleCmd` and the DQ input with `register 0`,
+    giving Quartus a clean FF directly feeding each `DRAM_*` port
+    (which `FAST_OUTPUT_REGISTER` requires to actually pack).
+    New `SdrConfig.sdrPipelineLatency :: Unsigned 4` field (= 2
+    in `defaultDe2Config`, = 0 in `testCfg`) accounts for the
+    1 cycle output-reg delay + 1 cycle input-reg delay; PhCl now
+    waits `CL + sdrPipelineLatency - 1` cycles. `Riski5.sdc`
+    declares `dram_clk` as a generated clock from PLL clk2 and
+    constrains every chip-bound output (`set_output_delay -clock
+    dram_clk -max 2.0 / -min -1.3`) and DRAM_DQ input
+    (`set_input_delay -clock dram_clk -max 6.0 / -min 2.0`)
+    against IS42S16400-7TL's t_DS / t_DH / t_AC / t_OH.
+
+  After this commit, Quartus's STA `Slow Model Setup` reports:
+  - `dram_clk`: +2.434 ns slack ✓ (was -6.256 ns)
+  - `clk[0]`:   +5.072 ns slack ✓
+  Hold: dram_clk +19.2 ns, clk[0] +0.391 ns — both pass.
+  Fitter packs **68 registers into Cyclone II I/O cells** (was 32).
+  LE rises 11,463 → 11,701 (the new register-stage flops).
+
+  ### Hardware-fault hypothesis (next step — see investigation menu below)
+
+  Even with all three fixes engaging cleanly:
+  `nix run .#sdram-write-pattern-test` against the
+  `riski5-core-coremark` variant (no SDRAM use from firmware,
+  so the JTAG-Master always wins arbitration immediately) reports
+  exactly the same 4/29 partial-pass + `wrote 0xdeadbeef → read
+  0xdeaddead` lo-half-drop pattern as the lucky darkfort build
+  before any of these changes landed. Detail:
+
+  - Every `col=odd` (A0=1) write commits.
+  - Every `col=even` (A0=0) write drops.
+  - The col-even cell ends up holding the col-odd cell's
+    last-written value.
+
+  This is consistent with `DRAM_ADDR[0]` (PIN_T6) effectively
+  stuck at 1 at the chip — board-level fault on the trace, bad
+  solder joint, or chip-side stuck-at-1. NOT anything the
+  controller can fix in logic. Confirming this is now the
+  blocker for SDRAM bring-up.
+
+  Note: `riski5-core-linux-master` variant *hangs* the
+  pattern-test entirely (60 s timeout per transaction), not
+  because the SDRAM controller is broken but because the
+  Linux boot stub polls `SDRAM[0x807F_FFF4]` in a tight loop —
+  the corruption returns wrong data and the constant SDRAM
+  bus traffic prevents JTAG-Master from ever winning bus
+  ownership. CoreMark variant is the right test target while
+  the hardware fault is open.
+
+  ### Where to pick up (next session)
+
+  1. Power-cycle the DE2 board (`hermit-switcher` MCP /
+     `hermit-switcher off|on --device ShellyPlugSG3-8CBFEAA058B0`).
+  2. `nix run .#flash-riski5-coremark` (CoreMark variant — its
+     firmware never accesses SDRAM, so the JTAG-Master path is
+     never blocked by core-side polling).
+  3. `nix run .#sdram-write-pattern-test` should now reliably
+     give the **deterministic** 4/29 partial-pass with the
+     `0xdeaddead` lo-half-drop pattern. If you get hangs, it's
+     not the lottery — investigate whether the bitstream is
+     actually flashed and the board is powered.
+  4. Hardware-fault investigation (in order):
+     - **c)** SignalTap II block on `DRAM_ADDR[0]`, `DRAM_DQ[15:0]`,
+       `DRAM_DQ_OE`, `DRAM_RAS_N`, `DRAM_CAS_N`, `DRAM_WE_N`,
+       `DRAM_CS_N`. Trigger on the WRITE-command edge for an
+       even-col vs odd-col write and inspect the captured A0 trace.
+       If A0 is FPGA-driven correctly (toggles 0/1) but the chip
+       still stores the col-1 cell on both writes → chip-side
+       fault (internal A0 logic or stuck cell). If A0 looks stuck
+       at 1 even when FPGA drives 0 → board fault (open trace,
+       bad solder joint).
+     - **e)** Pin-swap test — temporarily swap the QSF assignment
+       for `DRAM_ADDR[0]` (PIN_T6) with `DRAM_ADDR[1]` (PIN_V4),
+       rebuild, re-test. If the failure pattern shifts to the
+       new physical pin → board-level fault localised to PIN_T6.
+       If the failure stays on the same logical address bit → the
+       fault is in the chip's A0 input or internal logic.
+     - **d)** verilambda full-SoC sim (#140) — Verilator with a
+       behavioural SDRAM chip model would let us reproduce the
+       silicon failure cycle-by-cycle in the host. Doesn't help
+       with hardware faults but rules in/out controller-side
+       contributions.
+
+  Investigation step **a)** (bump T_RCD/T_RP/T_WR ~3×) is no
+  longer the cheapest test — STA now confirms the existing
+  timings have +2.4 ns of slack; bumping them further wouldn't
+  change anything the chip sees.
+  Investigation step **b)** (SDC constraints) — done in the
+  commit above.
 
   ### Don't re-try
   - Manual PRECHARGE-ALL.
-  - FAST_OUTPUT_REGISTER on DRAM_DQ.
+  - FAST_OUTPUT_REGISTER on DRAM_DQ alone (must be uniform across
+    every DRAM_* output — already landed correctly in this commit).
   - The `PhRead → PhCl direct` shortcut (broke chip-model sim;
     a sim-friendly version requires also adjusting CL counter
     and the chip model in lockstep, which the test catches).

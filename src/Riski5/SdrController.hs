@@ -87,6 +87,10 @@ module Riski5.SdrController (
 
   -- * Drop-in wrapper for the Altera-IP shape (Riski5.Sdram)
   sdrControllerAsAlteraIp,
+
+  -- * Wrapper variant that registers chip-side IO into FPGA flops
+  --   (lets Quartus pack DRAM_* outputs into I/O cells)
+  sdrControllerAsAlteraIpRegistered,
 ) where
 
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..))
@@ -108,6 +112,15 @@ data SdrConfig = SdrConfig
   , sdrRefreshIntervalCycles :: Unsigned 16
   , sdrInitNopCycles :: Unsigned 16
   , sdrInitRefreshCount :: Unsigned 4
+  , -- | Extra cycles to wait between issuing READ and capturing
+    -- DQ, on top of the chip's CL. Set this to the round-trip
+    -- pipeline depth added by I/O-cell flops between the controller
+    -- and the chip pins (1 cycle for FAST_OUTPUT_REGISTER on
+    -- DRAM_* outputs + 1 cycle for FAST_INPUT_REGISTER on
+    -- DRAM_DQ inputs = 2 total). Set 0 for back-to-back chip
+    -- model tests where the controller drives the chip
+    -- combinationally.
+    sdrPipelineLatency :: Unsigned 4
   }
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
@@ -138,6 +151,10 @@ defaultDe2Config =
     , sdrRefreshIntervalCycles = 600
     , sdrInitNopCycles = 4100 -- ≥100 µs at 40 MHz period 25 ns (= 4000 cycles)
     , sdrInitRefreshCount = 8
+    , sdrPipelineLatency = 2 -- 1 cycle output reg + 1 cycle input reg
+    -- ^ Matches 'sdrControllerAsAlteraIpRegistered' which adds an
+    -- I/O-cell flop layer on the chip-side pins. With combinational
+    -- pin output (raw 'sdrControllerAsAlteraIp'), set to 0.
     }
 
 -- * Chip-side I/O ---------------------------------------------------
@@ -525,8 +542,11 @@ advance cfg st i dqIn =
         PhRead ->
           ( st0
               { sdrPhase = PhCl
-              , sdrTimer = resize (sdrCasLatency cfg) - 1
+              , sdrTimer = resize (sdrCasLatency cfg + sdrPipelineLatency cfg) - 1
               -- ^ READ counted as cycle 0; data on DQ at cycle CL.
+              -- 'sdrPipelineLatency' adds round-trip cycles for any
+              -- I/O-cell flops the wrapper inserts between this
+              -- controller and the chip pins (see SdrConfig docs).
               }
           , sdrNopCmd
           )
@@ -811,6 +831,58 @@ sdrControllerAsAlteraIp cfg busS dqInS = (replyS, pinsS)
       , sirValid = ssoValid o
       , sirWaitrequest = ssoWaitrequest o
       }
+
+{- |
+Same as 'sdrControllerAsAlteraIp' but inserts an extra clkBus-domain
+register on the chip-side outputs and on the DQ input, so Quartus
+can pack the boundary flops into Cyclone II I/O cells (with the
+@FAST_OUTPUT_REGISTER@ / @FAST_OUTPUT_ENABLE_REGISTER@ /
+@FAST_INPUT_REGISTER@ assignments in @Riski5.qsf@). The shorter,
+fixed Tco out of the I/O register is what makes the board's setup
+window predictable enough to honour SDC @set_output_delay@ /
+@set_input_delay@ against the @+90°@-shifted @DRAM_CLK@ in
+@Riski5.sdc@.
+
+Costs:
+
+  * One extra clkBus cycle of latency on every chip-bound signal
+    (commands, address, write data, byte mask).
+  * One extra clkBus cycle of latency on captured read data.
+  * The controller's read-wait state ('PhCl') has to count
+    @sdrCasLatency cfg + sdrPipelineLatency cfg - 1@ cycles
+    instead of @sdrCasLatency cfg - 1@; set
+    @sdrPipelineLatency = 2@ in 'SdrConfig' to compensate.
+
+Use this wrapper for silicon (the DE2 SoC's 'Top.hs' does); use
+the unregistered 'sdrControllerAsAlteraIp' for sim tests that
+drive the chip model combinationally.
+-}
+sdrControllerAsAlteraIpRegistered ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  SdrConfig ->
+  -- | Master-side request (Sdram.hs's busS output).
+  Signal dom SdramIpBus ->
+  -- | Chip → FPGA DQ (during reads).
+  Signal dom (BitVector 16) ->
+  ( -- | Slave reply (becomes Sdram.hs's replyS input).
+    Signal dom SdramIpReply
+  , -- | Chip-side pins (drive DRAM_* out of the SoC).
+    Signal dom SdrPins
+  )
+sdrControllerAsAlteraIpRegistered cfg busS dqInRawS = (replyS, pinsRegisteredS)
+ where
+  -- Register the chip's DQ input so Quartus can park the
+  -- input-side flop in the I/O cell ('FAST_INPUT_REGISTER ON' on
+  -- DRAM_DQ in Riski5.qsf). One clkBus-cycle delay; matched by
+  -- 'sdrPipelineLatency' in defaultDe2Config.
+  dqInS = register 0 dqInRawS
+  (replyS, pinsRawS) = sdrControllerAsAlteraIp cfg busS dqInS
+  -- Register the chip-side pins so Quartus can park each output
+  -- flop in the I/O cell ('FAST_OUTPUT_REGISTER ON' / OE on each
+  -- DRAM_* pin in Riski5.qsf). One clkBus-cycle delay; matched by
+  -- the same 'sdrPipelineLatency' field.
+  pinsRegisteredS = register sdrIdleCmd pinsRawS
 
 decodeChipCmd :: SdrPins -> ChipCmd
 decodeChipCmd p

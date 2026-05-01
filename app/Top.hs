@@ -49,6 +49,7 @@ import Riski5.SdrController (
   SdrPins (..),
   defaultDe2Config,
   sdrControllerAsAlteraIp,
+  sdrControllerAsAlteraIpRegistered,
  )
 import Riski5.Soc (SocIn (..), SocOut (..), soc)
 -- soDbgPcFetch is exported as part of SocOut (..) above; the
@@ -367,7 +368,15 @@ topEntity
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           sdramBusS = soSdramBus <$> outS
           (sdramReplyS, sdramPinsS) =
-            sdrControllerAsAlteraIp defaultDe2Config sdramBusS sdramDqInS
+            -- Use the registered wrapper so Quartus can pack the
+            -- DRAM_* output flops into Cyclone II I/O cells (the
+            -- FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER /
+            -- FAST_INPUT_REGISTER assignments in Riski5.qsf, with
+            -- the matching SDC source-synchronous constraints in
+            -- Riski5.sdc and the +90° DRAM_CLK in u_altpll). The
+            -- two-cycle round-trip latency it adds is matched by
+            -- 'sdrPipelineLatency = 2' in defaultDe2Config.
+            sdrControllerAsAlteraIpRegistered defaultDe2Config sdramBusS sdramDqInS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
           lcdDataS = lcdData . soLcdPins <$> outS

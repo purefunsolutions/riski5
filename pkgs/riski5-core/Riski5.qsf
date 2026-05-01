@@ -366,15 +366,97 @@ set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_CLK
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_WE_N
 set_instance_assignment -name IO_STANDARD "3.3-V LVTTL" -to DRAM_CS_N
 
-# Task #146: Tried FAST_OUTPUT_REGISTER on DRAM_* outputs and
-# FAST_OUTPUT_ENABLE_REGISTER on DRAM_DQ to give clean I/O-cell-
-# placed flops with consistent Tco. On silicon this made the FIRST
-# master_write_32 hang — the I/O register on DRAM_DQ delays the
-# write data by one cycle relative to the WRITE command that the
-# chip latches on the same edge, so the chip captured stale DQ.
-# Reverted; the controller's writes work correctly with combinational
-# DRAM_DQ output (chip's setup/hold margin at 40 MHz absorbs the
-# Tco variance). Future work: if we re-enable I/O-cell DQ output
-# registers, also bump the chip's sample cycle in 'sdrWriteCmd'
-# to issue the data one cycle BEFORE the WRITE command so the
-# delays align — but that's a more invasive FSM change.
+# Task #146 (revised): place every DRAM_* signal in the I/O cell
+# flop so all chip-bound signals share the same Tco budget. Three
+# things have to land together for this not to break:
+#
+#   1. FAST_OUTPUT_REGISTER ON  on every DRAM_* OUTPUT — including
+#      command pins (RAS_N/CAS_N/WE_N/CS_N/CKE/ADDR/BA/DQM) AND the
+#      DQ output. Earlier revisions only set this on DRAM_DQ,
+#      which delayed the data one cycle relative to the (still
+#      combinational) WRITE command — chip latched stale DQ. With
+#      every signal in I/O-cell flops, the WRITE command and the
+#      DQ value transition together at the chip pins.
+#
+#   2. FAST_OUTPUT_ENABLE_REGISTER ON  on DRAM_DQ — keeps the OE
+#      strobe in the same I/O cell as the data flop, so the
+#      tristate transitions track DQ exactly.
+#
+#   3. FAST_INPUT_REGISTER ON  on DRAM_DQ — captures the chip's
+#      read data in the I/O-cell input register on the same edge
+#      the chip drives, eliminating fabric routing skew on the
+#      read path.
+#
+# DRAM_CLK itself is NOT registered — it must be a direct PLL
+# output to the pin. The +90° phase shift on clk2 (see
+# pkgs/riski5-core/package.nix u_altpll) gives the chip the
+# setup margin to latch the I/O-cell-flop outputs.
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[0]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[1]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[2]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[3]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[4]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[5]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[6]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[7]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[8]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[9]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[10]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_ADDR[11]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_BA[0]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_BA[1]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_LDQM
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_UDQM
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_RAS_N
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CAS_N
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CKE
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_WE_N
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_CS_N
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[0]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[1]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[2]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[3]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[4]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[5]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[6]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[7]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[8]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[9]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[10]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[11]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[12]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[13]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[14]
+set_instance_assignment -name FAST_OUTPUT_REGISTER ON -to DRAM_DQ[15]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[0]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[1]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[2]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[3]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[4]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[5]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[6]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[7]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[8]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[9]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[10]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[11]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[12]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[13]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[14]
+set_instance_assignment -name FAST_OUTPUT_ENABLE_REGISTER ON -to DRAM_DQ[15]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[0]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[1]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[2]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[3]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[4]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[5]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[6]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[7]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[8]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[9]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[10]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[11]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[12]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[13]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[14]
+set_instance_assignment -name FAST_INPUT_REGISTER ON -to DRAM_DQ[15]

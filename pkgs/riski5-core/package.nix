@@ -130,22 +130,42 @@
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
   isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
-  # Task #146 (single-PLL): the second PLL (u_altpll_sdram on
-  # CLOCK_27) was removed when the Altera SDRAM Controller IP and
-  # the toggle-handshake CDC bridge were dropped. The pure-Clash
-  # SDR SDRAM controller in 'Riski5.SdrController' runs on clkBus
-  # (the same 40 MHz clock as the rest of the SoC) and drives
-  # DRAM_* pins directly. DRAM_CLK = clkBus.
+  # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
+  # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
+  # the Altera SDRAM Controller IP and the toggle-handshake CDC
+  # bridge were dropped. The pure-Clash SDR SDRAM controller in
+  # 'Riski5.SdrController' runs on clkBus (the same 40 MHz clock
+  # as the rest of the SoC) and drives DRAM_* pins directly.
   #
-  #   u_altpll        — bus + core domain (input: CLOCK_50, PIN_N2)
+  #   u_altpll        — bus + core + DRAM-CLK output (input: CLOCK_50)
   #     clk0:  clkBus      40 MHz, 0°    (slowClock=true → 30 MHz)
   #     clk1:  clkCore     40 MHz, 0°    (separate counter from clkBus
   #                                        so a future commit can
   #                                        change just clk1's multiplier
   #                                        and clock the RISC-V core
   #                                        faster than the bus)
-  pllBusMultBy = if slowClock then 3 else 4;  # bus, core: 50 × M / 5
+  #     clk2:  clkDramOut  40 MHz, +90°  (= +6250 ps at 40 MHz / 25 ns
+  #                                        period). Routed straight to
+  #                                        DRAM_CLK so the chip's clock
+  #                                        edge falls in the middle of
+  #                                        the FPGA's stable DQ /
+  #                                        command window after the
+  #                                        I/O-cell Tco. Required after
+  #                                        QSF was changed to put all
+  #                                        DRAM_* outputs in I/O-cell
+  #                                        flops (FAST_OUTPUT_REGISTER):
+  #                                        with both DQ and command on
+  #                                        the same Tco budget, a chip
+  #                                        clock aligned with the FPGA
+  #                                        edge would catch the
+  #                                        outputs mid-transition.
+  pllBusMultBy = if slowClock then 3 else 4;  # bus, core, DRAM_CLK: 50 × M / 5
   pllCoreMultBy = if slowClock then 3 else 4; # tied to bus initially
+  # +90° phase shift = quarter-period delay on DRAM_CLK output. At
+  # 40 MHz / 25 ns period that's +6250 ps; at slowClock=true / 30 MHz
+  # / 33.33 ns period it's +8333 ps. The PLL counter takes the value
+  # in picoseconds.
+  pllDramPhaseShiftPs = if slowClock then "8333" else "6250";
   slowSuffix = lib.optionalString slowClock "-slow";
 in
   stdenv.mkDerivation {
@@ -769,30 +789,37 @@ in
       );
 
         // ----- Single-PLL clock topology (task #146 cleanup) ---------
-        // CLOCK_50 (50 MHz off-chip osc) → one ALTPLL producing two
-        // independent clock outputs in a single logical clock domain:
+        // CLOCK_50 (50 MHz off-chip osc) → one ALTPLL producing three
+        // outputs in a single logical clock domain:
         //
-        //   u_altpll       (bus + core + SDRAM)
-        //     clk0  clkBus      40 MHz, 0°   — Avalon-MM bus, peripherals,
-        //                                       JTAG-UART, JTAG-Master,
-        //                                       Clash riski5 module,
-        //                                       Riski5.SdrController
-        //     clk1  clkCore     40 MHz, 0°   — RISC-V core domain.
-        //                                       Currently tied electrically
-        //                                       to clkBus (Clash core+bus
-        //                                       refactor is a follow-up
-        //                                       commit).
+        //   u_altpll       (bus + core + DRAM_CLK output)
+        //     clk0  clkBus      40 MHz, 0°    — Avalon-MM bus, peripherals,
+        //                                        JTAG-UART, JTAG-Master,
+        //                                        Clash riski5 module,
+        //                                        Riski5.SdrController
+        //     clk1  clkCore     40 MHz, 0°    — RISC-V core domain.
+        //                                        Currently tied electrically
+        //                                        to clkBus (Clash core+bus
+        //                                        refactor is a follow-up
+        //                                        commit).
+        //     clk2  clkDramOut  40 MHz, +90°  — physical DRAM_CLK output
+        //                                        only. Quarter-period delay
+        //                                        so the chip's clock edge
+        //                                        falls in the middle of the
+        //                                        FPGA's stable DQ / command
+        //                                        window after the I/O-cell
+        //                                        Tco. NOT a fabric clock —
+        //                                        no logic clocked from this.
         //
         // Task #146 removed the second PLL (u_altpll_sdram), the Altera
         // SDRAM Controller IP (u_sdram), and the toggle-handshake CDC
         // bridge (riski5_sdram_cdc_bridge). The pure-Clash SDR SDRAM
         // controller in 'Riski5.SdrController' runs on clkBus and
-        // drives the DRAM_* chip pins directly. DRAM_CLK = clkBus
-        // (no phase shift — at 40 MHz the chip's setup/hold margins
-        // are well within spec on the DE2 board traces).
+        // drives the DRAM_* chip pins directly.
         wire [4:0] altpll_clk_vec;
         wire       clkBus       = altpll_clk_vec[0];
         wire       clkCore      = altpll_clk_vec[1];
+        wire       clkDramOut   = altpll_clk_vec[2];
         wire       pll_bus_locked;
         altpll u_altpll (
             .areset (1'b0),
@@ -818,6 +845,10 @@ in
         defparam u_altpll.clk1_duty_cycle        = 50;
         defparam u_altpll.clk1_multiply_by       = ${toString pllCoreMultBy};
         defparam u_altpll.clk1_phase_shift       = "0";
+        defparam u_altpll.clk2_divide_by         = 5;
+        defparam u_altpll.clk2_duty_cycle        = 50;
+        defparam u_altpll.clk2_multiply_by       = ${toString pllBusMultBy};
+        defparam u_altpll.clk2_phase_shift       = "${pllDramPhaseShiftPs}";
         defparam u_altpll.compensate_clock       = "CLK0";
         defparam u_altpll.inclk0_input_frequency = 20000;
         defparam u_altpll.intended_device_family = "Cyclone II";
@@ -825,6 +856,7 @@ in
         defparam u_altpll.operation_mode         = "NORMAL";
         defparam u_altpll.port_clk0              = "PORT_USED";
         defparam u_altpll.port_clk1              = "PORT_USED";
+        defparam u_altpll.port_clk2              = "PORT_USED";
         defparam u_altpll.port_inclk0            = "PORT_USED";
         defparam u_altpll.port_locked            = "PORT_USED";
         defparam u_altpll.port_areset            = "PORT_USED";
@@ -900,8 +932,13 @@ in
         // The Clash riski5 module instantiates 'sdrControllerAsAlteraIp'
         // internally and exposes the chip-side pins as outputs. The
         // wrapper just routes them to the DE2 board pads. DRAM_CLK is
-        // driven from clkBus directly (single domain — no PLL or CDC
-        // bridge between the controller and the chip).
+        // driven from clkDramOut (PLL clk2, +90° phase-shifted) so the
+        // chip's clock edge falls in the middle of the FPGA's stable
+        // DQ / command window after the I/O-cell Tco. See the PLL
+        // comment block above and pkgs/riski5-core/Riski5.sdc for the
+        // matching SDC constraints (virtual clock + set_input_delay /
+        // set_output_delay against the IS42S16400-7TL t_DS / t_DH /
+        // t_AC / t_OH timings).
         //
         // DRAM_DQ is inout on the top-level port; the Clash module
         // produces SDRAM_DQ_OUT + SDRAM_DQ_OE for the FPGA-drive
@@ -910,7 +947,7 @@ in
         wire [15:0] sdram_dq_o;
         wire        sdram_dq_oe;
         assign DRAM_DQ  = sdram_dq_oe ? sdram_dq_o : 16'bz;
-        assign DRAM_CLK = clkBus;
+        assign DRAM_CLK = clkDramOut;
 
         // ----- Clash riski5 core --------------------------------------
         wire [31:0]  debug_pcfetch;
