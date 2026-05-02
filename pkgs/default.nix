@@ -123,6 +123,15 @@
         sdramStress = true;
       };
 
+      # Bisect variant for task #17. Same workload as sdramstress
+      # (write+read 4 SDRAM banks per iteration), but the loop runs
+      # from BRAM. Use to disambiguate SDRAM-data-path bugs from
+      # SoC-arbiter / fetch+data multiplex bugs.
+      riski5-core-sdramdatastress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sdramDataStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloAExt.hs into
       # imem. Probes whether 'Riski5.Core.FU.Amo' (the new RV32A FSM)
       # works against the real SRAM controller on silicon. Expected
@@ -263,6 +272,12 @@
       flash-riski5-sdramstress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-sdramstress;
+      };
+
+      # Flasher for the SDRAM-data-stress (BRAM exec) bisect.
+      flash-riski5-sdramdatastress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sdramdatastress;
       };
 
       # Flasher for the A-extension silicon test bitstream.
@@ -443,6 +458,10 @@
       flash-riski5-sdramstress = {
         type = "app";
         program = "${self'.packages.flash-riski5-sdramstress}/bin/flash-riski5";
+      };
+      flash-riski5-sdramdatastress = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sdramdatastress}/bin/flash-riski5";
       };
       flash-riski5-aexttest = {
         type = "app";

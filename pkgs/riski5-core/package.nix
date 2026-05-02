@@ -63,6 +63,14 @@
   # = True@ so the SoC routes @pcFetch in SDRAM range@ through
   # the 'Riski5.Sdram' adapter.
   sdramStress ? false,
+  # Bisecting twin of sdramStress: the SAME stress workload (write
+  # + read 4 SDRAM banks per iteration for 256 iterations), but the
+  # loop runs from BRAM (no @JALR@ to SDRAM, no @enableSdramFetch@).
+  # Use to disambiguate "SDRAM data path is broken" from "the
+  # SoC's fetch+data SDRAM arbiter is broken". Same overlay
+  # mechanism as @sramExec@; @FetchPolicy@ stays at the BRAM-only
+  # default.
+  sdramDataStress ? false,
   # Build the A-extension silicon-test variant. Overlay
   # @HelloAExt.helloAExtFirmwareWords@ into the imem and exercise
   # the @Riski5.Core.FU.Amo@ FSM against an SRAM word — see the
@@ -139,11 +147,12 @@
   isSramExec = sramExec && !isCoremark;
   isSdramExec = sdramExec && !isCoremark && !isSramExec;
   isSdramStress = sdramStress && !isCoremark && !isSramExec && !isSdramExec;
-  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
-  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest;
-  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest;
-  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
-  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isSdramDataStress = sdramDataStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
+  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -188,6 +197,7 @@ in
       else if isSramExec then "riski5-core-sramexec"
       else if isSdramExec then "riski5-core-sdramexec"
       else if isSdramStress then "riski5-core-sdramstress"
+      else if isSdramDataStress then "riski5-core-sdramdatastress"
       else if isAExtTest then "riski5-core-aexttest"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
@@ -427,6 +437,43 @@ in
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
+            ${lib.optionalString isSdramDataStress ''
+              # SDRAM-data-stress bisect variant: same workload as
+              # sdramStress, but the loop runs from BRAM (no JALR
+              # to SDRAM, FetchPolicy stays at the BRAM-only
+              # default). Use to disambiguate "SDRAM data path is
+              # broken" from "SoC's fetch+data SDRAM arbiter is
+              # broken" — task #17 follow-up.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramDataStress Nix build:
+              -- re-exports HelloSdramDataStress's firmware under
+              -- the CoreMark name so the unchanged
+              -- -DFIRMWARE_COREMARK path in app/Top.hs bakes the
+              -- BRAM-resident SDRAM-data-stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSdramDataStress (helloSdramDataStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSdramDataStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sdramDataStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+              # FetchPolicy stays at BRAM-only default — important
+              # for the bisect (no SDRAM arbiter instantiated).
+            ''}
+
             ${lib.optionalString isAExtTest ''
               # A-extension silicon test variant. Overlay CoreMark.hs
               # with HelloAExt's words; FetchPolicy stays at the
@@ -629,7 +676,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
