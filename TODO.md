@@ -1901,19 +1901,32 @@ state.**
      correctly on our silicon.
 
      **Conclusion: AMO + LR/SC are RULED OUT as the root cause of
-     the Linux stack-protector panic at PC=0x8002cd98.** Remaining
-     suspects (in priority order):
-     1. **FDT/DT corruption (task #27)** — the boot stub stages
+     the Linux stack-protector panic at PC=0x8002cd98.**
+
+     **2026-05-02 stack-stress silicon result: ALSO clean.** The
+     `riski5-core-stackstress` bitstream ran for 35 s on real
+     hardware: **B count 17,451, D count 17,447, dots count
+     1,116,600, F count = 0** (full log:
+     [`docs/perf/stackstress-silicon-2026-05-02.log`](./docs/perf/stackstress-silicon-2026-05-02.log)).
+     ~1.1 M clean 4-register prologue/epilogue (sw/lw of ra,
+     s0, s1, t0) on SDRAM-resident stack under fetch contention.
+     Mirrors task_work_add's exact prologue/epilogue shape.
+     **Three basic instruction patterns now ruled out on silicon:
+     amoswap (848 k ops), lr/sc cmpxchg (740 k ops), multi-reg
+     stack save/restore (1.1 M ops).**
+
+     **The bug is something Linux exercises that our targeted
+     stress tests don't.** Likely culprits (priority order):
+     1. **Trap/interrupt taken DURING a critical operation
+        (task #34)** — none of our stress tests have an
+        interrupt firing mid-cmpxchg / mid-stack-save / mid-
+        AMO. Linux runs with timer IRQ enabled — a trap landing
+        between the LR.W and SC.W of the cmpxchg loop, or
+        between the stack-save sw and the next instruction
+        clobbering ra, would scramble both registers and stack.
+     2. **FDT/DT corruption (task #27)** — the boot stub stages
         DTB into SDRAM after the kernel; a corrupted byte there
-        propagates into wrong addresses kernel-side. Different
-        with/without stack-protector because of slightly
-        different code layout sees the corruption at different
-        spots.
-     2. **Stack overflow / canary write from unrelated path** —
-        the panic site task_work_add doesn't itself overflow;
-        some EARLIER function corrupts task_work_add's stack
-        slot. Need to bisect by adding printks before suspect
-        functions.
+        propagates into wrong addresses kernel-side.
      3. **Boot log divergence (task #28)** — compare with/without
         stack-protector logs cycle-by-cycle to find the first
         observable behavioural difference.
