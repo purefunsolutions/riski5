@@ -179,6 +179,19 @@
         stackStress = true;
       };
 
+      # Task #34: trap-during-stress silicon test (follow-up to #33
+      # after bare stack came back clean). Bakes
+      # firmware/phase1/HelloTrapStress.hs into imem. Same inner
+      # loop as stackStress (4-reg prologue/epilogue mirroring
+      # task_work_add) but runs WITH timer IRQs firing every ~256
+      # cycles. If a trap landing mid-prologue / mid-epilogue
+      # corrupts the SDRAM stack frame or live registers, this
+      # variant prints 'F' + per-register label.
+      riski5-core-trapstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        trapStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloTimerIrq.hs
       # into imem. Probes the full CLINT → mip.MTIP → trap → handler
       # chain on real hardware. Expected output: @B......T......T…@.
@@ -340,6 +353,12 @@
       flash-riski5-stackstress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-stackstress;
+      };
+
+      # Flasher for the trap-during-stress silicon test bitstream (task #34).
+      flash-riski5-trapstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-trapstress;
       };
 
       # Flasher for the timer-interrupt silicon test bitstream.

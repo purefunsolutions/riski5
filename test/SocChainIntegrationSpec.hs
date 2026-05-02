@@ -56,6 +56,7 @@ import HelloLrScStress (helloLrScStressFirmwareWords)
 import HelloSdramStress (helloSdramStressFirmwareWords)
 import HelloSramExec (helloSramExecFirmwareWords)
 import HelloStackStress (helloStackStressFirmwareWords)
+import HelloTrapStress (helloTrapStressFirmwareWords)
 import Riski5.JtagUart (jtagUartAlteraSim)
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..), sdramIpSim)
 import Riski5.Soc (
@@ -82,6 +83,7 @@ tests =
     , testCase "SDRAM AMO chain: HelloAmoStress amoswaps 4 banks per iter, no failure markers (task #29)" case_amoStressClean
     , testCase "SDRAM LR/SC chain: HelloLrScStress cmpxchg loops 4 banks per iter, no failure markers (task #29)" case_lrScStressClean
     , testCase "SDRAM stack chain: HelloStackStress prologue/epilogue 4-reg save+restore, no failure markers (task #33)" case_stackStressClean
+    , testCase "SDRAM trap chain: HelloTrapStress prologue/epilogue + timer IRQs at 256-cyc cadence, no failure markers (task #34)" case_trapStressClean
     ]
 
 -- * Cases ------------------------------------------------------------
@@ -300,6 +302,44 @@ case_stackStressClean = do
   assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
   assertBool msg (null failures)
 
+{- | HelloTrapStress runs HelloStackStress's exact inner loop (4-reg
+prologue/epilogue mirroring task_work_add) but with timer IRQs
+firing every 256 cycles. The trap handler uses mscratch + SRAM
+scratch to save/restore t1/t2/t3 without disturbing the inner
+loop's live registers (x1=ra, x5=t0, x8=s0, x9=s1).
+
+Targeted at the next remaining suspect for the Linux panic at
+PC=0x8002cd98 after AMO + LR/SC + bare stack came back clean: a
+timer trap landing inside the cmpxchg / prologue / epilogue
+critical section. If trap entry / exit corrupts a live register
+or disturbs the SDRAM stack frame, the verifier prints 'F' +
+register-letter.
+
+Architectural assertion: no 'F' bytes in the captured UART stream.
+-}
+case_trapStressClean :: Assertion
+case_trapStressClean = do
+  let (bytes, _busTrace) = runSocTrapStressDebug 16000
+
+      isFailureByte :: BitVector 8 -> Bool
+      isFailureByte b = b == 0x46 -- 'F'
+
+      failures = filter isFailureByte bytes
+      bMarkers = length [() | b <- bytes, b == 0x42]
+      dotCount = length [() | b <- bytes, b == 0x2E]
+      msg =
+        "Expected SDRAM-trap-stress to print only B + ........ (no F failure marker) — even with timer IRQs firing every 256 cycles. "
+          P.++ "B-markers: "
+          P.++ show bMarkers
+          P.++ " dots: "
+          P.++ show dotCount
+          P.++ " failures (F bytes): "
+          P.++ show (length failures)
+          P.++ ". First 60 bytes: "
+          P.++ show (take 60 bytes)
+  assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
+  assertBool msg (null failures)
+
 -- * Slicing helper (shared with SramExecSpec) ------------------------
 
 sliceByB :: [BitVector 8] -> [(Int, Int)]
@@ -440,6 +480,38 @@ runSocStackStressTraces = withClockResetEnable @System clockGen resetGen enableG
  where
   progVec :: Vec 4096 (BitVector 32)
   progVec = V.unsafeFromList (take 4096 (helloStackStressFirmwareWords ++ P.repeat 0x0000_0013))
+  dataVec :: Vec 1 (BitVector 32)
+  dataVec = CP.repeat 0
+  sramInit :: Vec 262144 (BitVector 16)
+  sramInit = CP.repeat 0
+  inputSig :: Signal System SocInFull
+  inputSig = fromList (P.repeat SocInFull {sifSwitches = 0, sifKeys = 0xF})
+  go :: (HiddenClockResetEnable System) => (Signal System (Maybe (BitVector 8)), Signal System SdramIpBus)
+  go =
+    let outSimS = socSimFullWithLargeSdram False True progVec dataVec sramInit inputSig
+        txS = sosUartTx <$> outSimS
+        busS = soSdramBus . sosOut <$> outSimS
+     in (txS, busS)
+
+-- | Run @HelloTrapStress@ with @enableSdramFetch=True@. Mirror
+-- of 'runSocStackStressDebug' but loaded with the trap-stress
+-- firmware (timer IRQ + cmpxchg / prologue / epilogue probe —
+-- task #34).
+runSocTrapStressDebug :: Int -> ([BitVector 8], [SdramIpBus])
+runSocTrapStressDebug nCycles =
+  let (txS, busS) = runSocTrapStressTraces
+      bytesAll = sampleN @System nCycles txS
+      busAll = sampleN @System nCycles busS
+   in ([b | Just b <- bytesAll], busAll)
+
+runSocTrapStressTraces ::
+  ( Signal System (Maybe (BitVector 8))
+  , Signal System SdramIpBus
+  )
+runSocTrapStressTraces = withClockResetEnable @System clockGen resetGen enableGen go
+ where
+  progVec :: Vec 4096 (BitVector 32)
+  progVec = V.unsafeFromList (take 4096 (helloTrapStressFirmwareWords ++ P.repeat 0x0000_0013))
   dataVec :: Vec 1 (BitVector 32)
   dataVec = CP.repeat 0
   sramInit :: Vec 262144 (BitVector 16)
