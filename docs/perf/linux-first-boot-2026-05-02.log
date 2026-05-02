@@ -1,0 +1,627 @@
+this derivation will be built:
+  /nix/store/p1zy0g5z4iky38c6y4lgsjqwi1rb2mg1-boot-linux-master.drv
+building '/nix/store/p1zy0g5z4iky38c6y4lgsjqwi1rb2mg1-boot-linux-master.drv' on 'ssh-ng://nix-ssh@10.1.0.19'...
+copying 0 paths...
+building '/nix/store/p1zy0g5z4iky38c6y4lgsjqwi1rb2mg1-boot-linux-master.drv'...
+copying 1 paths...
+copying path '/nix/store/0y7g146s9bal1yqq8248vrs31b5zk3d1-boot-linux-master' from 'ssh-ng://nix-ssh@10.1.0.19'...
+boot-linux-master: using default kernel + DTB from the flake
+== boot-linux-master: clearing stale JTAG holders ==
+== boot-linux-master: detecting USB-Blaster ==
+  cable: USB-Blaster [3-4.1]
+== boot-linux-master: flashing /nix/store/jx2fr9xx1sznkd3nld7scz9wknh1pkxz-riski5-core-linux-master-0.1.0/Riski5.sof ==
+Info: *******************************************************************
+Info: Running Quartus II 32-bit Programmer
+    Info: Version 13.0.1 Build 232 06/12/2013 Service Pack 1 SJ Web Edition
+    Info: Copyright (C) 1991-2013 Altera Corporation. All rights reserved.
+    Info: Your use of Altera Corporation's design tools, logic functions 
+    Info: and other software and tools, and its AMPP partner logic 
+    Info: functions, and any output files from any of the foregoing 
+    Info: (including device programming or simulation files), and any 
+    Info: associated documentation or information are expressly subject 
+    Info: to the terms and conditions of the Altera Program License 
+    Info: Subscription Agreement, Altera MegaCore Function License 
+    Info: Agreement, or other applicable license agreement, including, 
+    Info: without limitation, that your use is for the sole purpose of 
+    Info: programming logic devices manufactured by Altera and sold by 
+    Info: Altera or its authorized distributors.  Please refer to the 
+    Info: applicable agreement for further details.
+    Info: Processing started: Sat May  2 16:29:08 2026
+Info: Command: quartus_pgm -c "USB-Blaster [3-4.1]" -m JTAG -o p;/nix/store/jx2fr9xx1sznkd3nld7scz9wknh1pkxz-riski5-core-linux-master-0.1.0/Riski5.sof
+Info (213045): Using programming cable "USB-Blaster [3-4.1]"
+Info (213011): Using programming file /nix/store/jx2fr9xx1sznkd3nld7scz9wknh1pkxz-riski5-core-linux-master-0.1.0/Riski5.sof with checksum 0x00BAC149 for device EP2C35F672@1
+Info (209060): Started Programmer operation at Sat May  2 16:29:08 2026
+Info (209016): Configuring device index 1
+Info (209017): Device 1 contains JTAG ID code 0x020B40DD
+Info (209007): Configuration succeeded -- 1 device(s) configured
+Info (209011): Successfully performed operation(s)
+Info (209061): Ended Programmer operation at Sat May  2 16:29:10 2026
+Info: Quartus II 32-bit Programmer was successful. 0 errors, 0 warnings
+    Info: Peak virtual memory: 127 megabytes
+    Info: Processing ended: Sat May  2 16:29:10 2026
+    Info: Elapsed time: 00:00:02
+    Info: Total CPU time (on all processors): 00:00:00
+== boot-linux-master: streaming kernel + DTB via master_write_32 ==
+May 2, 2026 1:29:12 PM com.altera.systemconsole.internal.core.SystemConsole logWarning
+WARNING: Could not register IService issp
+May 2, 2026 1:29:12 PM com.altera.systemconsole.internal.core.SystemConsole logWarning
+WARNING: A service named 'issp' is already registered.
+May 2, 2026 1:29:12 PM com.altera.systemconsole.internal.core.SystemConsole$PluginDiscovery run
+INFO: Finished initialization
+May 2, 2026 1:29:12 PM com.altera.systemconsole.internal.core.SystemConsole logInfo
+INFO: Finished discovering JTAG connections
+May 2, 2026 1:29:18 PM com.altera.systemconsole.internal.core.SystemConsole logInfo
+INFO: Finished discovering USB connections
+source /nix/store/x59vfqy36r7h2nl8v8z2y50w2x6w41sk-boot-linux-master.tcl
+--------------------------------------------------------------------------------
+ Version 13.0sp1 232
+ Copyright (C) 1991-2013 Altera Corporation. All rights reserved.
+ Your use of Altera Corporation's design tools, logic functions
+ and other software and tools, and its AMPP partner logic
+ functions, and any output files from any of the foregoing
+ (including device programming or simulation files), and any
+ associated documentation or information is expressly subject
+ to the terms and conditions of the Altera Program License
+ Subscription Agreement, Altera MegaCore Function License
+ Agreement, or other applicable license agreements, including,
+ without limitation, that your use is for the sole purpose of
+ programming logic devices manufactured by Altera and sold by
+ Altera or its authorized distributors.  Please refer to the
+ applicable agreement for further details.
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+ Welcome to Altera's System Console
+
+ This Tcl console provides access to the hardware modules instantiated in your
+ FPGA. You can use System Console for all of the following purposes:
+
+    * To start, stop, or step a Nios II processor
+    * To read or write Avalon Memory-Mapped (Avalon-MM) slaves using special
+     masters
+    * To sample the SOPC system clock as well as system reset signal
+    * To run JTAG loopback tests to analyze board noise problems
+    * To shift arbitrary instruction register and data register values to
+     instantiated system level debug (SLD) nodes
+
+ In addition, the directory <QuartusII Dir>/sopc_builder/system_console_macros
+ contains Tcl files that provide miscellaneous utilities and examples of how to
+ access the functionality provided. You can include those macros in your
+ scripts by issuing Tcl source commands.
+--------------------------------------------------------------------------------
+May 2, 2026 1:29:18 PM com.altera.systemconsole.internal.core.SystemConsole logInfo
+INFO: Executing startup script /nix/store/8v8l7chiiy215bb9vn731yy9rx8y8v78-quartus-ii-13-unwrapped-13.0sp1/opt/altera13.0sp1/quartus/sopc_builder/system_console_macros/system_console_rc.tcl
+% boot-linux-master:
+  kernel : /nix/store/ycbk9vy3fnpcqpk59jrf7h33ahy9zimi-riski5-linux-rv32-nommu-6.18.22/Image (3184860 bytes, padded to 3184860)
+  dtb    : /nix/store/zj55h9vlbh9w7x9gbjjc1hg32yld4x5y-riski5-dtb-0.1.0/riski5.dtb (1514 bytes, padded to 1516)
+  layout : kernel @ 0x80000000..0x803098db
+           dtb    @ 0x80400000..0x804005eb
+  trigger: SDRAM[0x807ffff0] <- kbytes=3184860
+           SDRAM[0x807ffff4] <- 1
+
+  master : /devices/EP2C35@1#3-4.1/(link)/JTAG/(110:132 v1 #0)/phy_0/master
+  kernel     11.0 / 3110.2 KB  @  10.0 KB/s
+  kernel     22.0 / 3110.2 KB  @  10.4 KB/s
+  kernel     34.0 / 3110.2 KB  @  10.6 KB/s
+  kernel     46.0 / 3110.2 KB  @  10.7 KB/s
+  kernel     57.0 / 3110.2 KB  @  10.6 KB/s
+  kernel     69.0 / 3110.2 KB  @  10.7 KB/s
+  kernel     81.0 / 3110.2 KB  @  10.8 KB/s
+  kernel     93.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    105.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    117.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    129.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    141.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    153.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    165.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    177.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    189.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    201.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    213.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    225.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    237.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    249.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    261.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    273.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    284.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    296.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    308.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    320.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    332.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    344.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    355.0 / 3110.2 KB  @  11.2 KB/s
+  kernel    366.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    377.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    388.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    400.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    412.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    423.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    435.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    447.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    459.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    470.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    482.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    494.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    506.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    517.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    529.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    541.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    553.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    564.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    576.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    588.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    600.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    612.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    623.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    634.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    645.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    657.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    668.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    680.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    692.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    703.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    714.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    726.0 / 3110.2 KB  @  11.1 KB/s
+  kernel    735.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    747.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    758.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    767.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    777.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    789.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    800.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    812.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    823.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    834.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    845.0 / 3110.2 KB  @  11.0 KB/s
+  kernel    856.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    867.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    878.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    890.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    901.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    912.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    924.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    934.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    945.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    957.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    968.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    979.0 / 3110.2 KB  @  10.9 KB/s
+  kernel    991.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1003.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1015.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1027.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1039.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1050.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1062.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1074.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1085.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1096.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1107.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1119.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1130.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1141.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1152.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1164.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1176.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1187.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1198.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1209.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1220.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1231.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1242.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1254.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1265.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1276.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1287.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1299.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1311.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1323.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1335.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1346.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1357.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1368.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1379.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1390.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1402.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1413.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1425.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1437.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1449.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1460.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1471.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1482.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1493.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1504.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1516.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1527.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1539.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1551.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1563.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1574.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1586.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1598.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1609.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1621.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1632.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1643.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1655.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1666.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1677.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1689.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1701.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1713.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1724.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1735.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1747.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1759.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1771.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1783.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1794.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1805.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1816.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1828.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1839.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1850.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1861.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1873.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1885.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1897.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1907.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1918.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1928.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1940.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1950.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1960.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1970.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1981.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   1993.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   2003.0 / 3110.2 KB  @  10.9 KB/s
+  kernel   2012.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2024.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2036.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2048.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2059.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2070.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2081.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2092.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2103.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2115.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2127.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2139.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2150.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2162.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2173.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2185.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2196.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2207.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2217.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2226.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2236.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2245.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2255.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2264.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2276.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2287.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2297.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2308.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2318.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2329.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2338.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2350.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2362.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2373.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2383.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2394.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2405.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2415.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2425.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2436.0 / 3110.2 KB  @  10.8 KB/s
+  kernel   2446.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2456.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2468.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2477.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2485.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2497.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2506.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2516.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2525.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2537.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2547.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2558.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2567.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2579.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2588.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2596.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2604.0 / 3110.2 KB  @  10.7 KB/s
+  kernel   2612.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2620.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2629.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2637.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2646.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2656.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2667.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2679.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2688.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2698.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2707.0 / 3110.2 KB  @  10.6 KB/s
+  kernel   2716.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2726.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2735.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2746.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2755.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2765.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2776.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2787.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2798.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2806.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2817.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2828.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2839.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2849.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2859.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2868.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2877.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2887.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2898.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2909.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2920.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2930.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2943.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2954.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2963.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2973.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2985.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   2997.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3008.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3019.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3029.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3040.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3052.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3064.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3074.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3085.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3094.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   3103.0 / 3110.2 KB  @  10.5 KB/s
+  kernel   done ? 3110.2 KB in 297.1 s (10.5 KB/s)
+  dtb      done ? 1.5 KB in 0.2 s (9.3 KB/s)
+  verify kernel: 0 / 1024 words bulk-dropped, 0 recovered
+  verify-all kernel    19.0 / 3110.2 KB  @  18.9 KB/s  (0 bad so far)
+  verify-all kernel    36.0 / 3110.2 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel    54.0 / 3110.2 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel    72.0 / 3110.2 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel    91.0 / 3110.2 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel   109.0 / 3110.2 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel   124.0 / 3110.2 KB  @  17.2 KB/s  (0 bad so far)
+  verify-all kernel   138.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel   153.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   166.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   180.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   194.0 / 3110.2 KB  @  15.6 KB/s  (0 bad so far)
+  verify-all kernel   213.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   231.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   248.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   265.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   284.0 / 3110.2 KB  @  16.2 KB/s  (0 bad so far)
+  verify-all kernel   300.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   316.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   335.0 / 3110.2 KB  @  16.2 KB/s  (0 bad so far)
+  verify-all kernel   351.0 / 3110.2 KB  @  16.2 KB/s  (0 bad so far)
+  verify-all kernel   366.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   379.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   395.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   413.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   432.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   446.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   462.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   476.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   490.0 / 3110.2 KB  @  15.8 KB/s  (0 bad so far)
+  verify-all kernel   506.0 / 3110.2 KB  @  15.8 KB/s  (0 bad so far)
+  verify-all kernel   525.0 / 3110.2 KB  @  15.8 KB/s  (0 bad so far)
+  verify-all kernel   543.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   559.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   575.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   594.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   608.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   625.0 / 3110.2 KB  @  15.9 KB/s  (0 bad so far)
+  verify-all kernel   644.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   662.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   676.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   692.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   710.0 / 3110.2 KB  @  16.0 KB/s  (0 bad so far)
+  verify-all kernel   729.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   746.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   765.0 / 3110.2 KB  @  16.1 KB/s  (0 bad so far)
+  verify-all kernel   785.0 / 3110.2 KB  @  16.2 KB/s  (0 bad so far)
+  verify-all kernel   804.0 / 3110.2 KB  @  16.2 KB/s  (0 bad so far)
+  verify-all kernel   824.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel   842.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel   860.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   879.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   897.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   913.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   929.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   947.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   964.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   982.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel   998.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  1017.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  1036.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  1055.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  1074.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1092.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1110.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1128.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1145.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1162.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1178.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1196.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1214.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1232.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1250.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  1269.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1288.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1305.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1322.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1341.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1360.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1379.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1398.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1417.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1435.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1454.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1473.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1492.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1509.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1527.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1546.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1565.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1584.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1603.0 / 3110.2 KB  @  17.0 KB/s  (0 bad so far)
+  verify-all kernel  1622.0 / 3110.2 KB  @  17.0 KB/s  (0 bad so far)
+  verify-all kernel  1640.0 / 3110.2 KB  @  17.0 KB/s  (0 bad so far)
+  verify-all kernel  1659.0 / 3110.2 KB  @  17.0 KB/s  (0 bad so far)
+  verify-all kernel  1676.0 / 3110.2 KB  @  17.0 KB/s  (0 bad so far)
+  verify-all kernel  1691.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1709.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1727.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1742.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1759.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1776.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1791.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1807.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1824.0 / 3110.2 KB  @  16.9 KB/s  (0 bad so far)
+  verify-all kernel  1839.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1857.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1870.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1887.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1902.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1919.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1936.0 / 3110.2 KB  @  16.8 KB/s  (0 bad so far)
+  verify-all kernel  1951.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1964.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1979.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  1994.0 / 3110.2 KB  @  16.7 KB/s  (0 bad so far)
+  verify-all kernel  2006.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  2019.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  2032.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  2049.0 / 3110.2 KB  @  16.6 KB/s  (0 bad so far)
+  verify-all kernel  2065.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2082.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2099.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2117.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2133.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2149.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2166.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2181.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2195.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2213.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2227.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2245.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2259.0 / 3110.2 KB  @  16.5 KB/s  (0 bad so far)
+  verify-all kernel  2273.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2288.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2304.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2323.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2340.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2354.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2369.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2386.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2400.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2414.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2431.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2448.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2465.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2484.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  2497.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2511.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2526.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2539.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2556.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2571.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2588.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2607.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2626.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2642.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2661.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2680.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2696.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2713.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2727.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2745.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2762.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2777.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2793.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2810.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2827.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2844.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2863.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2882.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2900.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2919.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2935.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2954.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2970.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  2986.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  3003.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  3022.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  3039.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  3056.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  3072.0 / 3110.2 KB  @  16.3 KB/s  (0 bad so far)
+  verify-all kernel  3090.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel  3107.0 / 3110.2 KB  @  16.4 KB/s  (0 bad so far)
+  verify-all kernel: 796215 / 796215 words OK
+
+Writing boot-trigger record...
+
+Trigger written. Boot stub will JR to 0x80000000.
+== boot-linux-master: opening kernel console ==
+  kernel printk and your keystrokes are now bridged.
+  press Ctrl-C to detach.
+nios2-terminal: connected to hardware target using JTAG UART on cable
+nios2-terminal: "USB-Blaster [3-4.1]", device 1, instance 0
+nios2-terminal: (Use the IDE stop button or Ctrl-C to terminate)
+
+MT             @    JKÜ˜0 SD@0o À|@1“†ö|@2B(|@3S ð|ZO    P   X¾­ÞL[    0.000000] Linux version 6.18.22 (nixbld@localhost) (riscv64-unknown-linux-gnu-gcc (GCC) 14.3.0, GNU ld (GNU Binutils) 2.44) #1-riski5 Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Machine model: riski5-de2
+[    0.000000] earlycon: juart0 at MMIO 0x10000000 (options '')
+[    0.000000] printk: legacy bootconsole [juart0] enabled
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] Zone ranges:
+[    0.000000]   Normal   [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Falling back to deprecated "riscv,isa"
+[    0.000000] riscv: base ISA extensions aim
+[    0.000000] riscv: ELF capabilities aim
+[    0.000000] Ticket spinlock: enabled
+[    0.000000] pcpu-alloc: s0 r0 d32768 u32768 alloc=1*32768
+[    0.000000] pcpu-alloc: [0] 0 
+[    0.000000] Kernel command line: console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init console=ttyJ0 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init
+[    0.000000] printk: log buffer data + meta data: 65536 + 204800 = 270336 bytes
+[    0.000000] Dentry cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    0.000000] Built 1 zonelists, mobility grouping off.  Total pages: 2048
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-1, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] riscv-intc: 32 local interrupts mapped
+[    0.000000] clint: clint@2000000: timer running at 40000000 Hz
+[    0.000000] clocksource: clint_clocksource: mask: 0xffffffffffffffff max_cycles: 0x939a85c40, max_idle_ns: 440795202120 ns
+[    0.000606] sched_clock: 64 bits at 40MHz, resolution 25ns, wraps every 4398046511100ns
+[    0.241542] Kernel panic - not syncing: stack-protector: Kernel stack is corrupted in: 0x8002cd98
+[    0.435420] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.18.22 #1-riski5 NONE 
+[    0.654330] Hardware name: riski5-de2 (DT)
+[    0.670127] Call Trace:
+[    0.683142] [<8000a328>] 0x8000a328
+[    0.873464] [<800012d8>] 0x800012d8
+[    0.890719] [<80005718>] 0x80005718
+[    0.907974] [<80005768>] 0x80005768
+[    1.097741] [<8000154c>] 0x8000154c
+[    1.114994] [<80001734>] 0x80001734
+[    1.132249] [<801ec270>] 0x801ec270
+[    1.320259] [<8002cd98>] 0x8002cd98
+[    1.341800] ---[ end Kernel panic - not syncing: stack-protector: Kernel stack is corrupted in: 0x8002cd98 ]---

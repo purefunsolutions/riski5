@@ -1777,6 +1777,24 @@ state.**
 
 ## Blocked / parked
 
+- **🎉 LINUX KERNEL BOOTED ON SILICON — 2026-05-02.** First time Linux
+  6.18.22 actually executes on the riski5 EP2C35 hardware. Previously
+  the kernel never printed anything — boot died inside the early
+  SDRAM fetch+data race the architectural fix below resolves.
+  Captured boot log: [`docs/perf/linux-first-boot-2026-05-02.log`](./docs/perf/linux-first-boot-2026-05-02.log).
+  Kernel makes it through:
+  ```
+  [    0.000000] Linux version 6.18.22 #1-riski5
+  [    0.000000] Machine model: riski5-de2
+  [    0.000000] earlycon: juart0 at MMIO 0x10000000
+  [    0.000000] clint: clint@2000000: timer running at 40000000 Hz
+  [    0.000606] sched_clock: 64 bits at 40MHz
+  ```
+  ...then panics at ~0.24 s with `stack-protector: Kernel stack is
+  corrupted in: 0x8002cd98`. That's a SOFTWARE issue (stack canary /
+  initial sp / sscratch setup) — unrelated to the SDRAM hardware
+  bug we just resolved. Next debugging target.
+
 - **task #17 / #21 / #22 — SDRAM-stress concurrent fetch+data corruption — FIXED 2026-05-02.**
   Silicon `sdramstress` bitstream now prints `B................[256 dots]D`
   cleanly across multiple iterations — zero `F` failure markers in a
