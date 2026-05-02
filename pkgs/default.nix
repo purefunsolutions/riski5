@@ -111,6 +111,18 @@
         sdramExec = true;
       };
 
+      # Bigger SDRAM-execute test than @sdramexec@: bakes
+      # firmware/phase1/HelloSdramStress.hs which stages a
+      # ~30-instruction SDRAM-resident loop that writes + reads
+      # 4 SDRAM banks per iteration for 256 iterations, prints
+      # one '.' per clean iter / 'F' on first failure. Useful
+      # for bisecting "Linux kernel hang due to SDRAM corruption"
+      # vs "kernel-specific bug" — task #17 follow-up to #146.
+      riski5-core-sdramstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sdramStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloAExt.hs into
       # imem. Probes whether 'Riski5.Core.FU.Amo' (the new RV32A FSM)
       # works against the real SRAM controller on silicon. Expected
@@ -245,6 +257,12 @@
       flash-riski5-sdramexec = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-sdramexec;
+      };
+
+      # Flasher for the SDRAM-stress silicon test bitstream.
+      flash-riski5-sdramstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sdramstress;
       };
 
       # Flasher for the A-extension silicon test bitstream.
@@ -421,6 +439,10 @@
       flash-riski5-sdramexec = {
         type = "app";
         program = "${self'.packages.flash-riski5-sdramexec}/bin/flash-riski5";
+      };
+      flash-riski5-sdramstress = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sdramstress}/bin/flash-riski5";
       };
       flash-riski5-aexttest = {
         type = "app";

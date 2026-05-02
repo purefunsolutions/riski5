@@ -50,6 +50,19 @@
   # and the firmware loops — yielding @BSBSBS…@ on the JTAG-UART
   # iff SDRAM execution works end-to-end.
   sdramExec ? false,
+  # Build the SDRAM-stress silicon-test variant. Bigger than
+  # @sdramExec@ (which just `sw 'S'`), much smaller than the
+  # Linux kernel. The BRAM bootstrap stages a ~30-instruction
+  # SDRAM-resident loop into @SDRAM[0x80000000..0x80000200)@,
+  # JALRs there, the loop writes a per-iteration value to 4
+  # SDRAM addresses each in a different bank, reads each back
+  # and verifies, prints @.@ per clean iteration / @F@ on the
+  # first mismatch, loops 256 times then @D@ and JALRs back to
+  # BRAM (where it loops the whole sequence). Same overlay
+  # mechanism as @sdramExec@; flips @FetchPolicy.enableSdramFetch
+  # = True@ so the SoC routes @pcFetch in SDRAM range@ through
+  # the 'Riski5.Sdram' adapter.
+  sdramStress ? false,
   # Build the A-extension silicon-test variant. Overlay
   # @HelloAExt.helloAExtFirmwareWords@ into the imem and exercise
   # the @Riski5.Core.FU.Amo@ FSM against an SRAM word — see the
@@ -125,11 +138,12 @@
   isCoremark = coremarkPkg != null;
   isSramExec = sramExec && !isCoremark;
   isSdramExec = sdramExec && !isCoremark && !isSramExec;
-  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec;
-  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest;
-  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest;
-  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
-  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isSdramStress = sdramStress && !isCoremark && !isSramExec && !isSdramExec;
+  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -173,6 +187,7 @@ in
       (if isCoremark then "riski5-core-coremark"
       else if isSramExec then "riski5-core-sramexec"
       else if isSdramExec then "riski5-core-sdramexec"
+      else if isSdramStress then "riski5-core-sdramstress"
       else if isAExtTest then "riski5-core-aexttest"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
@@ -350,6 +365,65 @@ in
               EOF
               sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
               echo "### sdramExec variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
+            ''}
+
+            ${lib.optionalString isSdramStress ''
+              # SDRAM-stress silicon test variant. Same overlay
+              # mechanism as sdramExec but bigger SDRAM-resident
+              # workload — exercises mixed read/write/fetch across
+              # 4 banks for 256 iterations. Useful for bisecting
+              # between "Linux-specific bug" and "SDRAM execution
+              # is unreliable" hangs (task #17 follow-up to #146).
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramStress Nix build: re-exports
+              -- HelloSdramStress's firmware under the CoreMark
+              -- name so the unchanged -DFIRMWARE_COREMARK path in
+              -- app/Top.hs bakes the SDRAM-stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSdramStress (helloSdramStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSdramStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sdramStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramStress Nix build: turns on
+              -- the fetch-side SDRAM routing inside Riski5.Soc.soc
+              -- so the inner stress loop can execute from
+              -- 0x8000_0000+.
+              module FetchPolicy (
+                enableSramFetch,
+                enableSdramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = False
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### sdramStress variant: overlaid firmware/phase1/FetchPolicy.hs"
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
@@ -555,7 +629,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
