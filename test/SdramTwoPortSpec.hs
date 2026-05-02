@@ -87,6 +87,12 @@ tests =
             "back-to-back mixed fetch+data: each gets correct value"
             case_mixedStreamCorrectness
         ]
+    , testGroup
+        "AMO-shape transactions (task #29)"
+        [ testCase
+            "fetch-held + AMO-shape (read X → write X → read X back-to-back) returns written value"
+            case_amoShapeReadWriteRead
+        ]
     ]
 
 -- * Harness --------------------------------------------------------
@@ -472,3 +478,98 @@ case_mixedStreamCorrectness = do
       val2 = dr P.!! (P.head win2Pulses)
   assertEqual "first data load returns 0xD1D1D1D1" 0xD1D1D1D1 val1
   assertEqual "second data load returns 0xD2D2D2D2" 0xD2D2D2D2 val2
+
+{- | Mimic the bus-level shape of an AMO transaction (read X → write
+X back-to-back from the data port) under continuous fetch
+contention. The amoFU drives the data port:
+
+  * Cycle range R1: dataSel asserted, be=0, addr=X (Read phase)
+  * As soon as data-ready pulses, the FU transitions on the next
+    clock and the bus re-asserts as a write to the SAME address.
+  * Cycle range W1: dataSel asserted, be=0xF, addr=X, wdata=newVal
+  * After write completes, the FU enters AmoDone for one cycle
+    (data port idle), then the next instruction's bus access
+    begins. We model that with a Read-Window R2 a few cycles
+    later to verify the write actually committed.
+
+Throughout, fetch is held at a different SDRAM address — the
+same shape that broke task #21's data-load + fetch race. If the
+new two-port adapter has a corner case where the data port's
+write is re-routed to the fetch's address (or vice versa), the
+post-write read returns the wrong value.
+-}
+case_amoShapeReadWriteRead :: Assertion
+case_amoShapeReadWriteRead = do
+  let dataOff = 0x4000 :: Int
+      seedVal = 0x11111111 :: BitVector 32
+      newVal = 0x22222222 :: BitVector 32
+      mem =
+        makeMem
+          [ (0x100, 0xCAFEBABE) -- fetch port reads here
+          , (dataOff, seedVal) -- data port AMO target
+          ]
+      -- Cycle plan (60 cycles):
+      --   0     reset
+      --   1-12  AMO Read phase: dataSel=True, be=0
+      --   13-24 AMO Write phase: dataSel=True, be=0xF, wdata=newVal
+      --   25-30 AmoDone idle: dataSel=False
+      --   31-50 verify Read: dataSel=True, be=0
+      --   51-59 idle
+      cycles = 60
+      readPhase1 = 12 -- enough for SDRAM read latency
+      writePhase = 12
+      donePhase = 6
+      verifyPhase = 20
+      fSels = False : P.replicate (cycles - 1) True
+      fAddrs = sdramBase : P.replicate (cycles - 1) (sdramBase + 0x100)
+      dSels =
+        False
+          : P.replicate readPhase1 True
+          P.++ P.replicate writePhase True
+          P.++ P.replicate donePhase False
+          P.++ P.replicate verifyPhase True
+          P.++ P.replicate (cycles - 1 - readPhase1 - writePhase - donePhase - verifyPhase) False
+      dAddrs = P.replicate cycles (sdramBase + P.fromIntegral dataOff)
+      dWdatas =
+        P.replicate (1 + readPhase1) 0
+          P.++ P.replicate writePhase newVal
+          P.++ P.replicate (cycles - 1 - readPhase1 - writePhase) 0
+      dBes =
+        P.replicate (1 + readPhase1) 0
+          P.++ P.replicate writePhase 0b1111
+          P.++ P.replicate donePhase 0
+          P.++ P.replicate verifyPhase 0
+          P.++ P.replicate (cycles - 1 - readPhase1 - writePhase - donePhase - verifyPhase) 0
+      (_fr, _fy, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
+      -- Find the first data-ready in the AMO-Read phase (cycles 1-12)
+      -- and confirm it carries the seeded value.
+      readReady =
+        P.map P.fst $
+          P.filter (\(i, r) -> r P.&& i P.> 0 P.&& i P.<= 1 + readPhase1) (P.zip [(0 :: Int) ..] dy)
+      -- Find the first data-ready in the verify-Read phase
+      -- (cycle ≥ 1 + readPhase1 + writePhase + donePhase) and confirm
+      -- it carries the WRITTEN value (newVal). If a routing race
+      -- between fetch and data scrambles the write, this returns
+      -- seedVal (write didn't commit) or fetchVal (cross-port leak).
+      verifyStart = 1 + readPhase1 + writePhase + donePhase
+      verifyReady =
+        P.map P.fst $
+          P.filter (\(i, r) -> r P.&& i P.>= verifyStart) (P.zip [(0 :: Int) ..] dy)
+  case readReady of
+    [] -> assertBool ("expected AMO-Read ready in cycles 1-" P.++ P.show (1 + readPhase1) P.++ "; dy=" P.++ P.show dy) False
+    (idx : _) ->
+      assertEqual
+        ("AMO-Read should return seed value at cy " P.++ P.show idx)
+        seedVal
+        (dr P.!! idx)
+  case verifyReady of
+    [] -> assertBool ("expected verify-Read ready after cy " P.++ P.show verifyStart P.++ "; dy=" P.++ P.show dy) False
+    (idx : _) ->
+      assertEqual
+        ( "verify Read should return WRITTEN value (newVal=0x22222222) at cy "
+            P.++ P.show idx
+            P.++ ". If you see seedVal=0x11111111, the AMO write didn't commit. "
+            P.++ "If you see 0xCAFEBABE, fetch leaked into the data port."
+        )
+        newVal
+        (dr P.!! idx)

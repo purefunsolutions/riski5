@@ -51,6 +51,7 @@ import Clash.Prelude (
  )
 import Clash.Prelude qualified as CP
 import Clash.Sized.Vector qualified as V
+import HelloAmoStress (helloAmoStressFirmwareWords)
 import HelloSdramStress (helloSdramStressFirmwareWords)
 import HelloSramExec (helloSramExecFirmwareWords)
 import Riski5.JtagUart (jtagUartAlteraSim)
@@ -76,6 +77,7 @@ tests =
     "SoC + two-port adapter integration (whole-chain)"
     [ testCase "SDRAM chain: HelloSdramStress writes-then-reads 4 banks per iter, no failure markers" case_sdramStressClean
     , testCase "SRAM chain: HelloSramExec emits 1 B + 1 S per iteration" case_sramExecClean
+    , testCase "SDRAM AMO chain: HelloAmoStress amoswaps 4 banks per iter, no failure markers (task #29)" case_amoStressClean
     ]
 
 -- * Cases ------------------------------------------------------------
@@ -167,6 +169,56 @@ case_sramExecClean = do
           P.++ show bad
   assertBool msg (length complete > 0 && null bad)
 
+{- | HelloAmoStress runs an SDRAM-resident inner loop that, per
+iteration:
+
+  1. Pre-seeds 4 SDRAM banks with @expected@ via @sw@.
+  2. @amoswap.w@ each bank with a per-bank value, verifying the
+     returned old value equals @expected@ — i.e. the AMO Read
+     phase captured the right pre-seeded word.
+  3. Verify-reads each bank, confirming the AMO Write phase
+     committed the per-bank value.
+  4. Prints @.@ on a clean iteration. Per-bank failure goes to
+     a label byte ('A'/'B'/'C'/'D') + 'F' + 8-byte expected/
+     actual dump.
+
+Architectural assertion: the captured byte stream contains __no__
+failure markers ('F'). This is the simulation analogue of the
+suspected-but-not-yet-reproduced AMO corner-case from the Linux
+stack-protector panic at PC=0x8002cd98 (the panic sites all
+heavily use atomic refcounts, and the AMO FU is the newest
+silicon-bringup component — task #29).
+-}
+case_amoStressClean :: Assertion
+case_amoStressClean = do
+  let (bytes, busTrace) = runSocAmoStressDebug 16000
+
+      isFailureByte :: BitVector 8 -> Bool
+      isFailureByte b = b == 0x46 -- 'F' (the common-fail marker)
+
+      failures = filter isFailureByte bytes
+      bMarkers = length [() | b <- bytes, b == 0x42]
+      dotCount = length [() | b <- bytes, b == 0x2E]
+      activeBus = filter (\(_, b) -> sibCs b) (P.zip [(0 :: Int) ..] busTrace)
+      writes = filter (\(_, b) -> sibWr b) activeBus
+      reads = filter (\(_, b) -> sibRd b) activeBus
+      msg =
+        "Expected SDRAM-AMO-stress to print only B + ........ (no F failure marker). "
+          P.++ "B-markers: "
+          P.++ show bMarkers
+          P.++ " dots: "
+          P.++ show dotCount
+          P.++ " failures (F bytes): "
+          P.++ show (length failures)
+          P.++ ". First 60 bytes: "
+          P.++ show (take 60 bytes)
+          P.++ "\nTotal SDRAM writes: "
+          P.++ show (length writes)
+          P.++ ", total reads: "
+          P.++ show (length reads)
+  assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
+  assertBool msg (null failures)
+
 -- * Slicing helper (shared with SramExecSpec) ------------------------
 
 sliceByB :: [BitVector 8] -> [(Int, Int)]
@@ -213,6 +265,38 @@ runSocSdramStressTraces = withClockResetEnable @System clockGen resetGen enableG
  where
   progVec :: Vec 4096 (BitVector 32)
   progVec = V.unsafeFromList (take 4096 (helloSdramStressFirmwareWords ++ P.repeat 0x0000_0013))
+  dataVec :: Vec 1 (BitVector 32)
+  dataVec = CP.repeat 0
+  sramInit :: Vec 262144 (BitVector 16)
+  sramInit = CP.repeat 0
+  inputSig :: Signal System SocInFull
+  inputSig = fromList (P.repeat SocInFull {sifSwitches = 0, sifKeys = 0xF})
+  go :: (HiddenClockResetEnable System) => (Signal System (Maybe (BitVector 8)), Signal System SdramIpBus)
+  go =
+    let outSimS = socSimFullWithLargeSdram False True progVec dataVec sramInit inputSig
+        txS = sosUartTx <$> outSimS
+        busS = soSdramBus . sosOut <$> outSimS
+     in (txS, busS)
+
+-- | Run @HelloAmoStress@ with @enableSdramFetch=True@ — both core
+-- ports want SDRAM (IF stage fetches the AMO inner loop, data
+-- port drives the AMO Read/Write phases). Mirrors
+-- 'runSocSdramStressDebug' but loaded with the AMO firmware.
+runSocAmoStressDebug :: Int -> ([BitVector 8], [SdramIpBus])
+runSocAmoStressDebug nCycles =
+  let (txS, busS) = runSocAmoStressTraces
+      bytesAll = sampleN @System nCycles txS
+      busAll = sampleN @System nCycles busS
+   in ([b | Just b <- bytesAll], busAll)
+
+runSocAmoStressTraces ::
+  ( Signal System (Maybe (BitVector 8))
+  , Signal System SdramIpBus
+  )
+runSocAmoStressTraces = withClockResetEnable @System clockGen resetGen enableGen go
+ where
+  progVec :: Vec 4096 (BitVector 32)
+  progVec = V.unsafeFromList (take 4096 (helloAmoStressFirmwareWords ++ P.repeat 0x0000_0013))
   dataVec :: Vec 1 (BitVector 32)
   dataVec = CP.repeat 0
   sramInit :: Vec 262144 (BitVector 16)

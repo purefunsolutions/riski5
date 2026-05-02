@@ -133,6 +133,7 @@ library riski5-firmware
     FetchPolicy
     Hello
     HelloAExt
+    HelloAmoStress
     HelloSdramDataStress
     HelloSdramExec
     HelloSdramStress
