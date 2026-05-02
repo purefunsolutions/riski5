@@ -74,7 +74,7 @@ import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Plic (PlicSources, plic)
 import Riski5.Sdram (SdramIpBus, SdramIpReply (..), sdram, sdramIpSim, sdramSinglePort)
-import Riski5.Sram (SramPins (..), sram, sramChipSim)
+import Riski5.Sram (SramPins (..), sram, sramChipSim, sramSinglePort)
 
 {- |
 Which source currently owns the shared SRAM controller —
@@ -806,75 +806,37 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
     ) =
       if enableSramFetch
         then
+          -- Two-port controller: internal arbitration. Same
+          -- architectural fix as 'Riski5.Sdram.sdram' — kills the
+          -- old @sramOwnerS@ / @sramAddrArbS@ multiplex hazard
+          -- (a registered owner could lag the live request by one
+          -- cycle on switches, presenting wrong addr to the chip
+          -- mid-FSM). Now both the picked request and the
+          -- serving-port enum are latched atomically with the FSM
+          -- transition out of SIdle.
           let
             sramFetchInS :: Signal dom Bool
             sramFetchInS = (\fs -> fs == SlaveSram) <$> (slaveOf <$> pcFetchS)
-            sramOwnerS :: Signal dom SramOwner
-            sramOwnerS =
-              ( \dReq fReq ->
-                  if dReq
-                    then OwnData
-                    else if fReq then OwnFetch else OwnNone
-              )
-                <$> sramDataReqS
-                <*> sramFetchInS
-            sramSelArbS =
-              ( \o dReq -> case o of
-                  OwnFetch -> True
-                  _ -> dReq
-              )
-                <$> sramOwnerS
-                <*> sramDataReqS
-            sramAddrArbS =
-              ( \o dA pcF -> case o of
-                  OwnFetch -> pcF
-                  _ -> dA
-              )
-                <$> sramOwnerS
-                <*> dAddrS
-                <*> pcFetchS
-            sramWdataArbS =
-              ( \o dW -> case o of
-                  OwnFetch -> 0
-                  _ -> dW
-              )
-                <$> sramOwnerS
-                <*> dWdataS
-            sramBeArbS =
-              ( \o dB -> case o of
-                  OwnFetch -> 0 -- read-only
-                  _ -> dB
-              )
-                <$> sramOwnerS
-                <*> dBeS
-            sramRenArbS =
-              ( \o dR -> case o of
-                  OwnFetch -> True
-                  _ -> dR
-              )
-                <$> sramOwnerS
-                <*> dRenS
-            (sramRdataS', sramPinsS', sramReadyS') =
-              sram sramSelArbS sramAddrArbS sramWdataArbS sramBeArbS sramRenArbS sramDqInS
-            sramDataReadyS' =
-              ( \o rdy -> case o of
-                  OwnData -> rdy
-                  _ -> False
-              )
-                <$> sramOwnerS
-                <*> sramReadyS'
-            sramFetchReadyS' =
-              ( \o rdy -> case o of
-                  OwnFetch -> rdy
-                  _ -> False
-              )
-                <$> sramOwnerS
-                <*> sramReadyS'
+            ( sramFetchRdataS'
+              , sramFetchReadyS'
+              , sramDataRdataS'
+              , sramDataReadyS'
+              , sramPinsS'
+              ) =
+                sram
+                  sramFetchInS
+                  pcFetchS
+                  sramDataReqS
+                  dAddrS
+                  dWdataS
+                  dBeS
+                  dRenS
+                  sramDqInS
            in
-            ( sramRdataS'
+            ( sramDataRdataS'
             , sramPinsS'
             , sramDataReadyS'
-            , sramRdataS' -- fetch data shares the controller output
+            , sramFetchRdataS'
             , sramFetchReadyS'
             )
         else
@@ -884,7 +846,7 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
           -- placement.
           let
             (sramRdataS', sramPinsS', sramReadyS') =
-              sram sramDataReqS dAddrS dWdataS dBeS dRenS sramDqInS
+              sramSinglePort sramDataReqS dAddrS dWdataS dBeS dRenS sramDqInS
            in
             ( sramRdataS'
             , sramPinsS'

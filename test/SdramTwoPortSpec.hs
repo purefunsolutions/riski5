@@ -152,8 +152,8 @@ makeMem entries =
   applyEntry :: (Int, BitVector 32) -> Vec 16384 (BitVector 16) -> Vec 16384 (BitVector 16)
   applyEntry (off, val) v =
     let halfIdx = off `P.div` 2 -- byte offset → half-word index
-        loHalf = CP.resize @16 (CP.unpack (CP.pack (val CP..&. 0xFFFF)))
-        hiHalf = CP.resize @16 (CP.unpack (CP.pack ((val `CP.shiftR` 16) CP..&. 0xFFFF)))
+        loHalf = CP.slice CP.d15 CP.d0 val
+        hiHalf = CP.slice CP.d31 CP.d16 val
      in CP.replace
           (P.fromIntegral (halfIdx + 1))
           hiHalf
@@ -190,19 +190,32 @@ case_fetchOnly = do
 case_dataOnly :: Assertion
 case_dataOnly = do
   let mem = CP.repeat 0
-      -- Cycles: 0=reset, 1-4=SW (4 cycles for write completion),
-      -- 5-12=LW (multi-cycle read).
-      fSels = P.replicate 13 False
-      fAddrs = P.replicate 13 0
-      dSels = False : P.replicate 4 True P.++ P.replicate 8 True
-      dAddrs = sdramBase : P.replicate 12 sdramBase
-      dWdatas = 0 : P.replicate 4 0xDEADBEEF P.++ P.replicate 8 0
-      dBes = 0 : P.replicate 4 0b1111 P.++ P.replicate 8 0
-      (_, _, dr, dy) = runSdram2 13 fSels fAddrs dSels dAddrs dWdatas dBes mem
-      -- Skip the first 4 cycles (write window) and find the read
-      -- ready pulse in the load window.
+      -- Cycles 0=reset, 1-4=write (sw 0xDEADBEEF), 5-9=idle to
+      -- separate write from read, 10-19=read window. The idle gap
+      -- ensures the read's ready pulse is unambiguous (write
+      -- completions also pulse dataReady — correctly — but we
+      -- need to test the read's rdata in particular).
+      cycles = 20
+      fSels = P.replicate cycles False
+      fAddrs = P.replicate cycles 0
+      dSels =
+        P.replicate 1 False
+          P.++ P.replicate 4 True
+          P.++ P.replicate 5 False
+          P.++ P.replicate 10 True
+      dAddrs = P.replicate cycles sdramBase
+      dWdatas =
+        P.replicate 1 0
+          P.++ P.replicate 4 0xDEADBEEF
+          P.++ P.replicate 15 0
+      dBes =
+        P.replicate 1 0
+          P.++ P.replicate 4 0b1111
+          P.++ P.replicate 15 0
+      (_, _, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
+      -- Find ready pulses ONLY in the read window (cycle ≥ 10).
       readyCycles = P.zip [0 ..] dy
-      readPulses = P.filter (\(i, r) -> r P.&& i P.> 4) readyCycles
+      readPulses = P.filter (\(i, r) -> r P.&& i P.>= 10) readyCycles
   case readPulses of
     [] -> assertBool "data read should produce a ready pulse" False
     ((idx, _) : _) ->
@@ -222,15 +235,21 @@ case_dataWinsOnConcurrent = do
           [ (0x100, 0xAAAAAAAA) -- fetch port reads here
           , (0x200, 0xBBBBBBBB) -- data port reads here
           ]
-      -- Both ports assert from cycle 1 onwards, with different
-      -- addresses. Hold long enough for both to complete.
-      fSels = False : P.replicate 25 True
-      fAddrs = sdramBase : P.replicate 25 (sdramBase + 0x100)
-      dSels = False : P.replicate 25 True
-      dAddrs = sdramBase : P.replicate 25 (sdramBase + 0x200)
-      dWdatas = P.replicate 26 0
-      dBes = P.replicate 26 0 -- both reads
-      (fr, fy, dr, dy) = runSdram2 26 fSels fAddrs dSels dAddrs dWdatas dBes mem
+      -- Fetch is held continuously (= IF stage continually wants
+      -- new instructions while core stalls on data load). Data
+      -- pulses for one transaction window, then deasserts so fetch
+      -- gets the next turn — same shape as a real load that
+      -- completes and releases the data port. Without releasing,
+      -- data wins every SIdle by priority and fetch never runs.
+      cycles = 26
+      fSels = False : P.replicate (cycles - 1) True
+      fAddrs = sdramBase : P.replicate (cycles - 1) (sdramBase + 0x100)
+      dSels =
+        False : P.replicate 8 True P.++ P.replicate (cycles - 9) False
+      dAddrs = P.replicate cycles (sdramBase + 0x200)
+      dWdatas = P.replicate cycles 0
+      dBes = P.replicate cycles 0 -- both reads
+      (fr, fy, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
       firstFetchReady = P.length (P.takeWhile P.not fy)
       firstDataReady = P.length (P.takeWhile P.not dy)
   assertBool
@@ -303,32 +322,38 @@ case_dataReadyOnlyOnData = do
 -- values. Data port's rdata MUST come from its own dAddr.
 case_dataLoadSeesOwnAddr :: Assertion
 case_dataLoadSeesOwnAddr = do
-  -- Mimic the silicon stress test: fetch points at 0x54 (= the
-  -- second lw in the inner loop), data points at 0x80100000-style
-  -- offset. Pre-seed both with distinct values so a routing bug
-  -- shows up as the data port reading the fetch's value.
+  -- Mimic the silicon stress test: fetch points at one cell, data
+  -- points at a different cell. Pre-seed both with distinct values
+  -- so a routing bug shows up as the data port reading the fetch's
+  -- value. (The silicon test uses 0x80100000 for data and PC for
+  -- fetch; here we use small offsets that fit inside the test
+  -- harness's Vec 16384 half-words = 32 KB chip image.)
   let fetchOff = 0x54
-      dataOff = 0x100000 -- 1 MB into chip = bank-crossing addr
+      dataOff = 0x4000 :: Int -- 16 KB into chip — distinct page from fetch
       fetchVal = 0x00062983 -- the lw instruction (the bug's signature)
       dataVal = 0x12340000 -- the value the firmware actually wrote
       mem =
         makeMem
           [ (fetchOff, fetchVal)
-          , (P.fromIntegral dataOff, dataVal)
+          , (dataOff, dataVal)
           ]
-      -- Both ports concurrently want SDRAM. Fetch will be held
-      -- across the whole window (= same as a stalled IF stage).
-      fSels = False : P.replicate 25 True
-      fAddrs = sdramBase : P.replicate 25 (sdramBase + P.fromIntegral fetchOff)
-      dSels = False : P.replicate 25 True
-      dAddrs = sdramBase : P.replicate 25 (sdramBase + P.fromIntegral dataOff)
-      dWdatas = P.replicate 26 0
-      dBes = P.replicate 26 0 -- read
-      (_fr, _fy, dr, dy) = runSdram2 26 fSels fAddrs dSels dAddrs dWdatas dBes mem
+      -- Both ports concurrently want SDRAM. Fetch is held across
+      -- the whole window (= IF stage stalled in SDRAM range while
+      -- core does a load). Data pulses for one transaction; data
+      -- has priority so the load takes the next SIdle slot.
+      cycles = 26
+      fSels = False : P.replicate (cycles - 1) True
+      fAddrs = sdramBase : P.replicate (cycles - 1) (sdramBase + P.fromIntegral fetchOff)
+      dSels =
+        False : P.replicate 10 True P.++ P.replicate (cycles - 11) False
+      dAddrs = P.replicate cycles (sdramBase + P.fromIntegral dataOff)
+      dWdatas = P.replicate cycles 0
+      dBes = P.replicate cycles 0 -- read
+      (_fr, _fy, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
       firstDataReady = P.length (P.takeWhile P.not dy)
   assertBool
     ("data ready should fire within 26 cycles, dy=" P.++ P.show dy)
-    (firstDataReady P.< 26)
+    (firstDataReady P.< cycles)
   let actual = dr P.!! firstDataReady
   -- The whole point of the test: actual MUST be dataVal, NOT
   -- fetchVal. If a regression brings the bug back, this fails
@@ -345,47 +370,50 @@ case_dataLoadSeesOwnAddr = do
 -- per-transaction port-leakage that single-shot tests miss.
 case_mixedStreamCorrectness :: Assertion
 case_mixedStreamCorrectness = do
-  -- Pre-seed 4 fetch addresses + 4 data addresses, all distinct
-  -- values. Run a long sequence holding fetchSel constantly (=
-  -- IF stage always wants new instruction) and data port pulsing
-  -- briefly for each load.
+  -- Hold fetch continuously. Pulse data twice in two well-separated
+  -- windows. Each window is long enough for ONE read to complete
+  -- (SDRAM sim takes ~6 cycles per read). Test that the FIRST
+  -- ready pulse in each window has the right value.
   let fetchVals = [(0x100, 0xF1F1F1F1), (0x104, 0xF2F2F2F2), (0x108, 0xF3F3F3F3), (0x10C, 0xF4F4F4F4)]
       dataVals = [(0x200, 0xD1D1D1D1), (0x204, 0xD2D2D2D2)]
       mem = makeMem (fetchVals P.++ dataVals)
-      -- Hold fetch on offset 0x100 for many cycles. Pulse data
-      -- twice on different addresses. Each data load must come
-      -- back with its own value, NOT 0xF1F1F1F1.
       cycles = 60
+      win1Start = 4
+      win1End = 14
+      win2Start = 30
+      win2End = 40
       fSels = False : P.replicate (cycles - 1) True
       fAddrs = sdramBase : P.replicate (cycles - 1) (sdramBase + 0x100)
-      -- Data: idle 4, assert 12 cycles for first load (addr 0x200),
-      -- idle 12, assert 12 cycles for second load (addr 0x204).
       dSels =
-        P.replicate 4 False
-          P.++ P.replicate 12 True
-          P.++ P.replicate 12 False
-          P.++ P.replicate 12 True
-          P.++ P.replicate (cycles - 52) False
+        P.replicate win1Start False
+          P.++ P.replicate (win1End - win1Start) True
+          P.++ P.replicate (win2Start - win1End) False
+          P.++ P.replicate (win2End - win2Start) True
+          P.++ P.replicate (cycles - win2End) False
       dAddrs =
-        P.replicate 4 sdramBase
-          P.++ P.replicate 12 (sdramBase + 0x200)
-          P.++ P.replicate 12 sdramBase
-          P.++ P.replicate 12 (sdramBase + 0x204)
-          P.++ P.replicate (cycles - 52) sdramBase
+        P.replicate win1Start sdramBase
+          P.++ P.replicate (win1End - win1Start) (sdramBase + 0x200)
+          P.++ P.replicate (win2Start - win1End) sdramBase
+          P.++ P.replicate (win2End - win2Start) (sdramBase + 0x204)
+          P.++ P.replicate (cycles - win2End) sdramBase
       dWdatas = P.replicate cycles 0
       dBes = P.replicate cycles 0
       (_, _, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
-      -- Find both data-ready pulses.
-      dyIdx = P.zip [0 ..] dy
-      readyIdxs = P.map P.fst (P.filter P.snd dyIdx)
+      -- First ready pulse in window 1 = first data load's value.
+      win1Pulses =
+        P.map P.fst $
+          P.filter (\(i, r) -> r P.&& i P.>= win1Start P.&& i P.< win2Start) (P.zip [0 ..] dy)
+      -- First ready pulse in window 2 = second data load's value.
+      win2Pulses =
+        P.map P.fst $
+          P.filter (\(i, r) -> r P.&& i P.>= win2Start P.&& i P.< cycles) (P.zip [0 ..] dy)
   assertBool
-    ( "expected 2 data-ready pulses, got "
-        P.++ P.show (P.length readyIdxs)
-        P.++ " at cycles "
-        P.++ P.show readyIdxs
-    )
-    (P.length readyIdxs P.>= 2)
-  let val1 = dr P.!! (readyIdxs P.!! 0)
-      val2 = dr P.!! (readyIdxs P.!! 1)
+    ("expected at least 1 data-ready in window 1; pulses=" P.++ P.show win1Pulses)
+    (P.not (P.null win1Pulses))
+  assertBool
+    ("expected at least 1 data-ready in window 2; pulses=" P.++ P.show win2Pulses)
+    (P.not (P.null win2Pulses))
+  let val1 = dr P.!! (P.head win1Pulses)
+      val2 = dr P.!! (P.head win2Pulses)
   assertEqual "first data load returns 0xD1D1D1D1" 0xD1D1D1D1 val1
   assertEqual "second data load returns 0xD2D2D2D2" 0xD2D2D2D2 val2

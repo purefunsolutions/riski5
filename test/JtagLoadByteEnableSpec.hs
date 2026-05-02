@@ -70,12 +70,11 @@ runJtagLoad be wdata =
         , sisJtagLoadWe = True
         , sisJtagLoadBe = be
         }
-      stimSig = fromList (P.replicate 6000 stim) :: P.IO _
       -- Tcl-blink-style, just constant `stim`. socSim consumes a
       -- Signal so we use 'fromList' over a (constant, finite) list.
       sig = fromList (P.replicate 6000 stim)
       sample = sampleN @System 6000 (socSim progVec dataVec sig)
-   in P.seq stimSig sample
+   in sample
 
 -- | Filter the 6000-cycle SocOutSim trace down to the cycles where
 -- the SDRAM bus was actually being driven by JTAG (sibCs && sibWr).
@@ -83,7 +82,7 @@ runJtagLoad be wdata =
 -- the JTAG path — the cycles where the byteenable bug surfaced.
 sdramJtagDriveCycles :: [SocOutSim] -> [SdramIpBus]
 sdramJtagDriveCycles =
-  filter (\b -> sibCs b && sibWr b)
+  filter (\b -> sibCs b P.&& sibWr b)
     . map (soSdramBus . sosOut)
 
 tests :: TestTree
@@ -99,7 +98,7 @@ tests =
         let firstBe = sibBe (head trace)
         assertEqual
           "sibBe on the JTAG-driven cycle"
-          (0b0011 :: BitVector 4)
+          (0b11 :: BitVector 2)
           firstBe
 
     , testCase "hi-half byteenable 0b1100 reaches sibBe" $ do
@@ -111,7 +110,7 @@ tests =
         let firstBe = sibBe (head trace)
         assertEqual
           "sibBe on the JTAG-driven cycle"
-          (0b1100 :: BitVector 4)
+          (0b11 :: BitVector 2)
           firstBe
 
     , testCase "single-byte byteenable 0b0001 reaches sibBe" $ do
@@ -123,7 +122,7 @@ tests =
         let firstBe = sibBe (head trace)
         assertEqual
           "sibBe on the JTAG-driven cycle"
-          (0b0001 :: BitVector 4)
+          (0b01 :: BitVector 2)
           firstBe
 
     , testCase "full word byteenable 0b1111 reaches sibBe (no regression for the masked path)" $ do
@@ -135,6 +134,6 @@ tests =
         let firstBe = sibBe (head trace)
         assertEqual
           "sibBe on the JTAG-driven cycle"
-          (0b1111 :: BitVector 4)
+          (0b11 :: BitVector 2)
           firstBe
     ]

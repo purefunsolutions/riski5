@@ -116,8 +116,17 @@ module Riski5.Sram (
   -- * Pin bundles
   SramPins (..),
 
-  -- * Controller
+  -- * Two-port controller (preferred — internal arbitration
+  -- eliminates the SoC-side fetch/data multiplex hazard, same
+  -- architectural fix as 'Riski5.Sdram.sdram'). Use this when
+  -- @enableSramFetch=True@.
   sram,
+  ServingPort (..),
+
+  -- * Single-port controller (legacy — used by the
+  -- @enableSramFetch=False@ data-only path in 'Riski5.Soc' and
+  -- the existing single-port test suite).
+  sramSinglePort,
 
   -- * Behavioural model (simulation only)
   sramSim,
@@ -126,6 +135,7 @@ module Riski5.Sram (
 
 import Clash.Prelude hiding (not, (&&), (||))
 import Clash.Sized.Vector qualified as V
+import Data.Proxy (Proxy (..))
 import Riski5.MemMap (sramBase)
 
 {- |
@@ -180,10 +190,263 @@ data SramState
   deriving anyclass (NFDataX)
 
 {- |
-SRAM controller. See module header for the FSM layout + timing
-table.
+Which port is currently being served (or none). Same role as the
+type of the same name in 'Riski5.Sdram': captured atomically with
+the FSM transition out of 'SIdle' and held throughout the
+transaction so per-port @ready@ + @rdata@ routing can never leak
+to the wrong caller.
+
+Naming: 'SrvNone' = no transaction in flight (FSM is in 'SIdle' and
+no port is asserting select). 'SrvFetch' / 'SrvData' = the port
+whose request the FSM is currently processing. The mutually
+exclusive structure mirrors the SoC's old @SramOwner@ enum the
+external arbiter used to maintain (now removed in favour of this
+internal state).
+-}
+data ServingPort = SrvNone | SrvFetch | SrvData
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+SRAM controller — two-port (preferred). Internally arbitrates
+between fetch and data ports, eliminating the SoC-side
+@sramOwnerS@ / @sramAddrArbS@ multiplex hazard that mirrored the
+task-#21 SDRAM bug (a registered owner could lag the live request
+by one cycle on owner switches, presenting the wrong address to
+the chip mid-FSM).
+
+Same architectural pattern as 'Riski5.Sdram.sdram': accepting-port
+decision is purely combinational from the current cycle's port
+inputs; address / wdata / byte-enable are picked from the same
+@acceptingPortS@ in the same cycle (so the bundle is internally
+consistent); both the picked request and the serving-port enum are
+latched on the FSM transition out of 'SIdle' and held through the
+whole transaction.
+
+Data port has priority on simultaneous arrival — same convention
+as the old SoC arbiter and the SDRAM two-port adapter. The IF
+stage stalls anyway via its own @imemReady@ path while a data
+load runs, so suppressing fetch during data is a free trade.
 -}
 sram ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  -- | Fetch port: select. True when the IF stage's @pcFetchS@ is
+  --   in the SRAM range AND the IF stage actually wants a new
+  --   instruction word.
+  Signal dom Bool ->
+  -- | Fetch port: byte address.
+  Signal dom (BitVector 32) ->
+  -- | Data port: select. True when the data port wants SRAM AND
+  --   has @dRen@ or non-zero @dBe@ asserted.
+  Signal dom Bool ->
+  -- | Data port: byte address.
+  Signal dom (BitVector 32) ->
+  -- | Data port: 32-bit write data.
+  Signal dom (BitVector 32) ->
+  -- | Data port: byte-enable (nonzero on stores; zero on loads).
+  Signal dom (BitVector 4) ->
+  -- | Data port: read-enable (unused; reads inferred from @be=0@).
+  Signal dom Bool ->
+  -- | data driven by the SRAM on @SRAM_DQ@ this cycle (external input)
+  Signal dom (BitVector 16) ->
+  -- | @(fetchRdata, fetchReady, dataRdata, dataReady, pins)@.
+  ( Signal dom (BitVector 32)
+  , Signal dom Bool
+  , Signal dom (BitVector 32)
+  , Signal dom Bool
+  , Signal dom SramPins
+  )
+sram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS sramDqInRawS =
+  (fetchRdataS, fetchReadyS, dataRdataS, dataReadyS, pinsS)
+ where
+  -- Register the off-chip SRAM DQ input once, inside the controller.
+  -- One cycle of read latency in exchange for slack on the pin →
+  -- input-flop path; see module header.
+  sramDqInS = register 0 sramDqInRawS
+
+  -- Combinational decision: which port to accept THIS cycle. Data
+  -- has priority on simultaneous arrival.
+  acceptingPortS :: Signal dom ServingPort
+  acceptingPortS =
+    ( \dSel fSel ->
+        if dSel
+          then SrvData
+          else if fSel then SrvFetch else SrvNone
+    )
+      <$> dataSelS
+      <*> fetchSelS
+
+  -- Picked request signals — combinational from the accepting port.
+  pickedAddrS :: Signal dom (BitVector 32)
+  pickedAddrS =
+    ( \port dA fA -> case port of
+        SrvData -> dA
+        SrvFetch -> fA
+        SrvNone -> 0
+    )
+      <$> acceptingPortS
+      <*> dataAddrS
+      <*> fetchAddrS
+
+  pickedWdataS :: Signal dom (BitVector 32)
+  pickedWdataS =
+    ( \port wd -> case port of
+        SrvData -> wd
+        _ -> 0
+    )
+      <$> acceptingPortS
+      <*> dataWdataS
+
+  pickedBeS :: Signal dom (BitVector 4)
+  pickedBeS =
+    ( \port be -> case port of
+        SrvData -> be
+        SrvFetch -> 0 -- fetch is always a read (be=0)
+        SrvNone -> 0
+    )
+      <$> acceptingPortS
+      <*> dataBeS
+
+  -- selS into the FSM: True when ANY port wants.
+  selS = (\dSel fSel -> dSel || fSel) <$> dataSelS <*> fetchSelS
+
+  -- Latched request signals. Capture in SIdle, freeze through the
+  -- transaction. CRITICAL: pickedAddrS/WdataS/BeS all derive from
+  -- the same acceptingPortS in the same cycle, so the captured
+  -- bundle is internally consistent.
+  latchedAddrS = register 0 latchedAddrNextS
+  latchedAddrNextS =
+    (\st a old -> case st of SIdle -> a; _ -> old)
+      <$> stateS
+      <*> pickedAddrS
+      <*> latchedAddrS
+  latchedWdataS = register 0 latchedWdataNextS
+  latchedWdataNextS =
+    (\st w old -> case st of SIdle -> w; _ -> old)
+      <$> stateS
+      <*> pickedWdataS
+      <*> latchedWdataS
+  latchedBeS = register 0 latchedBeNextS
+  latchedBeNextS =
+    (\st b old -> case st of SIdle -> b; _ -> old)
+      <$> stateS
+      <*> pickedBeS
+      <*> latchedBeS
+
+  -- Serving-port register. Updates atomically with the SIdle exit.
+  -- During the transaction, holds the just-committed port; on the
+  -- completion cycle (state→SIdle), the register still reflects
+  -- the port whose ready pulse this cycle belongs to.
+  servingPortS :: Signal dom ServingPort
+  servingPortS = register SrvNone servingPortNextS
+  servingPortNextS =
+    ( \st srv accept -> case st of
+        SIdle -> accept
+        _ -> srv
+    )
+      <$> stateS
+      <*> servingPortS
+      <*> acceptingPortS
+
+  -- Effective request signals — live in SIdle, latched otherwise.
+  effAddrS =
+    (\st a la -> case st of SIdle -> a; _ -> la)
+      <$> stateS
+      <*> pickedAddrS
+      <*> latchedAddrS
+  effWdataS =
+    (\st w lw -> case st of SIdle -> w; _ -> lw)
+      <$> stateS
+      <*> pickedWdataS
+      <*> latchedWdataS
+  effBeS =
+    (\st b lb -> case st of SIdle -> b; _ -> lb)
+      <$> stateS
+      <*> pickedBeS
+      <*> latchedBeS
+
+  -- Half-word index of the addressed half-word (chip address space).
+  halfIdxS = (\a -> slice d18 d1 (a - sramBase)) <$> effAddrS
+  wordLoAddrS = (\h -> h .&. complement 1) <$> halfIdxS
+  wordHiAddrS = (\h -> h .|. 1) <$> halfIdxS
+
+  -- Decoded op shape — combinational from effective be.
+  isWriteS = (\be -> be /= 0) <$> effBeS
+  isWordS = (\be -> be == 0b1111) <$> effBeS
+
+  -- FSM state.
+  stateS = register SIdle nextStateS
+  nextStateS = nextState <$> stateS <*> selS <*> isWriteS <*> isWordS
+
+  -- Low-half register for word reads (same as single-port).
+  wordLoReg = register 0 wordLoNextS
+  wordLoNextS =
+    ( \st dq old -> case st of
+        SReadHiStall -> dq
+        _ -> old
+    )
+      <$> stateS
+      <*> sramDqInS
+      <*> wordLoReg
+
+  -- Generic ready (terminal cycles).
+  readyS = ready <$> stateS <*> selS
+
+  -- Pin bundle.
+  pinsS =
+    pinsFor
+      <$> stateS
+      <*> selS
+      <*> isWriteS
+      <*> isWordS
+      <*> halfIdxS
+      <*> wordLoAddrS
+      <*> wordHiAddrS
+      <*> byteSelS
+      <*> effBeS
+      <*> effWdataS
+
+  byteSelS = (\a -> testBit a 1) <$> effAddrS
+
+  -- 32-bit assembled rdata.
+  rdataAssembledS = rdata <$> stateS <*> sramDqInS <*> wordLoReg
+
+  -- Per-port ready / rdata routing via servingPortS.
+  fetchReadyS =
+    ( \srv rdy -> case srv of
+        SrvFetch -> rdy
+        _ -> False
+    )
+      <$> servingPortS
+      <*> readyS
+  dataReadyS =
+    ( \srv rdy -> case srv of
+        SrvData -> rdy
+        _ -> False
+    )
+      <$> servingPortS
+      <*> readyS
+  fetchRdataS =
+    ( \srv rd -> case srv of
+        SrvFetch -> rd
+        _ -> 0
+    )
+      <$> servingPortS
+      <*> rdataAssembledS
+  dataRdataS =
+    ( \srv rd -> case srv of
+        SrvData -> rd
+        _ -> 0
+    )
+      <$> servingPortS
+      <*> rdataAssembledS
+
+{- |
+SRAM controller — single-port. See module header for the FSM
+layout + timing table.
+-}
+sramSinglePort ::
   forall dom.
   (HiddenClockResetEnable dom) =>
   -- | slave-select from the bus decoder
@@ -203,7 +466,7 @@ sram ::
   , Signal dom SramPins
   , Signal dom Bool
   )
-sram selS addrS wdataS beS _renS sramDqInRawS =
+sramSinglePort selS addrS wdataS beS _renS sramDqInRawS =
   (rdataS, pinsS, readyS)
  where
   -- Register the off-chip SRAM DQ input once, inside the controller.
@@ -478,7 +741,7 @@ sramSim ::
   )
 sramSim initial selS addrS wdataS beS renS = (rdataS, pinsS, storeS, readyS)
  where
-  (rdataS, pinsS, readyS) = sram selS addrS wdataS beS renS dqInS
+  (rdataS, pinsS, readyS) = sramSinglePort selS addrS wdataS beS renS dqInS
   (dqInS, storeS) = sramChipSim initial pinsS
 
 {- |
@@ -511,7 +774,7 @@ sramChipSim initial pinsS = (dqInS, storeS)
   storeS = register initial nextStoreS
 
   toIndex :: BitVector 18 -> Index n
-  toIndex bv = fromInteger (toInteger bv `mod` toInteger (maxBound :: Index n) + 1)
+  toIndex bv = fromInteger (toInteger bv `mod` toInteger (natVal (Proxy :: Proxy n)))
 
   dqInS =
     (\store p -> store V.!! toIndex (sramAddr p))

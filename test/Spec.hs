@@ -34,6 +34,7 @@ import ReferenceSpec qualified
 import RegfileSpec qualified
 import SdramExecSpec qualified
 import SdramSpec qualified
+import SdramTwoPortSpec qualified
 import SdrControllerSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
@@ -43,6 +44,7 @@ import SramExecSpec qualified
 import TimerIrqSpec qualified
 import SramSpec qualified
 import SramStallForwardSpec qualified
+import SramTwoPortSpec qualified
 import Test.Tasty (defaultMain, testGroup)
 import TrapSpec qualified
 import UartBackpressureSpec qualified
@@ -75,8 +77,10 @@ main =
       , SramSpec.tests
       , SramExecSpec.tests
       , SramStallForwardSpec.tests
+      , SramTwoPortSpec.tests
       , SdramSpec.tests
       , SdramExecSpec.tests
+      , SdramTwoPortSpec.tests
       , SdrControllerSpec.tests
       , HelloSpec.tests
       , IFetchSpec.tests
