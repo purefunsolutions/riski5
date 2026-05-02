@@ -55,6 +55,7 @@ import HelloAmoStress (helloAmoStressFirmwareWords)
 import HelloLrScStress (helloLrScStressFirmwareWords)
 import HelloSdramStress (helloSdramStressFirmwareWords)
 import HelloSramExec (helloSramExecFirmwareWords)
+import HelloStackStress (helloStackStressFirmwareWords)
 import Riski5.JtagUart (jtagUartAlteraSim)
 import Riski5.Sdram (SdramIpBus (..), SdramIpReply (..), sdramIpSim)
 import Riski5.Soc (
@@ -80,6 +81,7 @@ tests =
     , testCase "SRAM chain: HelloSramExec emits 1 B + 1 S per iteration" case_sramExecClean
     , testCase "SDRAM AMO chain: HelloAmoStress amoswaps 4 banks per iter, no failure markers (task #29)" case_amoStressClean
     , testCase "SDRAM LR/SC chain: HelloLrScStress cmpxchg loops 4 banks per iter, no failure markers (task #29)" case_lrScStressClean
+    , testCase "SDRAM stack chain: HelloStackStress prologue/epilogue 4-reg save+restore, no failure markers (task #33)" case_stackStressClean
     ]
 
 -- * Cases ------------------------------------------------------------
@@ -260,6 +262,44 @@ case_lrScStressClean = do
   assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
   assertBool msg (null failures)
 
+{- | HelloStackStress runs an SDRAM-resident inner loop that, per
+iteration, mirrors task_work_add's exact prologue/epilogue
+shape (multi-register sw/lw to/from an SDRAM-resident stack)
+and verifies all four registers (ra, s0, s1, t0) round-trip
+through the stack save+restore.
+
+Targeted at the third major suspect for the Linux panic at
+PC=0x8002cd98 after AMO + LR/SC came back clean: SDRAM-resident
+stack save/restore corruption. If any of the four sw/lw pairs
+returns the wrong value, the iteration prints a per-register
+label byte ('R'/'S'/'T'/'U') + 'F' + expected/actual dump.
+
+Architectural assertion: no 'F' bytes in the captured UART
+stream over 16k cycles.
+-}
+case_stackStressClean :: Assertion
+case_stackStressClean = do
+  let (bytes, _busTrace) = runSocStackStressDebug 16000
+
+      isFailureByte :: BitVector 8 -> Bool
+      isFailureByte b = b == 0x46 -- 'F'
+
+      failures = filter isFailureByte bytes
+      bMarkers = length [() | b <- bytes, b == 0x42]
+      dotCount = length [() | b <- bytes, b == 0x2E]
+      msg =
+        "Expected SDRAM-stack-stress to print only B + ........ (no F failure marker). "
+          P.++ "B-markers: "
+          P.++ show bMarkers
+          P.++ " dots: "
+          P.++ show dotCount
+          P.++ " failures (F bytes): "
+          P.++ show (length failures)
+          P.++ ". First 60 bytes: "
+          P.++ show (take 60 bytes)
+  assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
+  assertBool msg (null failures)
+
 -- * Slicing helper (shared with SramExecSpec) ------------------------
 
 sliceByB :: [BitVector 8] -> [(Int, Int)]
@@ -369,6 +409,37 @@ runSocLrScStressTraces = withClockResetEnable @System clockGen resetGen enableGe
  where
   progVec :: Vec 4096 (BitVector 32)
   progVec = V.unsafeFromList (take 4096 (helloLrScStressFirmwareWords ++ P.repeat 0x0000_0013))
+  dataVec :: Vec 1 (BitVector 32)
+  dataVec = CP.repeat 0
+  sramInit :: Vec 262144 (BitVector 16)
+  sramInit = CP.repeat 0
+  inputSig :: Signal System SocInFull
+  inputSig = fromList (P.repeat SocInFull {sifSwitches = 0, sifKeys = 0xF})
+  go :: (HiddenClockResetEnable System) => (Signal System (Maybe (BitVector 8)), Signal System SdramIpBus)
+  go =
+    let outSimS = socSimFullWithLargeSdram False True progVec dataVec sramInit inputSig
+        txS = sosUartTx <$> outSimS
+        busS = soSdramBus . sosOut <$> outSimS
+     in (txS, busS)
+
+-- | Run @HelloStackStress@ with @enableSdramFetch=True@. Mirror
+-- of 'runSocLrScStressDebug' but loaded with the stack-stress
+-- firmware (kernel-prologue probe — task #33).
+runSocStackStressDebug :: Int -> ([BitVector 8], [SdramIpBus])
+runSocStackStressDebug nCycles =
+  let (txS, busS) = runSocStackStressTraces
+      bytesAll = sampleN @System nCycles txS
+      busAll = sampleN @System nCycles busS
+   in ([b | Just b <- bytesAll], busAll)
+
+runSocStackStressTraces ::
+  ( Signal System (Maybe (BitVector 8))
+  , Signal System SdramIpBus
+  )
+runSocStackStressTraces = withClockResetEnable @System clockGen resetGen enableGen go
+ where
+  progVec :: Vec 4096 (BitVector 32)
+  progVec = V.unsafeFromList (take 4096 (helloStackStressFirmwareWords ++ P.repeat 0x0000_0013))
   dataVec :: Vec 1 (BitVector 32)
   dataVec = CP.repeat 0
   sramInit :: Vec 262144 (BitVector 16)

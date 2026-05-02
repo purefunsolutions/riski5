@@ -139,6 +139,7 @@ library riski5-firmware
     HelloSdramExec
     HelloSdramStress
     HelloSramExec
+    HelloStackStress
     HelloTimerIrq
     LinuxBoot
     LinuxBootMaster

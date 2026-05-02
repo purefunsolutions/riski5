@@ -167,6 +167,18 @@
         lrScStress = true;
       };
 
+      # Task #33: stack-stress silicon test (follow-up to #29 / #32
+      # after both amo + LR/SC came back clean). Bakes
+      # firmware/phase1/HelloStackStress.hs into imem. Mirrors
+      # task_work_add's prologue/epilogue exactly: 4-register
+      # save/restore (ra, s0, s1, t0) on SDRAM-resident stack
+      # under fetch contention. If sw/lw to SDRAM stack has any
+      # corner case, this variant prints 'F' + per-register label.
+      riski5-core-stackstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        stackStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloTimerIrq.hs
       # into imem. Probes the full CLINT → mip.MTIP → trap → handler
       # chain on real hardware. Expected output: @B......T......T…@.
@@ -322,6 +334,12 @@
       flash-riski5-lrscstress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-lrscstress;
+      };
+
+      # Flasher for the stack-stress silicon test bitstream (task #33).
+      flash-riski5-stackstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-stackstress;
       };
 
       # Flasher for the timer-interrupt silicon test bitstream.
