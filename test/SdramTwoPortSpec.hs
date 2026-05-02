@@ -75,6 +75,9 @@ tests =
         , testCase "fetch ready never pulses on data port" case_fetchReadyOnlyOnFetch
         , testCase "data ready never pulses on fetch port" case_dataReadyOnlyOnData
         ]
+    , testCase
+        "fetch-held + write-then-read: read must see written value (task-#17 scope)"
+        case_fetchHeldWriteThenRead
     , testGroup
         "smoking-gun regression (task #21)"
         [ testCase
@@ -312,6 +315,58 @@ case_dataReadyOnlyOnData = do
         P.++ P.show dy
     )
     (P.not (P.or dy))
+
+{- | Reproduce the silicon @sdramstress@ failure shape in a tight
+unit test: fetch port held continuously (= IF stage stuck in
+SDRAM range), data port issues SW then LW to a different address.
+The LW must return the value SW wrote.
+
+This is the test the integration test @SocChainIntegrationSpec@
+catches but the @SdramTwoPortSpec@ smoking-gun test misses —
+because the smoking-gun was a read-only scenario, never exercised
+write-then-read with fetch contention.
+-}
+case_fetchHeldWriteThenRead :: Assertion
+case_fetchHeldWriteThenRead = do
+  -- Fetch points at one cell, data writes 0xDEADBEEF to a different
+  -- cell, then reads back. Both ports are asserted across the whole
+  -- window; data wins on each SIdle so the write and read complete
+  -- in turn while fetch waits.
+  let dataOff = 0x4000 :: Int
+      dataVal = 0xDEADBEEF
+      mem = makeMem [(0x100, 0xCAFEBABE)] -- pre-seed fetch addr only
+      cycles = 60
+      fSels = False : P.replicate (cycles - 1) True
+      fAddrs = sdramBase : P.replicate (cycles - 1) (sdramBase + 0x100)
+      -- Data: idle 4, write window 8, idle 4, read window 8.
+      dSels =
+        P.replicate 4 False
+          P.++ P.replicate 8 True -- write
+          P.++ P.replicate 4 False
+          P.++ P.replicate 8 True -- read
+          P.++ P.replicate (cycles - 24) False
+      dAddrs = P.replicate cycles (sdramBase + P.fromIntegral dataOff)
+      dWdatas =
+        P.replicate 4 0
+          P.++ P.replicate 8 dataVal
+          P.++ P.replicate (cycles - 12) 0
+      dBes =
+        P.replicate 4 0
+          P.++ P.replicate 8 0b1111 -- write
+          P.++ P.replicate (cycles - 12) 0 -- read window has be=0
+      (_fr, _fy, dr, dy) = runSdram2 cycles fSels fAddrs dSels dAddrs dWdatas dBes mem
+      -- The read window is cycle 16 onwards. Find the first
+      -- data-ready in the read window.
+      readPulses =
+        P.map P.fst $
+          P.filter (\(i, r) -> r P.&& i P.>= 16) (P.zip [(0 :: Int) ..] dy)
+  case readPulses of
+    [] -> assertBool ("expected at least one data-ready in read window. dy=" P.++ P.show dy) False
+    (idx : _) ->
+      assertEqual
+        ("data load returned wrong value at cy " P.++ P.show idx)
+        dataVal
+        (dr P.!! idx)
 
 -- | THE SMOKING GUN regression. In the broken SoC arbiter, a data
 -- load with dAddr=0x80100000 returned the chip cells at
