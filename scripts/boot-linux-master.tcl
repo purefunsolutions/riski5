@@ -188,6 +188,79 @@ proc verify_first_words {m path base_addr nwords label} {
         $label $bad $nwords $fixed]
 }
 
+# Bulk verify the WHOLE uploaded image. Reads back in 256-word
+# chunks (~150 ms per chunk via master_read_32) and compares each
+# word to the source. Reports the first mismatch + total mismatch
+# count. Catches the "high-address upload corruption" task #146
+# left behind: the original 1024-word verify only covered the
+# first 4 KB, but a 3.2 MB Linux upload corrupts arbitrary bytes
+# at much higher offsets (silently, since master_read_32 reads
+# back from the same SDRAM controller's row buffer that absorbed
+# the bulk write). Slow path — adds ~1× the upload time. Worth
+# it: without it, kernel boots into a wfi loop the first time
+# `jalr setup_vm` lands on a corrupted instruction, with no
+# diagnostic.
+proc verify_all {m path base_addr size_bytes label} {
+    set padded [expr {($size_bytes + 3) & ~3}]
+    set words  [expr {$padded / 4}]
+    set fp [open $path "rb"]
+    fconfigure $fp -translation binary
+    set buf [read $fp $padded]
+    close $fp
+    if {[string length $buf] < $padded} {
+        append buf [string repeat "\x00" [expr {$padded - [string length $buf]}]]
+    }
+
+    set chunk_words 256
+    set verified 0
+    set bad 0
+    set first_bad_addr -1
+    set first_bad_got 0
+    set first_bad_want 0
+    set last_print [clock milliseconds]
+    set t_start    $last_print
+
+    while {$verified < $words} {
+        set remaining [expr {$words - $verified}]
+        set this_chunk [expr {min($chunk_words, $remaining)}]
+        set addr [expr {$base_addr + $verified * 4}]
+        set rb [master_read_32 $m $addr $this_chunk]
+        for {set i 0} {$i < $this_chunk} {incr i} {
+            binary scan $buf "@[expr {($verified + $i) * 4}]i" expected
+            set expected [expr {$expected & 0xFFFFFFFF}]
+            set got [expr {[lindex $rb $i] & 0xFFFFFFFF}]
+            if {$got != $expected} {
+                if {$first_bad_addr == -1} {
+                    set first_bad_addr [expr {$addr + $i * 4}]
+                    set first_bad_got $got
+                    set first_bad_want $expected
+                }
+                incr bad
+            }
+        }
+        incr verified $this_chunk
+
+        set now [clock milliseconds]
+        if {$now - $last_print > 1000} {
+            set elapsed_s [expr {($now - $t_start) / 1000.0}]
+            set kb_done   [expr {$verified * 4 / 1024.0}]
+            set kb_total  [expr {$padded / 1024.0}]
+            set rate      [expr {$kb_done / $elapsed_s}]
+            puts [format "  verify-all %s  %6.1f / %6.1f KB  @ %5.1f KB/s  (%d bad so far)" \
+                $label $kb_done $kb_total $rate $bad]
+            set last_print $now
+        }
+    }
+
+    if {$bad == 0} {
+        puts [format "  verify-all %s: %d / %d words OK" $label $verified $words]
+    } else {
+        puts [format "  verify-all %s: %d / %d words BAD; first @ 0x%08x: got 0x%08x want 0x%08x" \
+            $label $bad $verified $first_bad_addr $first_bad_got $first_bad_want]
+    }
+    return $bad
+}
+
 upload_file $m $kernel_path $kbase $kbytes "kernel"
 upload_file $m $dtb_path    $dbase $dbytes "dtb"
 
@@ -213,6 +286,19 @@ upload_file $m $dtb_path    $dbase $dbytes "dtb"
 # Cost: ~1 sec at ~1ms/word read. Trivial vs. the 5-min upload.
 # If we ever measure systematic drops past 4 KB, extend further.
 verify_first_words $m $kernel_path $kbase 1024 "kernel"
+
+# Full-kernel bulk verify. Catches any silent upload corruption
+# past the 4 KB window the per-word verify covers.
+set kbad [verify_all $m $kernel_path $kbase $kbytes "kernel"]
+if {$kbad > 0} {
+    puts ""
+    puts "ABORTING: kernel image corrupted in SDRAM after upload."
+    puts "  Boot stub would JR into garbage and silent-hang in wfi."
+    puts "  Re-flash the bitstream and try again, or root-cause the"
+    puts "  upload corruption (task #17 in TODO.md)."
+    close_service master $m
+    exit 1
+}
 
 # Earlier versions ran a "Fixup" pass here that overwrote the
 # 0x800000A4..0x800000C0 region with hardcoded LINUX-KERNEL bytes
