@@ -68,8 +68,18 @@ module Riski5.Sdram (
   SdramIpBus (..),
   SdramIpReply (..),
 
-  -- * Adapter
+  -- * Two-port adapter (preferred — internal arbitration eliminates
+  -- the SoC-side fetch/data multiplex race that broke task #21)
   sdram,
+  ServingPort (..),
+
+  -- * Single-port adapter (legacy — used by older tests + the
+  -- @enableSdramFetch=False@ data-only path in 'Riski5.Soc'). The
+  -- two-port 'sdram' above wraps this for the data port; the fetch
+  -- port goes through the same FSM body but with port-specific
+  -- request capture so the underlying state never sees the wrong
+  -- master's address.
+  sdramSinglePort,
 
   -- * Behavioural simulation model of the IP + chip
   sdramIpSim,
@@ -156,6 +166,294 @@ data SdramState
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
 
+{- | Which port the two-port 'sdram' is currently serving.
+'SrvNone' = SDRAM is in 'SIdle' with no port wanting; 'SrvFetch'
+or 'SrvData' = a transaction for that port is in flight (or just
+completed this cycle, in which case the port's @ready@ pulses).
+Updated atomically with the 'SIdle → SXxxReq' transition so the
+captured request signals never disagree with which port should
+get the response — the architectural fix for the SoC arbiter
+race that broke task #21.
+-}
+data ServingPort = SrvNone | SrvFetch | SrvData
+  deriving stock (Eq, Show, Generic)
+  deriving anyclass (NFDataX)
+
+{- |
+Two-port SDRAM adapter. Replaces the SoC-side 'sdramOwnerS'
+arbiter that used to multiplex the core's IF-stage and data-port
+SDRAM access onto a single 'sdramSinglePort' instance. The
+old design had a race: the live arbiter mux (combinational on a
+registered owner) could disagree with the cycle 'sdramSinglePort'
+captured the address, so an SDRAM-resident @lw@ would return the
+IF-stage's prefetched word instead of the load's actual chip-side
+data (task #19 silicon capture: load from 0x80100000 returned
+0x00062983 = the @lw@ instruction itself).
+
+This design accepts both ports directly. Each port has its own
+sel + address signals; the data port additionally has wdata + be
++ ren. Internal state ('servingPortS') is registered and updated
+atomically with the FSM transition out of 'SIdle' — the same
+cycle the FSM commits to processing a request, the serving-port
+register commits to its source. Throughout the multi-cycle
+transaction, both stay locked. On completion, the appropriate
+port's @ready@ pulses and @rdata@ carries the value.
+
+Data port has priority on simultaneous arrival — same convention
+as the old SoC arbiter. The IF stage stalls anyway via its own
+@imemReady@ path while a data load runs, so suppressing fetch
+during data is a free trade.
+-}
+sdram ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  -- | Fetch port: select. True when the IF stage's @pcFetchS@ is
+  --   in the SDRAM range AND the IF stage actually wants a new
+  --   instruction word (cf. the task-#21 root-cause analysis: the
+  --   address-range-only signal led to phantom fetches when the
+  --   core was stalled on the data port).
+  Signal dom Bool ->
+  -- | Fetch port: byte address.
+  Signal dom (BitVector 32) ->
+  -- | Data port: select. True when the data port wants SDRAM AND
+  --   has @dRen@ or non-zero @dBe@ asserted (= an actual
+  --   read/write, not just an address calculation that happened
+  --   to land in SDRAM range).
+  Signal dom Bool ->
+  -- | Data port: byte address.
+  Signal dom (BitVector 32) ->
+  -- | Data port: 32-bit write data.
+  Signal dom (BitVector 32) ->
+  -- | Data port: byte-enable (nonzero on stores; zero on loads).
+  Signal dom (BitVector 4) ->
+  -- | Data port: read-enable (unused; reads inferred from @be=0@).
+  Signal dom Bool ->
+  -- | Slave → master reply from the IP (or 'sdramIpSim' in sim).
+  Signal dom SdramIpReply ->
+  -- | @(fetchRdata, fetchReady, dataRdata, dataReady, busS)@.
+  ( Signal dom (BitVector 32)
+  , Signal dom Bool
+  , Signal dom (BitVector 32)
+  , Signal dom Bool
+  , Signal dom SdramIpBus
+  )
+sdram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS replyS =
+  (fetchRdataS, fetchReadyS, dataRdataS, dataReadyS, busS)
+ where
+  -- IP reply signals.
+  waitS = sirWaitrequest <$> replyS
+  validS = sirValid <$> replyS
+  ipRdataS = sirRdata <$> replyS
+
+  -- Combinational decision: which port to accept THIS cycle. Data
+  -- has priority on simultaneous arrival.
+  acceptingPortS :: Signal dom ServingPort
+  acceptingPortS =
+    ( \dSel fSel ->
+        if dSel
+          then SrvData
+          else if fSel then SrvFetch else SrvNone
+    )
+      <$> dataSelS
+      <*> fetchSelS
+
+  -- Picked request signals — based on accepting port. These are
+  -- combinational from the current cycle's port inputs, NOT from
+  -- a registered owner that might lag.
+  pickedAddrS :: Signal dom (BitVector 32)
+  pickedAddrS =
+    ( \port dA fA -> case port of
+        SrvData -> dA
+        SrvFetch -> fA
+        SrvNone -> 0
+    )
+      <$> acceptingPortS
+      <*> dataAddrS
+      <*> fetchAddrS
+
+  pickedWdataS :: Signal dom (BitVector 32)
+  pickedWdataS =
+    ( \port wd -> case port of
+        SrvData -> wd
+        _ -> 0
+    )
+      <$> acceptingPortS
+      <*> dataWdataS
+
+  pickedBeS :: Signal dom (BitVector 4)
+  pickedBeS =
+    ( \port be -> case port of
+        SrvData -> be
+        SrvFetch -> 0 -- fetch is always a read (be=0)
+        SrvNone -> 0
+    )
+      <$> acceptingPortS
+      <*> dataBeS
+
+  -- selS into the inner FSM: True when ANY port wants. With the
+  -- gating in 'pickedBeS', isWriteS only fires when the accepted
+  -- port is data AND data has be /= 0.
+  selS = (\dSel fSel -> dSel CP.|| fSel) <$> dataSelS <*> fetchSelS
+
+  -- Latched request signals. Same pattern as 'sdramSinglePort':
+  -- capture in SIdle, freeze on the cycle the FSM leaves SIdle.
+  -- The CRITICAL DIFFERENCE vs the old SoC-arbiter design: here
+  -- 'pickedAddrS' / 'pickedWdataS' / 'pickedBeS' all derive from
+  -- the same @acceptingPortS@ in the same cycle, so the captured
+  -- bundle is internally consistent. The old design had
+  -- @sdramSelArbS@, @sdramAddrArbS@, etc. all combinationally
+  -- derived from a registered @sdramOwnerS@ that could lag the
+  -- intended port by one cycle on owner switches.
+  latchedAddrS = register 0 latchedAddrNextS
+  latchedAddrNextS =
+    (\st a old -> case st of SIdle -> a; _ -> old)
+      <$> stateS
+      <*> pickedAddrS
+      <*> latchedAddrS
+  latchedWdataS = register 0 latchedWdataNextS
+  latchedWdataNextS =
+    (\st w old -> case st of SIdle -> w; _ -> old)
+      <$> stateS
+      <*> pickedWdataS
+      <*> latchedWdataS
+  latchedBeS = register 0 latchedBeNextS
+  latchedBeNextS =
+    (\st b old -> case st of SIdle -> b; _ -> old)
+      <$> stateS
+      <*> pickedBeS
+      <*> latchedBeS
+
+  -- Serving-port register. Updates atomically with the SIdle exit
+  -- (= the cycle the FSM commits to a transaction). Holds during
+  -- the transaction. On the completion cycle (state→SIdle), the
+  -- register reflects the just-completed port so the @ready@
+  -- pulse routes to the correct caller.
+  servingPortS :: Signal dom ServingPort
+  servingPortS = register SrvNone servingPortNextS
+  servingPortNextS =
+    ( \st srv accept -> case st of
+        SIdle -> accept -- in SIdle, latch the about-to-serve port
+        _ -> srv -- mid-transaction, hold
+    )
+      <$> stateS
+      <*> servingPortS
+      <*> acceptingPortS
+
+  -- Effective request signals (live in SIdle, latched otherwise).
+  effAddrS =
+    (\st a la -> case st of SIdle -> a; _ -> la)
+      <$> stateS
+      <*> pickedAddrS
+      <*> latchedAddrS
+  effWdataS =
+    (\st w lw -> case st of SIdle -> w; _ -> lw)
+      <$> stateS
+      <*> pickedWdataS
+      <*> latchedWdataS
+  effBeS =
+    (\st b lb -> case st of SIdle -> b; _ -> lb)
+      <$> stateS
+      <*> pickedBeS
+      <*> latchedBeS
+
+  -- Decoded op shape.
+  isWriteS = (\be -> be /= 0) <$> effBeS
+  loActiveS = (\be -> slice d1 d0 be /= 0) <$> effBeS
+  hiActiveS = (\be -> slice d3 d2 be /= 0) <$> effBeS
+
+  -- Half-word indices (chip-side address space).
+  halfIdxS = (\a -> slice d22 d1 (a - sdramBase)) <$> effAddrS
+  wordLoAddrS = (\h -> h .&. complement 1) <$> halfIdxS
+  wordHiAddrS = (\h -> h .|. 1) <$> halfIdxS
+
+  -- FSM state.
+  stateS = register SIdle nextStateS
+  nextStateS =
+    nextState
+      <$> stateS
+      <*> selS
+      <*> isWriteS
+      <*> loActiveS
+      <*> hiActiveS
+      <*> waitS
+      <*> validS
+
+  -- Captured lo half-word.
+  loCaptureS = register 0 loCaptureNextS
+  loCaptureNextS =
+    ( \st valid dq old -> case st of
+        SReadLoWait | valid -> dq
+        _ -> old
+    )
+      <$> stateS
+      <*> validS
+      <*> ipRdataS
+      <*> loCaptureS
+
+  -- Generic ready (Mealy) — pulses on transaction completion.
+  readyS =
+    ready
+      <$> stateS
+      <*> selS
+      <*> isWriteS
+      <*> loActiveS
+      <*> hiActiveS
+      <*> waitS
+      <*> validS
+
+  -- Master-side bus drive.
+  busS =
+    busFor
+      <$> stateS
+      <*> selS
+      <*> isWriteS
+      <*> loActiveS
+      <*> hiActiveS
+      <*> wordLoAddrS
+      <*> wordHiAddrS
+      <*> effWdataS
+      <*> effBeS
+
+  -- 32-bit assembled rdata for this transaction.
+  rdataAssembledS =
+    rdata
+      <$> stateS
+      <*> validS
+      <*> ipRdataS
+      <*> loCaptureS
+
+  -- Per-port ready / rdata routing. The serving-port register
+  -- keeps these consistent with which port the captured request
+  -- belongs to — the response can never leak to the wrong port.
+  fetchReadyS =
+    ( \srv rdy -> case srv of
+        SrvFetch -> rdy
+        _ -> False
+    )
+      <$> servingPortS
+      <*> readyS
+  dataReadyS =
+    ( \srv rdy -> case srv of
+        SrvData -> rdy
+        _ -> False
+    )
+      <$> servingPortS
+      <*> readyS
+  fetchRdataS =
+    ( \srv rd -> case srv of
+        SrvFetch -> rd
+        _ -> 0
+    )
+      <$> servingPortS
+      <*> rdataAssembledS
+  dataRdataS =
+    ( \srv rd -> case srv of
+        SrvData -> rd
+        _ -> 0
+    )
+      <$> servingPortS
+      <*> rdataAssembledS
+
 {- |
 Width-adaptation FSM in front of the Altera SDRAM Controller IP.
 
@@ -168,7 +466,7 @@ here is 16-bit-data, not 32-bit; reusing 'AvalonMmBus' would
 zero-pad the unused half and invite sign-off mistakes at the
 wrapper boundary.
 -}
-sdram ::
+sdramSinglePort ::
   forall dom.
   (HiddenClockResetEnable dom) =>
   -- | slave-select from the bus decoder
@@ -188,7 +486,7 @@ sdram ::
   , Signal dom SdramIpBus
   , Signal dom Bool
   )
-sdram selS addrS wdataS beS _renS replyS =
+sdramSinglePort selS addrS wdataS beS _renS replyS =
   (rdataS, busS, readyS)
  where
   waitS = sirWaitrequest <$> replyS

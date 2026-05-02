@@ -73,7 +73,7 @@ import Riski5.Clint (clint)
 import Riski5.Lcd (LcdPins (..), lcd)
 import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Plic (PlicSources, plic)
-import Riski5.Sdram (SdramIpBus, SdramIpReply (..), sdram, sdramIpSim)
+import Riski5.Sdram (SdramIpBus, SdramIpReply (..), sdram, sdramIpSim, sdramSinglePort)
 import Riski5.Sram (SramPins (..), sram, sramChipSim)
 
 {- |
@@ -1089,106 +1089,67 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       if enableSdramFetch
         then
           let
-            -- Registered (sticky) fetch/data arbiter — only re-picks
-            -- ownership on @sdramReadyS'@ idle/complete edges so the
-            -- SDRAM IP sees stable master signals for the duration of
-            -- each transaction. The combinational version this
-            -- replaced flipped the IP's master mid-flight whenever
-            -- the core's M-stage signals oscillated (notably during
-            -- an AMO's Read → ALU → Write phases, where dRenS/dBeS
-            -- toggle in the gap between phases), and the SDRAM
-            -- controller's row buffer got muddled when the IP's
-            -- @selS@/@addr@ changed underneath it. Mirrors the
-            -- 'JtagMuxOwner' pattern at the fetch/data layer; see
-            -- 'nextSramOwner' for the transition rules.
-            sdramOwnerS :: Signal dom SramOwner
-            sdramOwnerS =
-              register OwnNone
-                $ nextSramOwner
-                <$> sdramOwnerS
-                <*> sdramSelDataS
-                <*> sdramFetchAnyS
-                <*> sdramReadyS'
-            sdramSelArbS =
-              ( \o dReq -> case o of
-                  OwnFetch -> True
-                  _ -> dReq
-              )
-                <$> sdramOwnerS
-                <*> sdramSelDataS
-            sdramAddrArbS =
-              ( \o dA pcF -> case o of
-                  OwnFetch -> pcF
-                  _ -> dA
-              )
-                <$> sdramOwnerS
-                <*> dAddrS
-                <*> pcFetchS
-            sdramWdataArbS =
-              ( \o dW -> case o of
-                  OwnFetch -> 0
-                  _ -> dW
-              )
-                <$> sdramOwnerS
-                <*> dWdataS
-            sdramBeArbS =
-              ( \o dB -> case o of
-                  -- For fetches: be == 0 means "this is a read"
-                  -- in the 'Riski5.Sdram' adapter's decode
-                  -- (@isWriteS = (be /= 0)@), so 0 is exactly
-                  -- right.
-                  OwnFetch -> 0
-                  _ -> dB
-              )
-                <$> sdramOwnerS
-                <*> dBeS
-            sdramRenArbS =
-              ( \o dR -> case o of
-                  OwnFetch -> True
-                  _ -> dR
-              )
-                <$> sdramOwnerS
-                <*> dRenS
+            -- Two-port 'Riski5.Sdram.sdram' arbitrates internally
+            -- between the core's IF-stage fetch and the data port
+            -- (= core's data port muxed with the JTAG-Master IP via
+            -- the 'JtagMuxOwner' arbiter that still sits at the data
+            -- port). Replaces the SoC-side 'sdramOwnerS' /
+            -- 'sdramSelArbS' / 'sdramAddrArbS' multiplex which had
+            -- a race: the live arbiter mux (combinational on a
+            -- registered owner) could disagree with the cycle the
+            -- inner Sdram FSM captured the address, so an
+            -- SDRAM-resident @lw@ would return the IF-stage's
+            -- prefetched word instead of the load's actual data.
+            -- Task #19 silicon capture pinned this; task #21
+            -- replaces the broken arbiter with the per-port-aware
+            -- design here.
             (selJ, addrJ, wdataJ, beJ, renJ) =
-              jtagMuxedSdram sdramSelArbS sdramAddrArbS sdramWdataArbS sdramBeArbS sdramRenArbS
-            (sdramRdataS', sdramBusS', sdramReadyS') =
-              sdram selJ addrJ wdataJ beJ renJ sdramReplyS
-            -- Gate the core's "ready" signals by the sticky-arbiter
-            -- owner: when JTAG owns the bus, @sdramReadyS'@ is the
-            -- IP completing a JTAG transaction, not the core's, so
-            -- the core must keep stalling. Without this gate the
-            -- core would treat a JTAG-write completion as if its
-            -- own pending load had finished and latch garbage rdata.
+              jtagMuxedSdram sdramSelDataS dAddrS dWdataS dBeS dRenS
+            ( sdramFetchDataS''
+              , sdramFetchReadyS''
+              , sdramRdataS'
+              , sdramReadyS'
+              , sdramBusS'
+              ) =
+                sdram
+                  sdramFetchAnyS
+                  pcFetchS
+                  selJ
+                  addrJ
+                  wdataJ
+                  beJ
+                  renJ
+                  sdramReplyS
+            -- Gate the core's data-side "ready" by the JTAG mux
+            -- owner: when JTAG owns the data port, the data ready
+            -- is the IP completing a JTAG transaction, not the
+            -- core's load. Same gating discipline as before — only
+            -- the SOURCE of the multiplex changed.
             sdramDataReadyS' =
-              ( \jo so rdy -> case (jo, so) of
-                  (JmxCore, OwnData) -> rdy
+              ( \jo rdy -> case jo of
+                  JmxCore -> rdy
                   _ -> False
               )
                 <$> jtagMuxOwnerS
-                <*> sdramOwnerS
                 <*> sdramReadyS'
-            sdramFetchReadyS' =
-              ( \jo so rdy -> case (jo, so) of
-                  (JmxCore, OwnFetch) -> rdy
-                  _ -> False
-              )
-                <$> jtagMuxOwnerS
-                <*> sdramOwnerS
-                <*> sdramReadyS'
+            -- Fetch ready is unconditionally for the core's IF
+            -- stage (JTAG-Master never fetches instructions; it
+            -- only writes via the data port).
+            sdramFetchReadyS' = sdramFetchReadyS''
            in
             ( sdramRdataS'
             , sdramBusS'
             , sdramDataReadyS'
-            , sdramRdataS' -- fetch reuses the 32-bit adapter output
+            , sdramFetchDataS''
             , sdramFetchReadyS'
-            , sdramReadyS' -- raw FSM ready, for JTAG-load busy
+            , sdramReadyS' -- raw FSM ready (= data-side completion); JTAG-load busy uses this directly
             )
         else
           let
             (selJ, addrJ, wdataJ, beJ, renJ) =
               jtagMuxedSdram sdramSelDataS dAddrS dWdataS dBeS dRenS
             (sdramRdataS', sdramBusS', sdramReadyS') =
-              sdram selJ addrJ wdataJ beJ renJ sdramReplyS
+              sdramSinglePort selJ addrJ wdataJ beJ renJ sdramReplyS
             -- Gate by sticky-arbiter owner so the core ignores JTAG-
             -- transaction completions on its data port (see the
             -- mirror comment in the @enableSdramFetch=True@ arm).

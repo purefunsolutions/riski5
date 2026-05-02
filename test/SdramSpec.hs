@@ -64,7 +64,7 @@ import Clash.Prelude (
  )
 import Clash.Prelude qualified as CP
 import Riski5.MemMap (sdramBase)
-import Riski5.Sdram (sdram, sdramIpSim)
+import Riski5.Sdram (sdramSinglePort, sdramIpSim)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
 import Prelude (Bool (..), Int, ($), (+))
@@ -111,7 +111,7 @@ runSdram n sels addrs wdatas bes =
         (HiddenClockResetEnable System) =>
         (Signal System (BitVector 32), Signal System Bool)
       go =
-        let (rdata, busS, ready) = sdram selS addrS wdataS beS renS replyS
+        let (rdata, busS, ready) = sdramSinglePort selS addrS wdataS beS renS replyS
             replyS = sdramIpSim initial busS
          in (rdata, ready)
       rdataS' = P.fst go'
