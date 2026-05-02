@@ -1793,6 +1793,41 @@ state.**
   ...then panics at ~0.24 s with `stack-protector: Kernel stack is
   corrupted in: 0x8002cd98`.
 
+  **PC 0x8002cd98 disassembled (vmlinux 6.18.22 build).** That
+  function is `task_work_add`, branch label `.L15`. Code at
+  `0x8002cd5c`–`0x8002cd9c`:
+  ```
+   2cd68: 1008272f          lr.w    a4,(a6)         # cmpxchg loop
+   2cd6c: 00f71663          bne     a4,a5,.L1^B2
+   2cd70: 1ab8252f          sc.w.rl a0,a1,(a6)      # store cond w/ release
+   2cd74: fe051ae3          bnez    a0,2cd68        # retry on SC fail
+   2cd78: 02f71463          bne     a4,a5,.L28      # post-CAS branch
+   2cd7c: 00400793          li      a5,4            # jump-table dispatch
+   2cd80: 06c7ee63          bltu    a5,a2,2cdfc
+   2cd84: 00207717          auipc   a4,0x207
+   2cd88: f7c70713          addi    a4,a4,-132 # 233d00 <.L20>
+   2cd8c: 00261613          slli    a2,a2,0x2
+   2cd90: 00e60633          add     a2,a2,a4
+   2cd94: 00062783          lw      a5,0(a2)
+   2cd98: 00e787b3          add     a5,a5,a4        # PANIC HERE
+   2cd9c: 00078067          jr      a5
+  ```
+  The panic site is **inside an LR/SC cmpxchg retry loop** plus a
+  computed-jump-table dispatch on the result. If the LR/SC pair
+  doesn't behave correctly (reservation lost prematurely, SC.W
+  spuriously failing or succeeding, etc.), the cmpxchg either
+  loops forever or stores the wrong value, and the jump-table
+  index `a2` derived from the post-CAS state is bad — `jr a5`
+  jumps off the rails. Stack canary check at the function's
+  epilogue then reports corruption.
+
+  This is significant: our existing AMO sim coverage exercises
+  the AMO* family (Read+Write Mealy, multi-bank stress) but does
+  NOT test the LR/SC cmpxchg retry-loop pattern under
+  fetch-contended SDRAM. The next firmware variant (HelloLrScStress)
+  should mirror this kernel pattern: lr.w → bne → sc.w.rl → bnez
+  retry, on SDRAM, under fetch contention.
+
   Investigation 2026-05-02 (continued):
 
   **Timing margin ruled out.** SDC over-constraint sweep at 2.0,
@@ -1828,6 +1863,23 @@ state.**
   2. Check whether AMO instructions (the newest bring-up,
      task #144) are involved in the CLINT init path — atomic
      refcounts inside the irq-domain registration in particular.
+     **2026-05-02: sim coverage added.** Three layers of AMO+SDRAM
+     stress now in the test suite (commit `3d45950`):
+     * `SdramTwoPortSpec.case_amoShapeReadWriteRead` —
+       bus-level AMO-shape (read X → write X back-to-back, fetch
+       held in parallel). PASS.
+     * `firmware/phase1/HelloAmoStress.hs` — BRAM bootstrap stages
+       SDRAM-resident inner loop, `amoswap.w` + verify-`lw` across
+       4 SDRAM banks per iteration.
+     * `SocChainIntegrationSpec.case_amoStressClean` — end-to-end
+       run of HelloAmoStress through the full SoC. PASS in 16 k
+       cycles.
+     All three green ⇒ the simplest hypothesis ("AMO breaks the
+     two-port SDRAM") is **ruled out** in sim. Silicon-side
+     reproduction with `riski5-core-amostress` bitstream is the
+     next discriminator. If silicon fails clean (per-bank 'F'
+     marker), we have repro and the bug is timing-only or covers
+     an AMO sub-path the test doesn't exercise.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 

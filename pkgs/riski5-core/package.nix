@@ -81,6 +81,18 @@
   # because we only need to fetch from BRAM (just data accesses
   # touch SRAM via the AMO bus phases).
   aExtTest ? false,
+  # Build the AMO-stress silicon-test variant (task #29). Overlay
+  # @HelloAmoStress.helloAmoStressFirmwareWords@ into the imem.
+  # BRAM bootstrap stages an SDRAM-resident inner loop that runs
+  # @amoswap.w + verify-lw@ across 4 SDRAM banks per iteration,
+  # prints @.@ per clean iteration / per-bank label + @F@ on
+  # failure. Top suspect for the Linux stack-protector panic at
+  # PC=0x8002cd98 (atomic refcounts, AMO FU is the newest
+  # silicon-bringup component). Same overlay mechanism as
+  # @sdramStress@; flips @FetchPolicy.enableSdramFetch=True@ so
+  # the AMO inner loop fetches from SDRAM under contention with
+  # the AMO Read/Write data-port phases.
+  amoStress ? false,
   # Build the timer-interrupt silicon-test variant. Overlay
   # @HelloTimerIrq.helloTimerIrqFirmwareWords@ into the imem.
   # Expected silicon stream: @B......T......T…@ — boot byte,
@@ -149,10 +161,11 @@
   isSdramStress = sdramStress && !isCoremark && !isSramExec && !isSdramExec;
   isSdramDataStress = sdramDataStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
   isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress;
-  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest;
-  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest;
-  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad;
-  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isAmoStress = amoStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -199,6 +212,7 @@ in
       else if isSdramStress then "riski5-core-sdramstress"
       else if isSdramDataStress then "riski5-core-sdramdatastress"
       else if isAExtTest then "riski5-core-aexttest"
+      else if isAmoStress then "riski5-core-amostress"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
@@ -504,6 +518,68 @@ in
               sed -i 's/^              //' firmware/phase1/CoreMark.hs
               echo "### aExtTest variant: overlaid firmware/phase1/CoreMark.hs"
               cat firmware/phase1/CoreMark.hs
+            ''}
+
+            ${lib.optionalString isAmoStress ''
+              # AMO-stress silicon test variant (task #29). Same
+              # overlay mechanism as sdramStress but bigger: the
+              # BRAM bootstrap stages an SDRAM-resident inner loop
+              # that runs amoswap.w + verify-lw across 4 SDRAM
+              # banks per iteration, prints '.' per clean iter,
+              # per-bank label + 'F' on first failure. Top suspect
+              # for the Linux stack-protector panic at PC=0x8002cd98.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the amoStress Nix build: re-exports
+              -- HelloAmoStress's firmware under the CoreMark name
+              -- so the unchanged -DFIRMWARE_COREMARK path in
+              -- app/Top.hs bakes the AMO-stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloAmoStress (helloAmoStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloAmoStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### amoStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the amoStress Nix build: turns on the
+              -- fetch-side SDRAM routing inside Riski5.Soc.soc so
+              -- the AMO inner loop can execute from 0x8000_0000+
+              -- (concurrent with the AMO Read/Write data-port
+              -- phases — exactly the contention shape we're
+              -- testing).
+              module FetchPolicy (
+                enableSramFetch,
+                enableSdramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = False
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### amoStress variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
             ''}
 
             ${lib.optionalString isTimerIrqTest ''

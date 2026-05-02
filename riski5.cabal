@@ -134,6 +134,7 @@ library riski5-firmware
     Hello
     HelloAExt
     HelloAmoStress
+    HelloLrScStress
     HelloSdramDataStress
     HelloSdramExec
     HelloSdramStress

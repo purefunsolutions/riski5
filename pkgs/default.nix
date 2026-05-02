@@ -141,6 +141,21 @@
         aExtTest = true;
       };
 
+      # Task #29: AMO-stress silicon test. Bakes
+      # firmware/phase1/HelloAmoStress.hs into imem. Mirrors the
+      # SDRAM-stress probe but uses amoswap.w + verify-lw across 4
+      # SDRAM banks per iteration (= AMO Read/Write phases under
+      # SDRAM fetch contention). Top suspect for the Linux stack-
+      # protector panic at PC=0x8002cd98 (atomic refcounts at the
+      # panic sites; AMO FU is the newest silicon-bringup
+      # component). Expected JTAG-UART output: @B......D@ runs of
+      # dots; per-bank-failure 'A'/'B'/'C'/'D' + 'F' if AMO is
+      # broken on silicon.
+      riski5-core-amostress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        amoStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloTimerIrq.hs
       # into imem. Probes the full CLINT → mip.MTIP → trap → handler
       # chain on real hardware. Expected output: @B......T......T…@.
@@ -284,6 +299,12 @@
       flash-riski5-aexttest = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-aexttest;
+      };
+
+      # Flasher for the AMO-stress silicon test bitstream (task #29).
+      flash-riski5-amostress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-amostress;
       };
 
       # Flasher for the timer-interrupt silicon test bitstream.
