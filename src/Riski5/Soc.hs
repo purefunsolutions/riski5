@@ -57,7 +57,6 @@ module Riski5.Soc (
   SocInFull (..),
   SocOut (..),
   SocOutSim (..),
-  SramOwner (..),
 ) where
 
 import Clash.Prelude hiding (And, Or, Xor, not, (||))
@@ -75,15 +74,6 @@ import Riski5.MemMap (SlaveId (..), slaveOf)
 import Riski5.Plic (PlicSources, plic)
 import Riski5.Sdram (SdramIpBus, SdramIpReply (..), sdram, sdramIpSim, sdramSinglePort)
 import Riski5.Sram (SramPins (..), sram, sramChipSim, sramSinglePort)
-
-{- |
-Which source currently owns the shared SRAM controller —
-data-side bus transactions vs fetch-side pcFetch lookups.
-Exposed for tests and downstream assertions.
--}
-data SramOwner = OwnNone | OwnData | OwnFetch
-  deriving stock (Eq, Show, Generic)
-  deriving anyclass (NFDataX)
 
 {- |
 Sticky arbiter state for the SDRAM bus mux that selects between
@@ -127,38 +117,13 @@ nextJtagMuxOwner JmxJtag _ True True = JmxJtag
 nextJtagMuxOwner JmxJtag True False True = JmxCore
 nextJtagMuxOwner JmxJtag False False True = JmxNone
 
-{- |
-Next-state for the inner fetch/data 'SramOwner' arbiter (the one
-that picks between the core's data port and its IF-stage fetch
-port when @enableSdramFetch=True@). Args: current owner,
-@sdramSelDataS@ (data port wants SDRAM), @sdramFetchAnyS@ (fetch
-port wants SDRAM), @sdramReadyS'@ (transaction-complete pulse).
-
-Same shape as 'nextJtagMuxOwner' but at the fetch/data layer:
-hold ownership across the @!idle@ window so the SDRAM IP doesn't
-see its master signals flip mid-transaction. Without this, an
-@amoadd.w@ targeting SDRAM whose ALU phase happens to coincide
-with an in-flight IF-stage fetch flips the IP's owner from
-OwnData → OwnFetch and back; the IP's row buffer then gets
-the AMO Write at a stale address and the Linux kernel's
-@hart_lottery@ at offset +0x100 hangs the boot process before
-@start_kernel@ fires. Data-port has priority on simultaneous
-arrival (matches the original combinational behaviour and is
-needed so a load doesn't stall behind a fetch that the IF stage
-is just about to retire).
--}
-nextSramOwner :: SramOwner -> Bool -> Bool -> Bool -> SramOwner
-nextSramOwner OwnNone True _ _ = OwnData
-nextSramOwner OwnNone False True _ = OwnFetch
-nextSramOwner OwnNone False False _ = OwnNone
-nextSramOwner OwnData _ _ False = OwnData
-nextSramOwner OwnData True _ True = OwnData
-nextSramOwner OwnData False True True = OwnFetch
-nextSramOwner OwnData False False True = OwnNone
-nextSramOwner OwnFetch _ _ False = OwnFetch
-nextSramOwner OwnFetch True _ True = OwnData
-nextSramOwner OwnFetch False True True = OwnFetch
-nextSramOwner OwnFetch False False True = OwnNone
+-- The inner SRAM/SDRAM fetch-vs-data arbiter used to live here as
+-- 'nextSramOwner'. Replaced by per-controller two-port internal
+-- arbitration in 'Riski5.Sram.sram' / 'Riski5.Sdram.sdram' (tasks
+-- #21 + #22) — both now expose fetch + data ports directly and
+-- latch the picked request atomically with the FSM transition out
+-- of SIdle, so the SoC no longer needs to maintain a registered
+-- owner that the inner FSM has to mirror.
 
 {- |
 Inputs the SoC reads from the board.
