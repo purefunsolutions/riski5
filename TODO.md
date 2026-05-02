@@ -1791,9 +1791,45 @@ state.**
   [    0.000606] sched_clock: 64 bits at 40MHz
   ```
   ...then panics at ~0.24 s with `stack-protector: Kernel stack is
-  corrupted in: 0x8002cd98`. That's a SOFTWARE issue (stack canary /
-  initial sp / sscratch setup) — unrelated to the SDRAM hardware
-  bug we just resolved. Next debugging target.
+  corrupted in: 0x8002cd98`.
+
+  Investigation 2026-05-02 (continued):
+
+  **Timing margin ruled out.** SDC over-constraint sweep at 2.0,
+  3.0, 4.0 ns all produce the IDENTICAL panic (same PC, same call
+  trace, same wall time within ±1 ms). Reverted SDC to 2.0 ns.
+  Bug is software/silicon-side, not marginal placement.
+
+  **Stack-protector tripwire test.** Disabled CONFIG_STACKPROTECTOR
+  and rebuilt. Kernel boots much further (past mount-cache,
+  pid_max, BogoMIPS calibration) but hits a NEW failure:
+  ```
+  [    0.000000] clint: clint@2000000: ipi/timer irq not found
+  [    0.000000] Failed to initialize '/soc/clint@2000000': -19
+  [    0.000000] sched_clock: 32 bits at 250 Hz
+  [    0.000000] bad: scheduling from the idle thread!
+  ```
+  Boot log: [`docs/perf/linux-boot-no-stackprotector-2026-05-02.log`](./docs/perf/linux-boot-no-stackprotector-2026-05-02.log).
+
+  **The CLINT-init outcome differs between the two builds** —
+  same DT, same hardware, but with stack-protector ON the CLINT
+  driver succeeds ("timer running at 40000000 Hz"); with it OFF
+  the CLINT driver fails ("ipi/timer irq not found"). That points
+  to memory corruption affecting the device-tree FDT data
+  structure (or the kernel's parsed copy of it) differently in
+  the two layouts — i.e. there's still some silicon-side memory
+  glitch the SDRAM two-port fix didn't fully cover.
+
+  Re-enabled stack-protector for now. Next investigation paths:
+  1. Capture the FDT bytes the kernel sees vs the DTB we upload,
+     diff them. The boot stub stages the DTB into SDRAM right
+     after the kernel; a corrupted byte there would explain the
+     CLINT init divergence.
+  2. Check whether AMO instructions (the newest bring-up,
+     task #144) are involved in the CLINT init path — atomic
+     refcounts inside the irq-domain registration in particular.
+  3. Compare the two boot logs cycle-by-cycle to find exactly
+     where the divergence in code path begins.
 
 - **task #17 / #21 / #22 — SDRAM-stress concurrent fetch+data corruption — FIXED 2026-05-02.**
   Silicon `sdramstress` bitstream now prints `B................[256 dots]D`

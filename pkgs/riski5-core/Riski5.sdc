@@ -31,6 +31,12 @@ derive_clock_uncertainty
 # DRAM_CLK is exempt — its source-synchronous +90° relationship
 # already has a hand-tuned ±0.5 ns trace allowance baked into
 # the set_input_delay / set_output_delay budgets below.
+#
+# Tested 2026-05-02: bumping to 3 ns then 4 ns did NOT change
+# the Linux stack-protector panic at PC 0x8002cd98 (same panic
+# point, same call trace, same wall time within ±1 ms). Timing
+# margin is ruled out as the cause of that panic; the bug is
+# software-side.
 set_clock_uncertainty \
     -setup -add 2.0 \
     -from [get_clocks {u_altpll|pll|clk[0]}] \
