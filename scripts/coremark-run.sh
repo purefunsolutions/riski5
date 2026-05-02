@@ -40,8 +40,12 @@ nix build .#riski5-core-coremark --no-link 2>&1 | tail -3 || {
 # --- Flash -------------------------------------------------------
 echo
 echo "== 2. nix run .#flash-riski5-coremark =="
-pkill -f nios2-terminal 2>/dev/null || true
-sleep 1
+# `killall -9` (vs the older `pkill -f`) is needed because nios2-terminal
+# leaves jtagd holding the USB-Blaster lock; without a forced kill of
+# jtagd here, the post-flash nios2-terminal connects but the firmware's
+# JTAG-UART output never reaches stdout.
+killall -9 nios2-terminal nios2-terminal-wrapped jtagd 2>/dev/null || true
+sleep 2
 nix run .#flash-riski5-coremark 2>&1 | tail -3 || {
     echo "ERROR: flash failed. Board plugged in? USB-Blaster detected?"
     exit 1
@@ -51,6 +55,10 @@ nix run .#flash-riski5-coremark 2>&1 | tail -3 || {
 echo
 echo "== 3. capturing ${CAPTURE_SECS} s of JTAG-UART =="
 rm -f "$LOG_FILE"
+# Drop jtagd one more time so the freshly-flashed bitstream is
+# what nios2-terminal opens against, not a stale handle.
+killall -q jtagd 2>/dev/null || true
+sleep 2
 # `timeout 30 nios2-terminal` exits with code 124 when the timeout
 # fires (expected — the firmware spins after printing). We swallow
 # the exit so `set -e` doesn't kill the script on that path.

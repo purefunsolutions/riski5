@@ -17,6 +17,25 @@ create_clock -name clk27 -period 37.037 [get_ports CLOCK_27]
 derive_pll_clocks
 derive_clock_uncertainty
 
+# Over-constrain the PLL's bus clock by 2 ns of extra setup
+# uncertainty. Silicon runs at 40 MHz (25 ns period); telling
+# TimeQuest to assume 2 ns more skew forces the fitter to find
+# data paths that fit in 23 ns instead of 25. Kills the Quartus
+# 13.0sp1 placement lottery that lets two builds from identical
+# Verilog produce different .sof files — both reporting the same
+# +2.4 ns worst-case slack, but with subtly different placement
+# of BRAM / SRAM controller paths near the timing tipping point;
+# CoreMark can silently corrupt on one bitstream and run clean
+# on another despite STA being happy with both. The over-
+# constraint forces every build into the safe-margin region.
+# DRAM_CLK is exempt — its source-synchronous +90° relationship
+# already has a hand-tuned ±0.5 ns trace allowance baked into
+# the set_input_delay / set_output_delay budgets below.
+set_clock_uncertainty \
+    -setup -add 2.0 \
+    -from [get_clocks {u_altpll|pll|clk[0]}] \
+    -to   [get_clocks {u_altpll|pll|clk[0]}]
+
 # Async reset input from KEY[0] is intentionally exempt from timing.
 set_false_path -from [get_ports KEY[0]] -to [all_registers]
 
