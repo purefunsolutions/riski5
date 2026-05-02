@@ -1915,21 +1915,45 @@ state.**
      amoswap (848 k ops), lr/sc cmpxchg (740 k ops), multi-reg
      stack save/restore (1.1 M ops).**
 
+     **2026-05-03 trap-during-stress silicon result: ALSO clean.**
+     The `riski5-core-trapstress` bitstream ran for 35 s on real
+     hardware: **B count 10,508, D count 10,504, dots count
+     672,201, F count = 0** (full log:
+     [`docs/perf/trapstress-silicon-2026-05-03.log`](./docs/perf/trapstress-silicon-2026-05-03.log)).
+     Same task_work_add prologue/epilogue inner loop as stack-stress
+     but with timer IRQs firing every ~256 cycles — at ~20 cycles
+     per inner-loop iteration, that's an IRQ landing roughly every
+     ~13 iterations, so essentially every pass has multiple IRQs
+     fall inside the prologue / function body / epilogue. The trap
+     handler uses mscratch + SRAM-scratch (3-word save area at
+     0x2000_0000) for register preservation, not SDRAM. ~672 k
+     clean iterations with active IRQ traffic, zero failure
+     markers. **The trap entry / save / re-arm-mtimecmp / restore
+     / mret path does NOT corrupt the live register set or the
+     SDRAM stack frame.**
+
+     **Conclusion: AMO + LR/SC + bare-stack + trap-mid-stack are
+     ALL ruled out as the root cause of the Linux stack-protector
+     panic at PC=0x8002cd98.** Four targeted bus-shape probes have
+     confirmed each individual instruction pattern works correctly
+     on our silicon under SDRAM fetch contention.
+
      **The bug is something Linux exercises that our targeted
-     stress tests don't.** Likely culprits (priority order):
-     1. **Trap/interrupt taken DURING a critical operation
-        (task #34)** — none of our stress tests have an
-        interrupt firing mid-cmpxchg / mid-stack-save / mid-
-        AMO. Linux runs with timer IRQ enabled — a trap landing
-        between the LR.W and SC.W of the cmpxchg loop, or
-        between the stack-save sw and the next instruction
-        clobbering ra, would scramble both registers and stack.
-     2. **FDT/DT corruption (task #27)** — the boot stub stages
+     stress tests don't.** Remaining culprits (priority order):
+     1. **FDT/DT corruption (task #27)** — the boot stub stages
         DTB into SDRAM after the kernel; a corrupted byte there
         propagates into wrong addresses kernel-side.
-     3. **Boot log divergence (task #28)** — compare with/without
+     2. **Boot log divergence (task #28)** — compare with/without
         stack-protector logs cycle-by-cycle to find the first
         observable behavioural difference.
+     3. **Cache / longer-run effects** — the 4 stress tests each
+        run < 2 s of wall time and < 1 M ops; Linux runs millions
+        of instructions before the panic. A timing-marginal
+        intermittent corruption that fires once per 100 M ops
+        could pass all four bare tests yet still hit Linux.
+        Possible follow-up: extend HelloTrapStress's iteration max
+        to 100 k passes and run for hours to chase deep-tail
+        timing failures.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
