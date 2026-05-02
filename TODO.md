@@ -1777,6 +1777,24 @@ state.**
 
 ## Blocked / parked
 
+- **task #17 / #21 / #22 — SDRAM-stress concurrent fetch+data corruption — FIXED 2026-05-02.**
+  Silicon `sdramstress` bitstream now prints `B................[256 dots]D`
+  cleanly across multiple iterations — zero `F` failure markers in a
+  30-second capture (1.6 MB log, 0 occurrences of `F`).
+  Architectural fix in `Riski5.Sdram.sdram` + `Riski5.Sram.sram`:
+  per-port last-result registers (`fetchRdataLastS`, `dataRdataLastS`)
+  latched at the per-port ready pulse, held until the next transaction
+  on that port. Without these, the Mealy `dataRdata` evaporates as
+  soon as the FSM leaves the terminal-read state — and the core's
+  `quenchDataS`-driven stall loop can keep the value in flight across
+  a fetch transaction that wins arbitration next cycle, by which time
+  `servingPortS` has flipped to SrvFetch and the data port reads 0.
+  Same root cause was reproducing on silicon as `BAF actual=0`
+  (Bank-A fail, expected 0x12340000). The whole-chain integration
+  test (`test/SocChainIntegrationSpec.hs`) caught the bug in sim
+  before silicon validation. Commits: `b08d3d7` (two-port refactor),
+  `4daa6a7` (integration test), `7af49b2` (per-port last-result fix).
+
 - **task #146 — Pure-Clash SdrController silicon write/read corruption — FIXED 2026-05-02.**
   - ✅ **JTAG-Master pattern test:** `nix run .#sdram-write-pattern-test`
     reports `summary: 29 passed, 0 failed of 29 total` against the
