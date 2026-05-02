@@ -422,9 +422,8 @@ sdram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS reply
       <*> ipRdataS
       <*> loCaptureS
 
-  -- Per-port ready / rdata routing. The serving-port register
-  -- keeps these consistent with which port the captured request
-  -- belongs to — the response can never leak to the wrong port.
+  -- Per-port ready routing via servingPortS — pulses for one
+  -- cycle when the FSM completes the per-port transaction.
   fetchReadyS =
     ( \srv rdy -> case srv of
         SrvFetch -> rdy
@@ -439,20 +438,64 @@ sdram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS reply
     )
       <$> servingPortS
       <*> readyS
+
+  -- Last-result registers per port. Latched at the cycle the
+  -- per-port ready pulses, then HELD until the next transaction
+  -- on that port. This is load-bearing: without these, when a
+  -- data transaction completes but the core can't immediately
+  -- consume the result (e.g., fetchStall is still True from a
+  -- competing fetch transaction that's about to start),
+  -- 'rdataAssembledS' becomes 0 on the next cycle (state→SIdle,
+  -- 'rdata' returns 0 outside the SReadHiWait+valid match) and
+  -- by the time the core unstalls, 'servingPortS' may have flipped
+  -- to SrvFetch — gating dataRdata to 0. The captured value is
+  -- lost. This was the root cause of the silicon @sdramstress@ /
+  -- @SocChainIntegrationSpec@ failure: fetch starves data via
+  -- the core's stall loop, then the data result evaporates.
+  -- Registering the per-port result ensures the value survives
+  -- arbitrary stall windows on the consumer side.
+  fetchRdataLastS = register 0 fetchRdataLastNextS
+  fetchRdataLastNextS =
+    ( \srv rdy assembled old -> case (srv, rdy) of
+        (SrvFetch, True) -> assembled
+        _ -> old
+    )
+      <$> servingPortS
+      <*> readyS
+      <*> rdataAssembledS
+      <*> fetchRdataLastS
+  dataRdataLastS = register 0 dataRdataLastNextS
+  dataRdataLastNextS =
+    ( \srv rdy assembled old -> case (srv, rdy) of
+        (SrvData, True) -> assembled
+        _ -> old
+    )
+      <$> servingPortS
+      <*> readyS
+      <*> rdataAssembledS
+      <*> dataRdataLastS
+
+  -- Effective per-port rdata: the live assembled value during the
+  -- ready cycle (Mealy — same cycle the core sees ready=True), then
+  -- the latched last value on subsequent cycles.
   fetchRdataS =
-    ( \srv rd -> case srv of
-        SrvFetch -> rd
-        _ -> 0
+    ( \srv rdy assembled latched -> case (srv, rdy) of
+        (SrvFetch, True) -> assembled
+        _ -> latched
     )
       <$> servingPortS
+      <*> readyS
       <*> rdataAssembledS
+      <*> fetchRdataLastS
   dataRdataS =
-    ( \srv rd -> case srv of
-        SrvData -> rd
-        _ -> 0
+    ( \srv rdy assembled latched -> case (srv, rdy) of
+        (SrvData, True) -> assembled
+        _ -> latched
     )
       <$> servingPortS
+      <*> readyS
       <*> rdataAssembledS
+      <*> dataRdataLastS
 
 {- |
 Width-adaptation FSM in front of the Altera SDRAM Controller IP.

@@ -99,7 +99,7 @@ failure.
 -}
 case_sdramStressClean :: Assertion
 case_sdramStressClean = do
-  let (bytes, busTrace, replyTrace) = runSocSdramStressDebugFull 8000
+  let (bytes, busTrace, replyTrace, coreTrace) = runSocSdramStressDebugFull 8000
 
       isFailureByte :: BitVector 8 -> Bool
       isFailureByte b = b == 0x46 -- 'F' (the common-fail marker)
@@ -137,6 +137,8 @@ case_sdramStressClean = do
           P.++ show (take 31 (drop 500 [(c, sibCs b, if sibWr b then 'W' else if sibRd b then 'R' else '.', sibAddr b) | (c, b) <- P.zip [(0 :: Int) ..] busTrace]))
           P.++ "\nIP reply cy 500-530: "
           P.++ show (take 31 (drop 500 (P.zip [(0 :: Int) ..] replyTrace)))
+          P.++ "\nCore-side data port (sdramRdata, sdramDataReady) cy 500-530: "
+          P.++ show (take 31 (drop 500 (P.zip [(0 :: Int) ..] coreTrace)))
   assertBool ("must see at least one B (BRAM bootstrap alive) — got bytes prefix " P.++ show (take 30 bytes)) (bMarkers >= 1)
   assertBool msg (null failures)
 
@@ -233,6 +235,9 @@ runSocSdramStressDebugFull ::
   , [SdramIpBus]
   , [(BitVector 16, Bool)]
   -- ^ (sirRdata, sirValid) per cycle from the IP
+  , [(BitVector 32, Bool)]
+  -- ^ (soDbgSdramRdata, soDbgSdramDataReady) per cycle — what the
+  -- core's data port sees from the SoC's data ready chain.
   )
 runSocSdramStressDebugFull nCycles = withClockResetEnable @System clockGen resetGen enableGen go
  where
@@ -246,7 +251,7 @@ runSocSdramStressDebugFull nCycles = withClockResetEnable @System clockGen reset
   inputSig = fromList (P.repeat SocInFull {sifSwitches = 0, sifKeys = 0xF})
   go ::
     (HiddenClockResetEnable System) =>
-    ([BitVector 8], [SdramIpBus], [(BitVector 16, Bool)])
+    ([BitVector 8], [SdramIpBus], [(BitVector 16, Bool)], [(BitVector 32, Bool)])
   go =
     let -- Reproduce the inline harness here so we can tap sdramReplyS.
         fullInS =
@@ -291,8 +296,13 @@ runSocSdramStressDebugFull nCycles = withClockResetEnable @System clockGen reset
         simMem = CP.repeat 0
         -- Sample rdata + valid from the IP reply.
         replyTrace = (\r -> (sirRdata r, sirValid r)) <$> sdramReplyS
+        coreTrace = (\o -> (soDbgSdramRdata o, soDbgSdramDataReady o)) <$> outS
         bytes = [b | Just b <- sampleN @System nCycles uartTxS]
-     in (bytes, sampleN @System nCycles sdramBusS, sampleN @System nCycles replyTrace)
+     in ( bytes
+        , sampleN @System nCycles sdramBusS
+        , sampleN @System nCycles replyTrace
+        , sampleN @System nCycles coreTrace
+        )
 
 runSocSdramStress :: Int -> [BitVector 8]
 runSocSdramStress nCycles =

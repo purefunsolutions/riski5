@@ -335,6 +335,15 @@ data SocOut = SocOut
   --   script polls this between transactions to avoid issuing a
   --   new write before the previous one completes. Exposed via
   --   probe @JLBS@.
+  , soDbgSdramRdata :: BitVector 32
+  -- ^ Debug tap on the SDRAM data-port rdata signal, the value
+  --   the core's data port receives on a load completion. Used by
+  --   integration tests to verify the SoC + sdram interaction
+  --   delivers the right value to the core. NOT a board-output
+  --   pin — sim only.
+  , soDbgSdramDataReady :: Bool
+  -- ^ Debug tap on sdramDataReadyS — the gated dataReady the
+  --   core sees from the SDRAM data port.
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -1504,6 +1513,8 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> mtipS
       <*> sdramRdataS
       <*> jtagLoadBusyS
+      <*> sdramRdataS
+      <*> sdramDataReadyS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus

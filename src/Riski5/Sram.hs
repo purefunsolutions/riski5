@@ -412,7 +412,7 @@ sram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS sramDq
   -- 32-bit assembled rdata.
   rdataAssembledS = rdata <$> stateS <*> sramDqInS <*> wordLoReg
 
-  -- Per-port ready / rdata routing via servingPortS.
+  -- Per-port ready routing via servingPortS.
   fetchReadyS =
     ( \srv rdy -> case srv of
         SrvFetch -> rdy
@@ -427,20 +427,50 @@ sram fetchSelS fetchAddrS dataSelS dataAddrS dataWdataS dataBeS _dataRenS sramDq
     )
       <$> servingPortS
       <*> readyS
+
+  -- Last-result registers per port. Latched at the per-port ready
+  -- pulse and held until the next transaction on that port. See
+  -- the matching comment in 'Riski5.Sdram.sdram' for the load-
+  -- bearing rationale.
+  fetchRdataLastS = register 0 fetchRdataLastNextS
+  fetchRdataLastNextS =
+    ( \srv rdy assembled old -> case (srv, rdy) of
+        (SrvFetch, True) -> assembled
+        _ -> old
+    )
+      <$> servingPortS
+      <*> readyS
+      <*> rdataAssembledS
+      <*> fetchRdataLastS
+  dataRdataLastS = register 0 dataRdataLastNextS
+  dataRdataLastNextS =
+    ( \srv rdy assembled old -> case (srv, rdy) of
+        (SrvData, True) -> assembled
+        _ -> old
+    )
+      <$> servingPortS
+      <*> readyS
+      <*> rdataAssembledS
+      <*> dataRdataLastS
+
   fetchRdataS =
-    ( \srv rd -> case srv of
-        SrvFetch -> rd
-        _ -> 0
+    ( \srv rdy assembled latched -> case (srv, rdy) of
+        (SrvFetch, True) -> assembled
+        _ -> latched
     )
       <$> servingPortS
+      <*> readyS
       <*> rdataAssembledS
+      <*> fetchRdataLastS
   dataRdataS =
-    ( \srv rd -> case srv of
-        SrvData -> rd
-        _ -> 0
+    ( \srv rdy assembled latched -> case (srv, rdy) of
+        (SrvData, True) -> assembled
+        _ -> latched
     )
       <$> servingPortS
+      <*> readyS
       <*> rdataAssembledS
+      <*> dataRdataLastS
 
 {- |
 SRAM controller — single-port. See module header for the FSM
