@@ -156,6 +156,17 @@
         amoStress = true;
       };
 
+      # Task #32: LR/SC-stress silicon test (follow-up to #29 after
+      # amostress came back clean — silicon AMO is solid). Bakes
+      # firmware/phase1/HelloLrScStress.hs into imem. Same shape
+      # as amostress but uses the lr.w + sc.w.rl cmpxchg retry
+      # loop matching the kernel's arch_cmpxchg32_relaxed at the
+      # panic site task_work_add (PC=0x8002cd98).
+      riski5-core-lrscstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        lrScStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloTimerIrq.hs
       # into imem. Probes the full CLINT → mip.MTIP → trap → handler
       # chain on real hardware. Expected output: @B......T......T…@.
@@ -305,6 +316,12 @@
       flash-riski5-amostress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-amostress;
+      };
+
+      # Flasher for the LR/SC-stress silicon test bitstream (task #32).
+      flash-riski5-lrscstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-lrscstress;
       };
 
       # Flasher for the timer-interrupt silicon test bitstream.

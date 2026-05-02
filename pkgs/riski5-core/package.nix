@@ -93,6 +93,17 @@
   # the AMO inner loop fetches from SDRAM under contention with
   # the AMO Read/Write data-port phases.
   amoStress ? false,
+  # Build the LR/SC-stress silicon-test variant (task #32 follow-
+  # up to #29). Overlay
+  # @HelloLrScStress.helloLrScStressFirmwareWords@ into the imem.
+  # Same shape as @amoStress@ but uses the @lr.w + sc.w.rl@
+  # cmpxchg retry pattern (matching the kernel's
+  # @arch_cmpxchg32_relaxed@) instead of @amoswap.w@. The kernel
+  # panic site at PC=0x8002cd98 (task_work_add) uses LR/SC, NOT
+  # amoswap — and amoswap's silicon variant came back clean
+  # (@docs/perf/amostress-silicon-2026-05-02.log@), so this
+  # variant probes a different AMO sub-path.
+  lrScStress ? false,
   # Build the timer-interrupt silicon-test variant. Overlay
   # @HelloTimerIrq.helloTimerIrqFirmwareWords@ into the imem.
   # Expected silicon stream: @B......T......T…@ — boot byte,
@@ -162,10 +173,11 @@
   isSdramDataStress = sdramDataStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
   isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress;
   isAmoStress = amoStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest;
-  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress;
-  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest;
-  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest && !isSdramLoad;
-  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isLrScStress = lrScStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -213,6 +225,7 @@ in
       else if isSdramDataStress then "riski5-core-sdramdatastress"
       else if isAExtTest then "riski5-core-aexttest"
       else if isAmoStress then "riski5-core-amostress"
+      else if isLrScStress then "riski5-core-lrscstress"
       else if isTimerIrqTest then "riski5-core-timerirqtest"
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
@@ -582,6 +595,64 @@ in
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
+            ${lib.optionalString isLrScStress ''
+              # LR/SC-stress silicon test variant (task #32, follow-up
+              # to #29). Same overlay mechanism as amoStress but uses
+              # HelloLrScStress's lr.w + sc.w.rl cmpxchg retry loop —
+              # mirrors the kernel's arch_cmpxchg32_relaxed pattern at
+              # the panic site task_work_add (PC=0x8002cd98).
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the lrScStress Nix build: re-exports
+              -- HelloLrScStress's firmware under the CoreMark name
+              -- so the unchanged -DFIRMWARE_COREMARK path in
+              -- app/Top.hs bakes the LR/SC-stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloLrScStress (helloLrScStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloLrScStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### lrScStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+
+              cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the lrScStress Nix build: turns on the
+              -- fetch-side SDRAM routing so the LR/SC inner loop can
+              -- execute from 0x8000_0000+ (concurrent with the LR.W
+              -- Read + SC.W Write data-port phases).
+              module FetchPolicy (
+                enableSramFetch,
+                enableSdramFetch,
+              ) where
+
+              import Prelude (Bool (..))
+
+              enableSramFetch :: Bool
+              enableSramFetch = False
+
+              enableSdramFetch :: Bool
+              enableSdramFetch = True
+              EOF
+              sed -i 's/^              //' firmware/phase1/FetchPolicy.hs
+              echo "### lrScStress variant: overlaid firmware/phase1/FetchPolicy.hs"
+              cat firmware/phase1/FetchPolicy.hs
+            ''}
+
             ${lib.optionalString isTimerIrqTest ''
               # Timer-interrupt silicon test variant. Overlay
               # CoreMark.hs with HelloTimerIrq's words; FetchPolicy
@@ -752,7 +823,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 

@@ -1880,6 +1880,18 @@ state.**
      next discriminator. If silicon fails clean (per-bank 'F'
      marker), we have repro and the bug is timing-only or covers
      an AMO sub-path the test doesn't exercise.
+     **2026-05-02 silicon result: AMO is NOT the bug.** The
+     `riski5-core-amostress` bitstream ran for 35 s on real
+     hardware: **B count 13,261, D count 13,257, dots count
+     848,438, F count = 0** (full log:
+     [`docs/perf/amostress-silicon-2026-05-02.log`](./docs/perf/amostress-silicon-2026-05-02.log)).
+     ~848 k clean amoswap.w + verify-lw operations across 4 SDRAM
+     banks under fetch contention with zero failure markers.
+     **AMOSWAP path is solid on silicon.** Remaining sub-paths to
+     check: LR/SC cmpxchg pattern (kernel uses this exclusively
+     at the panic site, NOT amoswap), AMOADD/AMOOR/AMOXOR/AMOAND
+     on multi-bank, AMO across an interrupt. HelloLrScStress
+     firmware exists but no silicon variant yet — task #32.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
