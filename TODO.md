@@ -1887,11 +1887,36 @@ state.**
      [`docs/perf/amostress-silicon-2026-05-02.log`](./docs/perf/amostress-silicon-2026-05-02.log)).
      ~848 k clean amoswap.w + verify-lw operations across 4 SDRAM
      banks under fetch contention with zero failure markers.
-     **AMOSWAP path is solid on silicon.** Remaining sub-paths to
-     check: LR/SC cmpxchg pattern (kernel uses this exclusively
-     at the panic site, NOT amoswap), AMOADD/AMOOR/AMOXOR/AMOAND
-     on multi-bank, AMO across an interrupt. HelloLrScStress
-     firmware exists but no silicon variant yet — task #32.
+     **AMOSWAP path is solid on silicon.**
+
+     **2026-05-02 LR/SC silicon result: ALSO clean.** The
+     `riski5-core-lrscstress` bitstream ran for 35 s: **B count
+     11,575, D count 11,571, dots count 740,523, F count = 0**
+     (full log:
+     [`docs/perf/lrscstress-silicon-2026-05-02.log`](./docs/perf/lrscstress-silicon-2026-05-02.log)).
+     ~740 k clean lr.w + sc.w.rl cmpxchg retry loops + verify-lw
+     across 4 SDRAM banks under fetch contention with zero
+     failure markers. The exact bus shape used by the kernel at
+     the panic site (task_work_add's cmpxchg loop) works
+     correctly on our silicon.
+
+     **Conclusion: AMO + LR/SC are RULED OUT as the root cause of
+     the Linux stack-protector panic at PC=0x8002cd98.** Remaining
+     suspects (in priority order):
+     1. **FDT/DT corruption (task #27)** — the boot stub stages
+        DTB into SDRAM after the kernel; a corrupted byte there
+        propagates into wrong addresses kernel-side. Different
+        with/without stack-protector because of slightly
+        different code layout sees the corruption at different
+        spots.
+     2. **Stack overflow / canary write from unrelated path** —
+        the panic site task_work_add doesn't itself overflow;
+        some EARLIER function corrupts task_work_add's stack
+        slot. Need to bisect by adding printks before suspect
+        functions.
+     3. **Boot log divergence (task #28)** — compare with/without
+        stack-protector logs cycle-by-cycle to find the first
+        observable behavioural difference.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
