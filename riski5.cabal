@@ -225,6 +225,7 @@ test-suite riski5-test
     SdramSpec
     SdramTwoPortSpec
     SdrControllerSpec
+    SocChainIntegrationSpec
     SramTwoPortSpec
     SocHwSim
     SocSpec

@@ -36,6 +36,7 @@ import SdramExecSpec qualified
 import SdramSpec qualified
 import SdramTwoPortSpec qualified
 import SdrControllerSpec qualified
+import SocChainIntegrationSpec qualified
 import SocHwSim qualified
 import SocSpec qualified
 import SpikeDiffSpec qualified
@@ -82,6 +83,7 @@ main =
       , SdramExecSpec.tests
       , SdramTwoPortSpec.tests
       , SdrControllerSpec.tests
+      , SocChainIntegrationSpec.tests
       , HelloSpec.tests
       , IFetchSpec.tests
       , JalrStackSpec.tests
