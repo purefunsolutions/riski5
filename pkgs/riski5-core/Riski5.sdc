@@ -39,8 +39,29 @@ derive_clock_uncertainty
 # software-side.
 set_clock_uncertainty \
     -setup -add 2.0 \
-    -from [get_clocks {u_altpll|pll|clk[0]}] \
-    -to   [get_clocks {u_altpll|pll|clk[0]}]
+    -from [get_clocks {u_altpll_bus|pll|clk[0]}] \
+    -to   [get_clocks {u_altpll_bus|pll|clk[0]}]
+
+# Phase C: SDRAM domain runs on its own PLL at 133.33 MHz (chip-spec).
+# Looser uncertainty since the controller is at the edge of Cyclone
+# II's Fmax envelope; the existing 2 ns over-constraint on clkBus
+# would crater fitting at 133 MHz.
+set_clock_uncertainty \
+    -setup -add 0.3 \
+    -from [get_clocks {u_altpll_sdram|pll|clk[0]}] \
+    -to   [get_clocks {u_altpll_sdram|pll|clk[0]}]
+
+# CDC bridge between DomBus and DomSdram is the only path that
+# crosses the two domains. Toggle handshakes + 2-FF synchronisers +
+# quasi-static held buses make these crossings inherently safe;
+# false-path them so TimeQuest doesn't try (and fail) to close
+# timing on them.
+set_false_path \
+    -from [get_clocks {u_altpll_bus|pll|clk[0]}] \
+    -to   [get_clocks {u_altpll_sdram|pll|clk[0]}]
+set_false_path \
+    -from [get_clocks {u_altpll_sdram|pll|clk[0]}] \
+    -to   [get_clocks {u_altpll_bus|pll|clk[0]}]
 
 # Async reset input from KEY[0] is intentionally exempt from timing.
 set_false_path -from [get_ports KEY[0]] -to [all_registers]
@@ -59,7 +80,7 @@ set_false_path -from [get_ports KEY[0]] -to [all_registers]
 # the DRAM_CLK pin and uses it as the reference for the chip-side
 # data + command paths.
 create_generated_clock -name dram_clk \
-    -source [get_pins -compatibility_mode {*u_altpll*|clk[2]}] \
+    -source [get_pins -compatibility_mode {*u_altpll_sdram*|clk[1]}] \
     [get_ports DRAM_CLK]
 
 # IS42S16400-7TL chip-side timing (datasheet, -7TL grade):

@@ -190,6 +190,16 @@ module riski5_sim_top (
   riski5 u_riski5 (
       .CLOCK_BUS              (clk),
       .RESET_BUS_N            (rst_n),
+      // Phase C: hwsim ties the SDRAM domain to the bus clock so
+      // the existing single-clock harness still works. The Top.hs
+      // sdramCdcBridge instantiation just becomes a same-clock
+      // toggle handshake (more cycles than direct wire but
+      // functionally correct). When the hwsim wrapper grows real
+      // multi-domain support (Phase E), CLOCK_SDRAM gets its own
+      // clk_sdram input port and the harness drives it at the
+      // chip's rated 133 MHz.
+      .CLOCK_SDRAM            (clk),
+      .RESET_SDRAM_N          (rst_n),
       .KEY                    (KEY),
       .SW                     (SW),
       .SRAM_DQ_I              (SRAM_DQ_I),

@@ -175,6 +175,8 @@ in
       clash --verilog -fclash-hdlsyn Quartus \
         -XGHC2021 -XImplicitPrelude -DFIRMWARE_COREMARK \
         -DSOC_CLOCK_HZ=40000000 \
+        -DSOC_SDRAM_CLOCK_HZ=40000000 \
+        -DSOC_SDRAM_PERIOD_PS=25000 \
         -isrc -iapp -ifirmware/phase1 \
         Top
 

@@ -44,7 +44,8 @@ import MemTest (memTestFirmwareWords)
 #endif
 import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
-import Riski5.Domains (DomBus)
+import Riski5.Domains (DomBus, DomSdram)
+import Riski5.SdramCdcBridge (sdramCdcBridge)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.SdrController (
   SdrPins (..),
@@ -99,18 +100,34 @@ domain split.
 -- @50e6 × pllBusMultBy / 5@). Defaults to 40 MHz so a plain
 -- @cabal build@ without the build-system define also works.
 --
--- This value flows into 'defaultDe2ConfigForClockHz' so the SDRAM
--- controller's refresh interval and power-up NOP delay scale
--- correctly with the actual silicon clock rate. At 40 MHz the
--- scaled values match the prior hardcoded defaults
--- (@sdrRefreshIntervalCycles = 600@, @sdrInitNopCycles = 4100@);
--- at 30 MHz they become 450 / 3100; at 20 MHz 300 / 2100.
+-- Used by anything in DomBus that needs to know the actual clock
+-- rate (currently nothing — the SDRAM controller config now reads
+-- 'sdramClockHz' instead since it lives in DomSdram after Phase C).
 socClockHz :: Int
 socClockHz =
 #ifdef SOC_CLOCK_HZ
   SOC_CLOCK_HZ
 #else
   40_000_000
+#endif
+
+-- | SDRAM domain clock frequency in Hz. Set by the build system
+-- via the @-DSOC_SDRAM_CLOCK_HZ=...@ CPP define from
+-- @pkgs/riski5-core/package.nix@ (computed from @pllSdramMultBy@
+-- and @pllSdramDivBy@: @50e6 × multBy / divBy@). Defaults to
+-- 133_333_333 Hz (M=8, D=3) so a plain @cabal build@ matches
+-- the chip-spec rate even without the build-system define.
+--
+-- This value flows into 'defaultDe2ConfigForClockHz' so the SDRAM
+-- controller's refresh interval and power-up NOP delay scale
+-- correctly. At 133 MHz the scaled values become refresh=2000
+-- cycles (15 µs) and init NOPs=13433 cycles (≈ 100.7 µs).
+sdramClockHz :: Int
+sdramClockHz =
+#ifdef SOC_SDRAM_CLOCK_HZ
+  SOC_SDRAM_CLOCK_HZ
+#else
+  133_333_333
 #endif
 
 -- * Firmware --------------------------------------------------------
@@ -163,14 +180,30 @@ dataImage = repeat 0
 DE2 top-level entity.
 -}
 topEntity ::
-  {- | 40 MHz bus clock — the output of @u_altpll|clk[0]@ in the
+  {- | 40 MHz bus clock — the output of @u_altpll_bus|clk[0]@ in the
   @riski5_top.v@ wrapper outside the Clash module.
   -}
   "CLOCK_BUS" ::: Clock DomBus ->
-  {- | Active-low reset, held asserted until both PLLs have locked
-  and @KEY[0]@ has been released.
+  {- | Active-low reset, held asserted until @u_altpll_bus@ has
+  locked and @KEY[0]@ has been released. Synchronised into
+  DomBus by the wrapper.
   -}
   "RESET_BUS_N" ::: Reset DomBus ->
+  {- | 133.33 MHz SDRAM controller clock — the output of
+  @u_altpll_sdram|clk[0]@. Multi-PLL Phase C: the SDRAM
+  controller and the chip-side @DRAM_*@ pin drivers move to this
+  separate domain so they can run at the chip's rated clock
+  without dragging the rest of the SoC up. The bus-side
+  @Riski5.Sdram@ adapter (32↔16 split) stays in DomBus; CDC
+  between the two is the @Riski5.SdramCdcBridge.sdramCdcBridge@
+  toggle handshake instantiated in this module's body.
+  -}
+  "CLOCK_SDRAM" ::: Clock DomSdram ->
+  {- | Active-low reset for DomSdram. Held asserted until
+  @u_altpll_sdram@ has locked. Synchronised into DomSdram by
+  the wrapper.
+  -}
+  "RESET_SDRAM_N" ::: Reset DomSdram ->
   "KEY" ::: Signal DomBus (BitVector 4) ->
   "SW" ::: Signal DomBus (BitVector 18) ->
   {- | What the SRAM is currently driving on its DQ bus, sampled
@@ -214,7 +247,7 @@ topEntity ::
   controller in 'Riski5.SdrController' so the upper-half-word
   write drop bug is fixed at the hardware layer.
   -}
-  "SDRAM_DQ_IN" ::: Signal DomBus (BitVector 16) ->
+  "SDRAM_DQ_IN" ::: Signal DomSdram (BitVector 16) ->
   {- | Re-arm pulse for the freeze-on-trigger capture (see
   'Riski5.Soc.SocOut.soDbgFrozenPc'). The @riski5_top.v@ wrapper
   drives this from a 1-bit @altsource_probe@ source pin so
@@ -285,23 +318,25 @@ topEntity ::
         , "UART_BE" ::: Signal DomBus (BitVector 4)
         , "UART_RE" ::: Signal DomBus Bool
         , -- SDRAM chip-side pins — driven by 'Riski5.SdrController'
-          -- via the 'sdrControllerAsAlteraIp' drop-in wrapper. The
-          -- @riski5_top.v@ wrapper connects these directly to the
-          -- DE2 board's DRAM_* FPGA pads (no Altera IP, no CDC
-          -- bridge — single clkBus domain). Replaces the previous
-          -- Avalon-MM master bus tap (@SDRAM_CS@ / @SDRAM_ADDR@ /
-          -- @SDRAM_WDATA@ / @SDRAM_BE@ / @SDRAM_RD@ / @SDRAM_WR@)
-          -- that fed the Altera IP slave port.
-          "SDRAM_ADDR_OUT" ::: Signal DomBus (BitVector 12)
-        , "SDRAM_BA" ::: Signal DomBus (BitVector 2)
-        , "SDRAM_CAS_N" ::: Signal DomBus Bool
-        , "SDRAM_CKE" ::: Signal DomBus Bool
-        , "SDRAM_CS_N" ::: Signal DomBus Bool
-        , "SDRAM_DQ_OUT" ::: Signal DomBus (BitVector 16)
-        , "SDRAM_DQ_OE" ::: Signal DomBus Bool
-        , "SDRAM_DQM" ::: Signal DomBus (BitVector 2)
-        , "SDRAM_RAS_N" ::: Signal DomBus Bool
-        , "SDRAM_WE_N" ::: Signal DomBus Bool
+          -- via the 'sdrControllerAsAlteraIp' drop-in wrapper, now
+          -- elaborated in @DomSdram@ (Phase C of the multi-PLL
+          -- split). The bus-side adapter @Riski5.Sdram.sdram@ stays
+          -- in @DomBus@; the toggle-handshake bridge
+          -- @Riski5.SdramCdcBridge.sdramCdcBridge@ in this module's
+          -- body crosses the boundary. The @riski5_top.v@ wrapper
+          -- routes these chip pins to the DE2 board's @DRAM_*@ FPGA
+          -- pads using @u_altpll_sdram@'s clock for I/O-cell
+          -- timing.
+          "SDRAM_ADDR_OUT" ::: Signal DomSdram (BitVector 12)
+        , "SDRAM_BA" ::: Signal DomSdram (BitVector 2)
+        , "SDRAM_CAS_N" ::: Signal DomSdram Bool
+        , "SDRAM_CKE" ::: Signal DomSdram Bool
+        , "SDRAM_CS_N" ::: Signal DomSdram Bool
+        , "SDRAM_DQ_OUT" ::: Signal DomSdram (BitVector 16)
+        , "SDRAM_DQ_OE" ::: Signal DomSdram Bool
+        , "SDRAM_DQM" ::: Signal DomSdram (BitVector 2)
+        , "SDRAM_RAS_N" ::: Signal DomSdram Bool
+        , "SDRAM_WE_N" ::: Signal DomSdram Bool
         , -- Debug tap. Carries 'soDbgPcFetch' = the core's pcFetchS.
           -- @riski5_top.v@ feeds this into an @altsource_probe@
           -- megafunction so @quartus_stp@'s @read_probe_data@ can
@@ -330,6 +365,8 @@ topEntity ::
 topEntity
   clkBus
   rstBus
+  clkSdram
+  rstSdram
   keyS
   swS
   sramDqInS
@@ -399,16 +436,37 @@ topEntity
               <*> jtagLoadBeS
           outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
           sdramBusS = soSdramBus <$> outS
-          (sdramReplyS, sdramPinsS) =
-            -- Use the registered wrapper so Quartus can pack the
-            -- DRAM_* output flops into Cyclone II I/O cells (the
-            -- FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER /
-            -- FAST_INPUT_REGISTER assignments in Riski5.qsf, with
-            -- the matching SDC source-synchronous constraints in
-            -- Riski5.sdc and the +90° DRAM_CLK in u_altpll). The
-            -- two-cycle round-trip latency it adds is matched by
-            -- 'sdrPipelineLatency = 2' in defaultDe2Config.
-            sdrControllerAsAlteraIpRegistered (defaultDe2ConfigForClockHz socClockHz) sdramBusS sdramDqInS
+          -- Phase C: CDC bridge between the bus-side SDRAM bus
+          -- (DomBus, from Riski5.Sdram.sdram's adapter) and the
+          -- chip-side controller (DomSdram, running at the chip's
+          -- 133 MHz spec). The bridge holds master-side
+          -- waitrequest high for the round trip — adapter sees the
+          -- same Avalon-MM protocol shape as before.
+          (sdramReplyS, sdramBusInSdramS) =
+            sdramCdcBridge
+              clkBus rstBus enableGen
+              clkSdram rstSdram enableGen
+              sdramBusS
+              sdramReplyInSdramS
+          -- The SDRAM controller now elaborates in DomSdram. Its
+          -- config uses sdramClockHz (the actual SDRAM rate), not
+          -- the bus rate — so refresh interval and init NOP delay
+          -- scale correctly per defaultDe2ConfigForClockHz.
+          --
+          -- Use the registered wrapper so Quartus can pack the
+          -- DRAM_* output flops into Cyclone II I/O cells (the
+          -- FAST_OUTPUT_REGISTER / FAST_OUTPUT_ENABLE_REGISTER /
+          -- FAST_INPUT_REGISTER assignments in Riski5.qsf, with
+          -- the matching SDC source-synchronous constraints in
+          -- Riski5.sdc and the +90° DRAM_CLK in u_altpll_sdram).
+          -- The two-cycle round-trip latency it adds is matched
+          -- by 'sdrPipelineLatency = 2' in defaultDe2ConfigForClockHz.
+          (sdramReplyInSdramS, sdramPinsS) =
+            withClockResetEnable clkSdram rstSdram enableGen $
+              sdrControllerAsAlteraIpRegistered
+                (defaultDe2ConfigForClockHz sdramClockHz)
+                sdramBusInSdramS
+                sdramDqInS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
           lcdDataS = lcdData . soLcdPins <$> outS

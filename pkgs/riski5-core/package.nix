@@ -253,14 +253,27 @@
     if verySlowClock then 2
     else if slowClock then 3
     else 4;
-  # +90° phase shift = quarter-period delay on DRAM_CLK output:
-  #   40 MHz / 25.00 ns period → +6250 ps
-  #   30 MHz / 33.33 ns period → +8333 ps
-  #   20 MHz / 50.00 ns period → +12500 ps
-  pllDramPhaseShiftPs =
-    if verySlowClock then "12500"
-    else if slowClock then "8333"
-    else "6250";
+  # SDRAM domain (Phase C of multi-PLL split). Independent PLL
+  # u_altpll_sdram in the wrapper Verilog. Default M=8, D=3 →
+  # 50 × 8 / 3 = 133.33 MHz, the IS42S16400-7TL chip-rated clock.
+  # VCO = 50 × 8 / 1 = 400 MHz, well within Cyclone II's
+  # 300-700 MHz range.
+  pllSdramMultBy = 8;
+  pllSdramDivBy = 3;
+  # SDRAM clock period in picoseconds, derived from the M/D pair.
+  # Used both for SDC constraints and for computing the +90° phase
+  # shift on DRAM_CLK. At 50 × 8 / 3 = 133.33 MHz, period = 7500 ps,
+  # quarter-period = 1875 ps.
+  sdramPeriodPs = 50000 * pllSdramDivBy / pllSdramMultBy;
+  # SDRAM clock frequency in Hz, passed to Clash as -DSOC_SDRAM_CLOCK_HZ
+  # so defaultDe2ConfigForClockHz computes refresh + init NOPs from
+  # the actual SDRAM rate.
+  sdramClockHz = 50000000 * pllSdramMultBy / pllSdramDivBy;
+  # +90° phase shift = quarter-period delay on DRAM_CLK output.
+  # Now computed from the SDRAM period rather than the bus period
+  # (the chip's clock follows the controller's clock domain post
+  # Phase C). At 133 MHz / 7.5 ns period → +1875 ps.
+  pllDramPhaseShiftPs = toString (sdramPeriodPs / 4);
   slowSuffix =
     if verySlowClock then "-veryslow"
     else if slowClock then "-slow"
@@ -1000,6 +1013,7 @@ in
               -XGHC2021 -XImplicitPrelude \
               ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
+              -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
@@ -1260,15 +1274,15 @@ in
         // bridge (riski5_sdram_cdc_bridge). The pure-Clash SDR SDRAM
         // controller in 'Riski5.SdrController' runs on clkBus and
         // drives the DRAM_* chip pins directly.
-        wire [4:0] altpll_clk_vec;
-        wire       clkBus       = altpll_clk_vec[0];
-        wire       clkCore      = altpll_clk_vec[1];
-        wire       clkDramOut   = altpll_clk_vec[2];
+        // ===== PLL #1 — bus + core domain =================================
+        wire [4:0] altpll_bus_clk_vec;
+        wire       clkBus       = altpll_bus_clk_vec[0];
+        wire       clkCore      = altpll_bus_clk_vec[1];
         wire       pll_bus_locked;
-        altpll u_altpll (
+        altpll u_altpll_bus (
             .areset (1'b0),
             .inclk  ({1'b0, CLOCK_50}),
-            .clk    (altpll_clk_vec),
+            .clk    (altpll_bus_clk_vec),
             .locked (pll_bus_locked),
             .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
             .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
@@ -1280,31 +1294,73 @@ in
             .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
             .vcounderrange ()
         );
-        defparam u_altpll.bandwidth_type         = "AUTO";
-        defparam u_altpll.clk0_divide_by         = 5;
-        defparam u_altpll.clk0_duty_cycle        = 50;
-        defparam u_altpll.clk0_multiply_by       = ${toString pllBusMultBy};
-        defparam u_altpll.clk0_phase_shift       = "0";
-        defparam u_altpll.clk1_divide_by         = 5;
-        defparam u_altpll.clk1_duty_cycle        = 50;
-        defparam u_altpll.clk1_multiply_by       = ${toString pllCoreMultBy};
-        defparam u_altpll.clk1_phase_shift       = "0";
-        defparam u_altpll.clk2_divide_by         = 5;
-        defparam u_altpll.clk2_duty_cycle        = 50;
-        defparam u_altpll.clk2_multiply_by       = ${toString pllBusMultBy};
-        defparam u_altpll.clk2_phase_shift       = "${pllDramPhaseShiftPs}";
-        defparam u_altpll.compensate_clock       = "CLK0";
-        defparam u_altpll.inclk0_input_frequency = 20000;
-        defparam u_altpll.intended_device_family = "Cyclone II";
-        defparam u_altpll.lpm_type               = "altpll";
-        defparam u_altpll.operation_mode         = "NORMAL";
-        defparam u_altpll.port_clk0              = "PORT_USED";
-        defparam u_altpll.port_clk1              = "PORT_USED";
-        defparam u_altpll.port_clk2              = "PORT_USED";
-        defparam u_altpll.port_inclk0            = "PORT_USED";
-        defparam u_altpll.port_locked            = "PORT_USED";
-        defparam u_altpll.port_areset            = "PORT_USED";
-        defparam u_altpll.width_clock            = 5;
+        defparam u_altpll_bus.bandwidth_type         = "AUTO";
+        defparam u_altpll_bus.clk0_divide_by         = 5;
+        defparam u_altpll_bus.clk0_duty_cycle        = 50;
+        defparam u_altpll_bus.clk0_multiply_by       = ${toString pllBusMultBy};
+        defparam u_altpll_bus.clk0_phase_shift       = "0";
+        defparam u_altpll_bus.clk1_divide_by         = 5;
+        defparam u_altpll_bus.clk1_duty_cycle        = 50;
+        defparam u_altpll_bus.clk1_multiply_by       = ${toString pllCoreMultBy};
+        defparam u_altpll_bus.clk1_phase_shift       = "0";
+        defparam u_altpll_bus.compensate_clock       = "CLK0";
+        defparam u_altpll_bus.inclk0_input_frequency = 20000;
+        defparam u_altpll_bus.intended_device_family = "Cyclone II";
+        defparam u_altpll_bus.lpm_type               = "altpll";
+        defparam u_altpll_bus.operation_mode         = "NORMAL";
+        defparam u_altpll_bus.port_clk0              = "PORT_USED";
+        defparam u_altpll_bus.port_clk1              = "PORT_USED";
+        defparam u_altpll_bus.port_inclk0            = "PORT_USED";
+        defparam u_altpll_bus.port_locked            = "PORT_USED";
+        defparam u_altpll_bus.port_areset            = "PORT_USED";
+        defparam u_altpll_bus.width_clock            = 5;
+
+        // ===== PLL #2 — SDRAM domain (Phase C of multi-PLL split) ========
+        // Independent PLL drives clkSdram (default 133.33 MHz, IS42S16400
+        // chip-spec) plus clkDramOut (+90° phase shift) routed to the
+        // chip's DRAM_CLK pin. SDRAM controller logic + chip pins both
+        // run in this domain; CDC bridge in app/Top.hs crosses the
+        // boundary between Riski5.Sdram (DomBus) and SdrController
+        // (DomSdram).
+        wire [4:0] altpll_sdram_clk_vec;
+        wire       clkSdram     = altpll_sdram_clk_vec[0];
+        wire       clkDramOut   = altpll_sdram_clk_vec[1];
+        wire       pll_sdram_locked;
+        altpll u_altpll_sdram (
+            .areset (1'b0),
+            .inclk  ({1'b0, CLOCK_50}),
+            .clk    (altpll_sdram_clk_vec),
+            .locked (pll_sdram_locked),
+            .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
+            .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
+            .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
+            .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
+            .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
+            .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
+            .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
+            .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
+            .vcounderrange ()
+        );
+        defparam u_altpll_sdram.bandwidth_type         = "AUTO";
+        defparam u_altpll_sdram.clk0_divide_by         = ${toString pllSdramDivBy};
+        defparam u_altpll_sdram.clk0_duty_cycle        = 50;
+        defparam u_altpll_sdram.clk0_multiply_by       = ${toString pllSdramMultBy};
+        defparam u_altpll_sdram.clk0_phase_shift       = "0";
+        defparam u_altpll_sdram.clk1_divide_by         = ${toString pllSdramDivBy};
+        defparam u_altpll_sdram.clk1_duty_cycle        = 50;
+        defparam u_altpll_sdram.clk1_multiply_by       = ${toString pllSdramMultBy};
+        defparam u_altpll_sdram.clk1_phase_shift       = "${pllDramPhaseShiftPs}";
+        defparam u_altpll_sdram.compensate_clock       = "CLK0";
+        defparam u_altpll_sdram.inclk0_input_frequency = 20000;
+        defparam u_altpll_sdram.intended_device_family = "Cyclone II";
+        defparam u_altpll_sdram.lpm_type               = "altpll";
+        defparam u_altpll_sdram.operation_mode         = "NORMAL";
+        defparam u_altpll_sdram.port_clk0              = "PORT_USED";
+        defparam u_altpll_sdram.port_clk1              = "PORT_USED";
+        defparam u_altpll_sdram.port_inclk0            = "PORT_USED";
+        defparam u_altpll_sdram.port_locked            = "PORT_USED";
+        defparam u_altpll_sdram.port_areset            = "PORT_USED";
+        defparam u_altpll_sdram.width_clock            = 5;
 
         // Task #146: u_altpll_sdram (the second PLL on CLOCK_27 that
         // used to drive the Altera SDRAM Controller IP at 108 MHz
@@ -1320,6 +1376,13 @@ in
         // (low) while the bus PLL hasn't locked or KEY[0] is held.
         wire rstBus_n  = KEY[0] & pll_bus_locked;
         wire rstCore_n = rstBus_n; // tied while clkCore=clkBus electrically
+        // Phase C: SDRAM reset gated by its own PLL's locked
+        // signal so the SdrController only comes out of reset
+        // after both KEY[0] is released AND clkSdram is stable.
+        // (Both PLLs derive from CLOCK_50; the SDRAM PLL takes
+        // longer to lock at 8/3 multiplier than the bus PLL at
+        // 4/5, so this matters for boot ordering.)
+        wire rstSdram_n = KEY[0] & pll_sdram_locked;
 
         // ----- Bidirectional SRAM DQ resolution -----------------------
         wire [15:0] sram_dq_o;
@@ -1468,8 +1531,10 @@ in
         );
 
         riski5 u_riski5 (
-            .CLOCK_BUS   (clkBus),
-            .RESET_BUS_N (rstBus_n),
+            .CLOCK_BUS    (clkBus),
+            .RESET_BUS_N  (rstBus_n),
+            .CLOCK_SDRAM  (clkSdram),
+            .RESET_SDRAM_N(rstSdram_n),
             .KEY         (KEY),
             .SW          (SW),
             .SRAM_DQ_I   (SRAM_DQ),
