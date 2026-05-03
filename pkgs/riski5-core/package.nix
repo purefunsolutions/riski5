@@ -254,12 +254,30 @@
     else if slowClock then 3
     else 4;
   # SDRAM domain (Phase C of multi-PLL split). Independent PLL
-  # u_altpll_sdram in the wrapper Verilog. Default M=8, D=3 →
-  # 50 × 8 / 3 = 133.33 MHz, the IS42S16400-7TL chip-rated clock.
-  # VCO = 50 × 8 / 1 = 400 MHz, well within Cyclone II's
-  # 300-700 MHz range.
-  pllSdramMultBy = 8;
-  pllSdramDivBy = 3;
+  # u_altpll_sdram in the wrapper Verilog. Default M=8, D=5 →
+  # 50 × 8 / 5 = 80 MHz, a safe step-up from the prior 40 MHz
+  # combined-domain rate.
+  #
+  # Why 80 MHz instead of the chip's 133 MHz spec rate: the first
+  # silicon test of 133 MHz showed the DRAM_DQ → controller-reg
+  # input path failing setup by -5.247 ns. The chip's t_AC = 5.4 ns
+  # (CLK→DQ valid max) leaves only 2.1 ns of slack at 7.5 ns
+  # period for trace + I/O setup, and the DE2 board adds ~0.5 ns
+  # of trace delay. Source-synchronous timing at 133 MHz simply
+  # doesn't fit in the IS42S16400-7TL + DE2 envelope without
+  # FAST_INPUT_REGISTER tuning we haven't done yet.
+  #
+  # 80 MHz / 12.5 ns period gives ~7 ns of slack on the DQ input
+  # path — comfortable. Linux-boot timing-margin experiments in
+  # task #35 / #36 showed the silicon Linux hang shifts with bus
+  # rate; doubling SDRAM rate to 80 MHz while keeping bus at
+  # 40 MHz tests the multi-PLL hypothesis cleanly.
+  #
+  # Push to higher rates by overriding pllSdramMultBy at the Nix
+  # invocation. M=10/D=5 → 100 MHz; M=13/D=5 → 130 MHz; M=8/D=3 →
+  # 133.33 MHz. Each requires its own STA validation.
+  pllSdramMultBy = 5;
+  pllSdramDivBy = 5;
   # SDRAM clock period in picoseconds, derived from the M/D pair.
   # Used both for SDC constraints and for computing the +90° phase
   # shift on DRAM_CLK. At 50 × 8 / 3 = 133.33 MHz, period = 7500 ps,

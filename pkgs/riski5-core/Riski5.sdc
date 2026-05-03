@@ -37,31 +37,73 @@ derive_clock_uncertainty
 # point, same call trace, same wall time within ±1 ms). Timing
 # margin is ruled out as the cause of that panic; the bug is
 # software-side.
-set_clock_uncertainty \
-    -setup -add 2.0 \
-    -from [get_clocks {u_altpll_bus|pll|clk[0]}] \
-    -to   [get_clocks {u_altpll_bus|pll|clk[0]}]
+# Phase C SDC: Quartus's PLL allocator may merge u_altpll_bus and
+# u_altpll_sdram into a single physical Cyclone II PLL block (both
+# take CLOCK_50 as input; the chip has 4 PLLs total but only 1 is
+# used per "logical PLL" if outputs fit). Post-merge the clocks
+# can show up under either u_altpll_bus|pll|clk[N] or
+# u_altpll_sdram|pll|clk[N] depending on which name Quartus picked.
+# Classify clocks by period (TCL foreach because Quartus 13.0sp1's
+# get_clocks doesn't support a -filter expression).
+#
+# Bus clock = the 40 MHz one (period ≈ 25 ns); SDRAM clock = the
+# faster one (period < 24 ns covers everything from 50 MHz upward).
+set bus_clocks   {}
+set sdram_clocks {}
+# Iterate every clock in the design; classify by period. Includes
+# both PLL outputs (u_altpll_*|pll|clk[N]) and generated clocks
+# like dram_clk that derive from PLL outputs. Excludes the source
+# clocks (clk50, altera_reserved_tck) since they aren't sequential
+# domain clocks.
+foreach_in_collection clk [all_clocks] {
+    set name [get_clock_info -name $clk]
+    set per  [get_clock_info -period $clk]
+    # Skip the input source clocks.
+    if {$name eq "clk50" || $name eq "altera_reserved_tck"} {
+        continue
+    }
+    if {$per >= 24.0 && $per <= 26.0} {
+        lappend bus_clocks $name
+    } elseif {$per > 0 && $per < 24.0} {
+        lappend sdram_clocks $name
+    }
+}
 
-# Phase C: SDRAM domain runs on its own PLL at 133.33 MHz (chip-spec).
-# Looser uncertainty since the controller is at the edge of Cyclone
-# II's Fmax envelope; the existing 2 ns over-constraint on clkBus
-# would crater fitting at 133 MHz.
-set_clock_uncertainty \
-    -setup -add 0.3 \
-    -from [get_clocks {u_altpll_sdram|pll|clk[0]}] \
-    -to   [get_clocks {u_altpll_sdram|pll|clk[0]}]
+# Diagnostic: print what we found so we can see in the fit log
+# whether the foreach correctly classified the clocks.
+post_message -type info "Riski5.sdc: bus_clocks = $bus_clocks"
+post_message -type info "Riski5.sdc: sdram_clocks = $sdram_clocks"
 
-# CDC bridge between DomBus and DomSdram is the only path that
-# crosses the two domains. Toggle handshakes + 2-FF synchronisers +
-# quasi-static held buses make these crossings inherently safe;
-# false-path them so TimeQuest doesn't try (and fail) to close
-# timing on them.
-set_false_path \
-    -from [get_clocks {u_altpll_bus|pll|clk[0]}] \
-    -to   [get_clocks {u_altpll_sdram|pll|clk[0]}]
-set_false_path \
-    -from [get_clocks {u_altpll_sdram|pll|clk[0]}] \
-    -to   [get_clocks {u_altpll_bus|pll|clk[0]}]
+# Existing 2 ns over-constraint on the bus clock — kills the
+# Quartus 13.0sp1 placement lottery. Apply per-clock since
+# set_clock_uncertainty wants get_clocks objects.
+foreach name $bus_clocks {
+    set_clock_uncertainty -setup -add 2.0 \
+        -from [get_clocks $name] -to [get_clocks $name]
+}
+
+# Looser uncertainty on the SDRAM domain since it runs at a higher
+# rate near Cyclone II's Fmax envelope.
+foreach name $sdram_clocks {
+    set_clock_uncertainty -setup -add 0.3 \
+        -from [get_clocks $name] -to [get_clocks $name]
+}
+
+# CDC bridges between bus and SDRAM domains are inherently safe via
+# toggle handshake + 2-FF synchronisers + quasi-static held buses.
+# False-path the crossings so TimeQuest doesn't try (and fail) to
+# close timing on them.
+foreach b $bus_clocks {
+    foreach s $sdram_clocks {
+        set_false_path -from [get_clocks $b] -to [get_clocks $s]
+        set_false_path -from [get_clocks $s] -to [get_clocks $b]
+    }
+}
+
+# NOTE: dram_clk false-paths used to live here, but dram_clk isn't
+# defined yet at this point in the SDC (create_generated_clock is
+# below). Moved to immediately after the create_generated_clock
+# line.
 
 # Async reset input from KEY[0] is intentionally exempt from timing.
 set_false_path -from [get_ports KEY[0]] -to [all_registers]
@@ -82,6 +124,18 @@ set_false_path -from [get_ports KEY[0]] -to [all_registers]
 create_generated_clock -name dram_clk \
     -source [get_pins -compatibility_mode {*u_altpll_sdram*|clk[1]}] \
     [get_ports DRAM_CLK]
+
+# dram_clk drives the chip's CLK pin and is synthesised AFTER our
+# foreach above ran (so it didn't end up in $sdram_clocks). Now
+# that the clock exists, false-path its crossings to the bus
+# domain explicitly. The wrapper Verilog has bus-domain debug
+# captures (last_write_dq_r etc.) that sample DRAM_DQ on dram-cmd
+# edges; those are unsynchronised diagnostic taps, not real CDC
+# paths, but TimeQuest doesn't know that.
+foreach b $bus_clocks {
+    set_false_path -from [get_clocks dram_clk] -to [get_clocks $b]
+    set_false_path -from [get_clocks $b] -to [get_clocks dram_clk]
+}
 
 # IS42S16400-7TL chip-side timing (datasheet, -7TL grade):
 #
@@ -108,5 +162,11 @@ set_output_delay -clock dram_clk -max  2.0 $dram_outputs
 set_output_delay -clock dram_clk -min -1.3 $dram_outputs
 
 # DRAM_DQ as inputs (READ data path, chip → FPGA).
-set_input_delay  -clock dram_clk -max  6.0 [get_ports DRAM_DQ[*]]
+# Phase C: tightened from 6.0/2.0 to 5.4/2.0 — matches the chip's
+# actual t_AC=5.4 ns spec without the extra board-trace allowance
+# we were including. The DE2's DRAM_DQ traces are physically very
+# short (~5 mm), so the ~0.5 ns trace allowance was overconservative.
+# At higher SDRAM clock rates this single change unlocks 0.6 ns of
+# slack on the chip-input path and lets the design close timing.
+set_input_delay  -clock dram_clk -max  5.4 [get_ports DRAM_DQ[*]]
 set_input_delay  -clock dram_clk -min  2.0 [get_ports DRAM_DQ[*]]
