@@ -80,6 +80,7 @@ library
     Riski5.Core.FU.MulDiv
     Riski5.Core.IFetch
     Riski5.Core.Presets
+    Riski5.Cdc
     Riski5.CSR
     Riski5.Decode
     Riski5.Domains
