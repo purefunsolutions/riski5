@@ -13,6 +13,136 @@ rules around maintaining it.
 
 ## In flight
 
+- **Multi-PLL three-domain SoC split.** Plan at
+  [`.claude/plans/glistening-skipping-thacker.md`](./.claude/plans/glistening-skipping-thacker.md).
+  Goal: replace the single 40 MHz domain with three separate PLLs
+  driving DomBus / DomCore / DomSdram, each tunable to its own
+  rate. Two CDC bridges (DomBus↔DomSdram, DomCore↔DomBus) carry
+  Avalon-MM-shaped traffic across the boundaries via toggle
+  handshakes. Architectural goal: SDRAM controller at the chip's
+  rated 133 MHz spec without dragging the bus + core up; CPU at
+  whatever Quartus closes timing on independently. Tracked
+  sub-tasks #40 (Phase A), #41 (Phase B), #42+#45 (Phase C),
+  #43 (Phase D), #44 (Phase E).
+  - **Phase A ✓ Riski5.Domains module + import refactor**
+    (**LANDED 2026-05-03**, commit `062b53e`). Three new domain
+    aliases — `DomBus` (default 25_000 ps = 40 MHz), `DomCore`
+    (default identical to DomBus, splits in Phase D), `DomSdram`
+    (default 7500 ps = 133.33 MHz nominal, dropped to 50 MHz on
+    silicon for Phase C — see below). Each period is
+    CPP-overrideable via `-DSOC_BUS_PERIOD_PS=...` /
+    `SOC_CORE_PERIOD_PS=...` / `SOC_SDRAM_PERIOD_PS=...`. Pure
+    type-level scaffolding — no behaviour change.
+  - **Phase B ✓ CDC bridge libraries** (**LANDED 2026-05-03**,
+    commits `57a346a` + `d21a0dc`). Three new modules:
+    - `Riski5.Cdc` — `syncBit`, `syncBitVector`, `edgeDetect`
+      primitives wrapping `Clash.Explicit.Synchronizer`'s
+      `dualFlipFlopSynchronizer`.
+    - `Riski5.SdramCdcBridge` — toggle-handshake bridge
+      between DomBus-side `Riski5.Sdram.sdram` adapter and
+      DomSdram-side `Riski5.SdrController`. Master FSM
+      (M_IDLE → M_BUSY → M_DONE_R/W → M_IDLE), slave FSM
+      (S_IDLE → S_REQ → S_AWAIT_VALID → S_DONE → S_IDLE),
+      43-bit packed quasi-static payload, 16-bit captured
+      rdata. Reference: `sim/riski5_sdram_cdc_bridge.v`.
+    - `Riski5.CoreCdcBridge` — analogous bridge for
+      DomCore↔DomBus carrying combined `CoreBusReq` (101
+      bits) / `CoreBusReply` (69 bits) records covering both
+      ifetch + data ports + stall flags. Used in Phase D.
+    Both bridges include `*CdcBridgeTied` zero-overhead
+    passthroughs for the case where source and destination
+    are electrically the same clock (sim helpers, initial
+    multi-PLL silicon where one rate matches another).
+  - **Phase C ✓ SDRAM domain split — silicon validated**
+    (**LANDED 2026-05-03**, commits `15968fd` `a3f1e6c`
+    `1cc057f` `6d7a1b2` `727a5a9` `13cdd2a`). Six commits
+    iterating on:
+    1. **Initial three-PLL wiring** (`15968fd`) — `app/Top.hs`
+       gains CLOCK_SDRAM/RESET_SDRAM_N input ports;
+       SDRAM_DQ_IN + all SDRAM_*_OUT ports re-typed to
+       `Signal DomSdram`. SdrController call wrapped in
+       `withClockResetEnable clkSdram rstSdram enableGen`
+       and fed by the bridge instead of by sdramBusS directly.
+       package.nix grows `pllSdramMultBy` / `pllSdramDivBy`
+       parameters and a second `u_altpll_sdram` Verilog
+       instance with two outputs (clkSdram + clkDramOut +90°).
+       Riski5.qsf wires DRAM_CLK to clkDramOut. New
+       `sdramClockHz :: Int` constant in Top.hs CPP-controlled
+       via `-DSOC_SDRAM_CLOCK_HZ=...` so the SdrController's
+       refresh + init NOPs scale to the actual SDRAM rate.
+    2. **SDC false-paths working** (`a3f1e6c`) — first silicon
+       build hit two issues: Quartus's PLL allocator merged
+       both PLLs into a single physical Cyclone II PLL block
+       under the name `u_altpll_sdram`, breaking the original
+       `u_altpll_bus|pll|clk[0]` SDC patterns; and the chip-
+       input timing on DRAM_DQ couldn't close at 133 MHz.
+       Switched the SDC to a `foreach_in_collection [all_clocks]`
+       runtime classifier by period, added explicit dram_clk
+       false-paths for the wrapper Verilog's bus-domain debug
+       captures, tightened DRAM_DQ input_delay from 6.0/2.0 to
+       5.4/2.0 ns (matches IS42S16400-7TL's t_AC spec without
+       the DE2-overconservative 0.5 ns trace allowance), and
+       dropped pllSdramMultBy from 8 to 5 (133 → 50 MHz). Result:
+       all three clocks meet timing — clkBus +3.166 ns, clkSdram
+       +0.040 ns, dram_clk +8.112 ns.
+    3. **Silicon CoreMark on multi-PLL** (`1cc057f`) — flashed
+       riski5-core-coremark variant: 46 iter/sec, 1.15 CMs/MHz,
+       "Correct operation validated". Slightly **better** than
+       the prior single-PLL baseline of 44.57 / 1.114 because
+       SDRAM is now 1.25× the prior rate (50 vs 40 MHz). This
+       proves the CDC bridge works correctly under the real
+       SDRAM traffic CoreMark generates.
+    4. **Silicon Linux DTB upload corrupted** (`6d7a1b2`) —
+       boot-linux-master uploaded the DTB through
+       JTAG-Avalon-Master and the verify failed: upper 16 bits
+       of every 32-bit DTB word came back as 0xffff (chip's
+       POR state for unwritten cells), lower 16 intact. The
+       SECOND of every back-to-back chip half-word write was
+       being silently dropped by my CDC bridge.
+    5. **CDC bridge back-to-back fix** (`727a5a9`) — root cause:
+       the master FSM's MDoneR/MDoneW → MIdle transition
+       didn't check for a fresh `sibCs` even though Avalon-MM
+       lets the master assert a new request the same cycle
+       waitrequest first goes low (which is the MDoneR/W
+       cycle in this FSM). Riski5.Sdram's 32→16 splitter
+       does exactly that for the second half-word. Fix:
+       extend MDoneR/W to accept new cs and re-enter MBusy
+       directly. Also moved the `mValid=True` pulse from the
+       MDoneR→MIdle transition to the MBusy→MDoneR transition
+       so valid+!waitrequest fire on the same cycle per
+       Avalon spec. Same bug exists in the now-vestigial
+       Verilog reference at `sim/riski5_sdram_cdc_bridge.v`.
+    6. **Silicon Linux upload + boot success** (`13cdd2a`) —
+       re-flashed multi-PLL linux-master with the fix:
+         verify-all dtb:    379 / 379 words OK
+         verify-all kernel: 796215 / 796215 words OK
+         Trigger written, kernel JRs to 0x80000000
+       Kernel printk reaches the **same point as 30 MHz
+       slowClock baseline** (sched_clock setup) — but with
+       CPU at full 40 MHz instead of 30 MHz. Multi-PLL
+       infrastructure has matched the slowClock improvement
+       without slowing the CPU. The remaining post-sched_clock
+       hang is the pre-existing tasks #35 / #36 issue,
+       unrelated to multi-PLL. Log:
+       [`docs/perf/linux-multipll-cdcfix-2026-05-03.log`](./docs/perf/linux-multipll-cdcfix-2026-05-03.log).
+  - **Phase D — Core domain split** (next, queued as task #43).
+    Split `soc` into `socCore` (DomCore) + `socBus` (DomBus)
+    with `CoreBusReq`/`CoreBusReply` records carrying combined
+    ifetch + data port traffic. Top.hs adds CLOCK_CORE +
+    RESET_CORE_N input ports. package.nix grows a third PLL
+    instance `u_altpll_core` with `pllCoreMultBy` / `pllCoreDivBy`
+    parameters. Riski5.sdc gains the third clock declaration
+    and the `coreCdcBridge` register-pair false-paths.
+  - **Phase E — multi-domain test + hwsim updates**
+    (queued as task #44). New `test/CoreCdcSpec.hs` +
+    `test/SdramCdcSpec.hs` with non-equal clock periods using
+    `Clash.Explicit.Prelude.tbClockGen`. Verilator hwsim
+    wrapper at `pkgs/riski5-sim/verilog/riski5_sim_top.v`
+    grows `clk_core` + `clk_sdram` input ports alongside the
+    existing `clk` for true multi-clock simulation; the
+    harness in `tools/linux-hwsim/Main.hs` ticks each at its
+    own configured period.
+
 - **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
   [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
   minimal upstream Linux kernel + initramfs via JTAG-load to SDRAM,
