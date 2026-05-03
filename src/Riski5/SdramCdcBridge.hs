@@ -230,26 +230,45 @@ masterStep ::
 masterStep st@MasterState{..} bus doneEdge capR =
   case mPhase of
     MIdle
-      | sibCs bus ->
-          st
-            { mPhase = MBusy
-            , mLatAddr = sibAddr bus
-            , mLatWdata = sibWdata bus
-            , mLatBe = sibBe bus
-            , mLatRd = sibRd bus
-            , mLatWr = sibWr bus
-            , mReqToggle = not mReqToggle
-            , mValid = False
-            }
+      | sibCs bus -> startBusy False
       | otherwise -> st{mValid = False}
     MBusy
       | doneEdge ->
+          -- Pulse valid in the SAME cycle waitrequest goes low (when
+          -- mPhase becomes MDoneR, sirWaitrequest = MBusy = False).
+          -- Standard Avalon-MM semantics: slave asserts readdatavalid
+          -- on the same cycle waitrequest first deasserts.
           if mLatRd
-            then st{mPhase = MDoneR, mRdata = capR, mValid = False}
+            then st{mPhase = MDoneR, mRdata = capR, mValid = True}
             else st{mPhase = MDoneW, mValid = False}
       | otherwise -> st{mValid = False}
-    MDoneW -> st{mPhase = MIdle, mValid = False}
-    MDoneR -> st{mPhase = MIdle, mValid = True}
+    MDoneW
+      -- Back-to-back: if the adapter asserts cs the same cycle it
+      -- sees waitrequest=False (the MDoneW cycle), accept the new
+      -- transaction immediately. The Avalon spec lets the master
+      -- do this; without this branch the bridge would silently drop
+      -- the new transaction (regression: task-#146-shaped DTB
+      -- corruption observed on multi-PLL silicon Linux boot, with
+      -- the upper 16 bits of every 32-bit master_write_32 lost).
+      | sibCs bus -> startBusy False
+      | otherwise -> st{mPhase = MIdle, mValid = False}
+    MDoneR
+      -- Same back-to-back accept as MDoneW. Clear the valid pulse
+      -- on the way out so it doesn't carry into the next cycle.
+      | sibCs bus -> startBusy False
+      | otherwise -> st{mPhase = MIdle, mValid = False}
+ where
+  startBusy v =
+    st
+      { mPhase = MBusy
+      , mLatAddr = sibAddr bus
+      , mLatWdata = sibWdata bus
+      , mLatBe = sibBe bus
+      , mLatRd = sibRd bus
+      , mLatWr = sibWr bus
+      , mReqToggle = not mReqToggle
+      , mValid = v
+      }
 
 slaveStep ::
   SlaveState ->
