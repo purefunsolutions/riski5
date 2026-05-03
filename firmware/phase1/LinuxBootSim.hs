@@ -71,22 +71,38 @@ linuxBootSimFirmware = do
   addi tmpReg tmpReg (-1)
   bne tmpReg x0 delayL
 
-  -- Diagnostic: read SDRAM[0x80000000] and emit 'K' + 4 LE bytes.
-  -- If the harness pre-loaded the kernel correctly, this should
-  -- be the kernel's first instruction word (typically a JAL into
-  -- head.S). If it's all zero, the SDRAM model isn't returning
-  -- the pre-loaded data (or the load address mapping is wrong).
-  addi tmpReg x0 0x4B -- 'K'
-  sw uartR tmpReg 0
-  li sdAddrReg 0x80000000
-  lw sdRdReg sdAddrReg 0
-  sw uartR sdRdReg 0
-  srli tmpReg sdRdReg 8
-  sw uartR tmpReg 0
-  srli tmpReg sdRdReg 16
-  sw uartR tmpReg 0
-  srli tmpReg sdRdReg 24
-  sw uartR tmpReg 0
+  -- Diagnostic: read four bank boundaries (0x000 = bank 0,
+  -- 0x200 = bank 1, 0x400 = bank 2, 0x600 = bank 3) and dump
+  -- each as '0..3' label + 4 LE bytes. Confirms bank switching
+  -- works in our SDRAM chip model. If only bank 0 reads
+  -- correctly while 1/2/3 return zeros, the controller is
+  -- failing to ACTIVATE the new bank (or my model has a bug
+  -- with active_row tracking across banks).
+  --
+  -- Expected for our kernel image (see object dump):
+  --   0x000 (bank 0)        : 6f 00 c0 05  (head.S JAL)
+  --   0x200 (bank 1)        : 53 0b 00 f0  (head.S instruction)
+  --   0x400 (bank 2)        : 00 00 00 00  (padding/data)
+  --   0x600 (bank 3)        : 00 00 00 00
+  --   0x800 (bank 0, row 1) : 00 00 00 00
+  -- So 0x200 is the cleanest cross-bank discriminator.
+  let probeBank label addr = do
+        addi tmpReg x0 label
+        sw uartR tmpReg 0
+        li sdAddrReg addr
+        lw sdRdReg sdAddrReg 0
+        sw uartR sdRdReg 0
+        srli tmpReg sdRdReg 8
+        sw uartR tmpReg 0
+        srli tmpReg sdRdReg 16
+        sw uartR tmpReg 0
+        srli tmpReg sdRdReg 24
+        sw uartR tmpReg 0
+  probeBank 0x30 0x80000000 -- '0' bank 0
+  probeBank 0x31 0x80000200 -- '1' bank 1
+  probeBank 0x32 0x80000400 -- '2' bank 2
+  probeBank 0x33 0x80000600 -- '3' bank 3
+  probeBank 0x34 0x80000800 -- '4' bank 0, row 1 (cross-row)
 
   -- 'J' marker just before JALR (helpful when debugging hangs
   -- between the entry marker and the kernel's first printk).
