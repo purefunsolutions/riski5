@@ -38,24 +38,34 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [kPath, dPath]              -> runSim kPath dPath 10_000_000 False
-    [kPath, dPath, n]           -> runSim kPath dPath (read n) False
-    ["--trace", kPath, dPath]   -> runSim kPath dPath 10_000_000 True
-    ["--trace", kPath, dPath, n] -> runSim kPath dPath (read n) True
+    [kPath, dPath]                       -> runSim kPath dPath 10_000_000 False StopOnLinuxVersion
+    [kPath, dPath, n]                    -> runSim kPath dPath (read n) False StopOnLinuxVersion
+    ["--full", kPath, dPath]             -> runSim kPath dPath 10_000_000 False StopOnPanicOnly
+    ["--full", kPath, dPath, n]          -> runSim kPath dPath (read n) False StopOnPanicOnly
+    ["--trace", kPath, dPath]            -> runSim kPath dPath 10_000_000 True  StopOnLinuxVersion
+    ["--trace", kPath, dPath, n]         -> runSim kPath dPath (read n) True  StopOnLinuxVersion
     _ -> do
-      hPutStrLn stderr "usage: riski5-linux-sim [--trace] KERNEL DTB [MAX_STEPS]"
+      hPutStrLn stderr "usage: riski5-linux-sim [--trace|--full] KERNEL DTB [MAX_STEPS]"
+      hPutStrLn stderr "  default: stop on first 'Linux version' UART output"
+      hPutStrLn stderr "  --full:  run until 'Kernel panic' or MAX_STEPS"
+      hPutStrLn stderr "  --trace: per-step PC trace to stderr"
       exitFailure
 
-runSim :: FilePath -> FilePath -> Int -> Bool -> IO ()
-runSim kPath dPath maxSteps trace = do
+data StopMode = StopOnLinuxVersion | StopOnPanicOnly
+
+runSim :: FilePath -> FilePath -> Int -> Bool -> StopMode -> IO ()
+runSim kPath dPath maxSteps trace mode = do
   hPutStrLn stderr $ "linux-sim: kernel=" ++ kPath ++ " dtb=" ++ dPath
                     ++ " max-steps=" ++ show maxSteps ++ " trace=" ++ show trace
   st0 <- loadKernelDtb kPath 0x80000000 dPath 0x80400000
   ref <- newIORef st0
   hPutStrLn stderr "linux-sim: starting..."
+  let stopPred = case mode of
+        StopOnLinuxVersion -> ("Linux version" `isInfixOf`)
+        StopOnPanicOnly    -> ("Kernel panic" `isInfixOf`)
   if trace
     then runWithTrace maxSteps ref
-    else runSoc maxSteps ("Linux version" `isInfixOf`) ref
+    else runSoc maxSteps stopPred ref
   hFlush stdout
   st <- readIORef ref
   hPutStrLn stderr "\n--- linux-sim done ---"

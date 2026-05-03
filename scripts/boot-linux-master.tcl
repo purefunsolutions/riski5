@@ -285,6 +285,36 @@ upload_file $m $dtb_path    $dbase $dbytes "dtb"
 # is 5x that, generous margin for any future head.S growth).
 # Cost: ~1 sec at ~1ms/word read. Trivial vs. the 5-min upload.
 # If we ever measure systematic drops past 4 KB, extend further.
+# Verify the DTB image FIRST (task #27) — it's only ~1.5 KB and
+# completes in well under a second, so even if the slower kernel
+# verify times out, we still get the DTB integrity result. The
+# DTB lives at 0x80400000+ and is what setup_arch parses to
+# discover memory, CLINT, PLIC, JTAG-UART, earlycon, /chosen, etc.
+# A single corrupted byte in the FDT header (magic / totalsize /
+# off_dt_struct / off_dt_strings) makes Linux either panic with
+# "Error -11 reading FDT" or silently fall back to default
+# configuration; a byte flip inside the structure block can decode
+# as a wrong property value (e.g. SoC base address) and have the
+# kernel probe the wrong cells. Both failure modes look like
+# "kernel hangs / panics later for non-obvious reasons" rather
+# than "FDT parse failed."
+#
+# verify_first_words covers the FDT header (40 bytes = words 0..9)
+# plus the first chunk of the string block / struct block. The
+# bulk verify_all then catches any drop further in.
+verify_first_words $m $dtb_path $dbase 64 "dtb"
+set dbad [verify_all $m $dtb_path $dbase $dbytes "dtb"]
+if {$dbad > 0} {
+    puts ""
+    puts "ABORTING: DTB corrupted in SDRAM after upload."
+    puts "  Linux setup_arch will fail to parse FDT (or parse"
+    puts "  garbage and probe wrong addresses)."
+    puts "  Re-flash the bitstream and try again, or root-cause the"
+    puts "  DTB-region upload corruption (task #27 in TODO.md)."
+    close_service master $m
+    exit 1
+}
+
 verify_first_words $m $kernel_path $kbase 1024 "kernel"
 
 # Full-kernel bulk verify. Catches any silent upload corruption
