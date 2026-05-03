@@ -74,6 +74,7 @@ library
     Riski5.Clint
     Riski5.Compressed
     Riski5.Core
+    Riski5.CoreCdcBridge
     Riski5.Core.Assembly
     Riski5.Core.Config
     Riski5.Core.FU.Amo
@@ -99,6 +100,7 @@ library
     Riski5.Regfile
     Riski5.Rvfi
     Riski5.Sdram
+    Riski5.SdramCdcBridge
     Riski5.SdrController
     Riski5.Soc
     Riski5.SocSim
