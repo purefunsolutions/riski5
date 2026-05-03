@@ -101,11 +101,29 @@ data MasterState = MasterState
   deriving anyclass (NFDataX)
 
 masterInit :: MasterState
-masterInit = MasterState MIdle 0 False defaultReply
+-- mLastSentPc initialised to 0xFFFF_FFFF (a sentinel address the
+-- core will never execute from — outside any mapped region). The
+-- reqIsLive heuristic fires when pcFetch differs from mLastSentPc,
+-- so this sentinel guarantees the FIRST fetch (PC=reset_pc=0) is
+-- treated as a fresh request and crosses the bridge. Without this,
+-- both PC and mLastSentPc start at 0 → reqIsLive returns False →
+-- bridge never fires → core deadlocks waiting for fetch reply.
+masterInit = MasterState MIdle 0xFFFF_FFFF False defaultReply
 
 -- * Slave FSM (DomBus side)
 
-data SlavePhase = SIdle | SServe | SDone
+-- | Slave phases. The 'SDrive' phase exists so the bus has at least
+-- one full cycle to register the new 'sLatReq' before we sample its
+-- reply. The bus's 'imemReadyS' is constant 'True' for the BRAM-only
+-- fetch path (CoreMark / Linux baseline), so the wait condition
+-- 'not stall && not dataStall' is satisfied immediately on entering
+-- 'SServe'; without 'SDrive' we would capture @blockRam@'s output
+-- from the PREVIOUS request's pcFetch (the 1-cycle sync-read latency
+-- means BRAM[newPC] only appears one cycle after the addr changes).
+-- The data path's 'bramReadyS' already accounts for the 1-cycle BRAM
+-- read latency on its own, so this only adds 1 cycle of overhead
+-- there too.
+data SlavePhase = SIdle | SDrive | SServe | SDone
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
 
@@ -211,7 +229,15 @@ masterStep st@MasterState{..} req doneEdge capR =
     MBusy
       | doneEdge -> st{mPhase = MDone, mReply = capR}
       | otherwise -> st
-    MDone -> st{mPhase = MIdle, mReply = capR}
+    -- mReply is restored to 'defaultReply' (stall=True, imemReady=
+    -- False) so the core sees stall asserted again as soon as the
+    -- one-cycle MDone reply pulse passes. Without this, mReply
+    -- stays at the last 'capR' (stall=False) into MIdle, the core
+    -- treats the next pcFetch as already-served, and consumes the
+    -- previous request's instruction at every subsequent PC until
+    -- the bridge round-trip catches up — a silent garbage-fetch
+    -- loop that surfaces as zero UART output on silicon.
+    MDone -> st{mPhase = MIdle, mReply = defaultReply}
 
 -- | Treat a request as a "new request" if PC has changed (for
 -- fetch) or if the data port is asserted (for load/store). This
@@ -230,8 +256,13 @@ slaveStep ::
 slaveStep st@SlaveState{..} reqEdge latReq reply =
   case sPhase of
     SIdle
-      | reqEdge -> st{sPhase = SServe, sLatReq = latReq}
+      | reqEdge -> st{sPhase = SDrive, sLatReq = latReq}
       | otherwise -> st
+    -- One settle cycle after sLatReq updates so the bus's slave
+    -- responses (notably blockRam-backed imemDataBramS, which has a
+    -- 1-cycle sync-read latency) reflect the new pcFetch / dAddr
+    -- before we capture them. See note on 'SlavePhase'.
+    SDrive -> st{sPhase = SServe}
     SServe
       -- Wait for the bus to indicate the request is fully serviced.
       -- For fetch+data, both stalls must be deasserted.

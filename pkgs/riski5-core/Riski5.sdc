@@ -74,11 +74,17 @@ foreach_in_collection clk [all_clocks] {
 post_message -type info "Riski5.sdc: bus_clocks = $bus_clocks"
 post_message -type info "Riski5.sdc: sdram_clocks = $sdram_clocks"
 
-# Existing 2 ns over-constraint on the bus clock — kills the
-# Quartus 13.0sp1 placement lottery. Apply per-clock since
-# set_clock_uncertainty wants get_clocks objects.
+# 3 ns over-constraint on the bus clock — kills the Quartus
+# 13.0sp1 placement lottery. Bumped from 2.0 to 3.0 ns after
+# observing that two builds from the same source SHA produce
+# different .sof bitstreams (md5 differed) — one with +3.166 ns
+# slack ran CoreMark cleanly, another with +2.767 ns slack failed
+# CRC validation on silicon. The +2.0 ns over-constraint wasn't
+# tight enough to keep every build in the safe-margin region;
+# +3.0 ns puts the floor at ~+3.7 ns slack for any commit that
+# touches the bus + core domain.
 foreach name $bus_clocks {
-    set_clock_uncertainty -setup -add 2.0 \
+    set_clock_uncertainty -setup -add 3.0 \
         -from [get_clocks $name] -to [get_clocks $name]
 }
 
