@@ -104,6 +104,31 @@ linuxBootSimFirmware = do
   probeBank 0x33 0x80000600 -- '3' bank 3
   probeBank 0x34 0x80000800 -- '4' bank 0, row 1 (cross-row)
 
+  -- Write+read probe: store 0xCAFEBABE to SDRAM[0x80700000]
+  -- (well away from kernel + DTB), then load it back. Tests
+  -- whether the SDRAM model commits writes correctly. If 'W'
+  -- output is anything other than `BE BA FE CA`, my chip
+  -- model's WRITE path or DQM byte-mask handling is broken.
+  let wrAddr = x15
+      wrPat = x16
+  li wrAddr 0x80700000
+  li wrPat (P.fromIntegral (0xCAFEBABE :: P.Int))
+  sw wrAddr wrPat 0
+  -- Force a row activate elsewhere so the write commits to chip.
+  li sdAddrReg 0x80100000
+  lw sdRdReg sdAddrReg 0
+  -- Read back from the write address.
+  lw sdRdReg wrAddr 0
+  addi tmpReg x0 0x57 -- 'W'
+  sw uartR tmpReg 0
+  sw uartR sdRdReg 0
+  srli tmpReg sdRdReg 8
+  sw uartR tmpReg 0
+  srli tmpReg sdRdReg 16
+  sw uartR tmpReg 0
+  srli tmpReg sdRdReg 24
+  sw uartR tmpReg 0
+
   -- 'J' marker just before JALR (helpful when debugging hangs
   -- between the entry marker and the kernel's first printk).
   addi tmpReg x0 0x4A
