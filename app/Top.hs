@@ -44,17 +44,18 @@ import MemTest (memTestFirmwareWords)
 #endif
 import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
+import Riski5.Core.Assembly (coreWith)
+import Riski5.Core.Presets (tiny32M)
+import Riski5.CoreCdcBridge (CoreBusReply (..), CoreBusReq (..), coreCdcBridgeWithDebug)
 import Riski5.Domains (DomBus, DomCore, DomSdram)
 import Riski5.SdramCdcBridge (sdramCdcBridge)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.SdrController (
   SdrPins (..),
-  defaultDe2Config,
   defaultDe2ConfigForClockHz,
-  sdrControllerAsAlteraIp,
   sdrControllerAsAlteraIpRegistered,
  )
-import Riski5.Soc (SocIn (..), SocOut (..), soc)
+import Riski5.Soc (SocIn (..), SocOut (..), socWithExternalCore)
 -- soDbgPcFetch is exported as part of SocOut (..) above; the
 -- field selector is in scope thanks to RecordDotSyntax / the
 -- record-import wildcard. Listed here for grep visibility.
@@ -380,6 +381,17 @@ topEntity ::
         , -- L-3 JTAG-load busy strobe. Driven by 'soJtagLoadBusy'.
           -- Exposed via altsource_probe @JLBS@.
           "JTAG_LOAD_BUSY" ::: Signal DomBus Bool
+        , -- Task #46 diagnostic: 8-bit master-side bridge state.
+          -- Bit layout (see 'Riski5.CoreCdcBridge.coreCdcBridgeWithDebug'):
+          -- [1:0] mPhase, [2] mReqToggle, [3] doneToggleC, [4] doneEdgeC,
+          -- [5] reqIsLive, [7:6] cbrPcFetch[1:0]. Sampled by altsource_probe
+          -- @BDGM@ in the wrapper.
+          "DEBUG_BRIDGE_MASTER" ::: Signal DomCore (BitVector 8)
+        , -- Task #46 diagnostic: 8-bit slave-side bridge state.
+          -- Bit layout: [1:0] sPhase, [2] sDoneToggle, [3] reqToggleB,
+          -- [4] reqEdgeB, [5] cbrStall, [6] cbrDataStall, [7] sLatReq.pcFetch[0].
+          -- Sampled by altsource_probe @BDGS@ in the wrapper.
+          "DEBUG_BRIDGE_SLAVE" ::: Signal DomBus (BitVector 8)
         )
 topEntity
   clkBus
@@ -402,9 +414,51 @@ topEntity
   jtagLoadWdataS
   jtagLoadWeS
   jtagLoadRdS
-  jtagLoadBeS =
-  withClockResetEnable clkBus rstBus enableGen
-    $ let -- The SoC consumes 'sdramReplyS' inside 'inS' and produces
+  jtagLoadBeS = topOutputs
+ where
+  -- Task #46 diagnostic build: wire 'coreCdcBridgeWithDebug' between
+  -- the core (DomCore) and the bus (DomBus), and route the per-FSM
+  -- debug bytes out as DEBUG_BRIDGE_MASTER / DEBUG_BRIDGE_SLAVE so
+  -- altsource_probe can sample them via JTAG. The mutual-recursion
+  -- knot is broken by the bridge's master + slave registers (and
+  -- 'coreWith''s pipeline regs).
+
+  -- ----- Core in DomCore -----------------------------------------
+  (pcFetchInCoreS, _pcExecInCoreS, dAddrInCoreS, dWdataInCoreS, dBeInCoreS, dRenInCoreS, _wbInCoreS, _rvfiInCoreS) =
+    withClockResetEnable clkCore rstCore enableGen $
+      coreWith
+        tiny32M
+        (cbrImemData <$> coreReplyInCoreS)
+        (cbrImemReady <$> coreReplyInCoreS)
+        (cbrDmemRdata <$> coreReplyInCoreS)
+        (cbrStall <$> coreReplyInCoreS)
+        (cbrDataStall <$> coreReplyInCoreS)
+        (cbrMtip <$> coreReplyInCoreS)
+        (cbrMeip <$> coreReplyInCoreS)
+
+  coreReqInCoreS :: Signal DomCore CoreBusReq
+  coreReqInCoreS =
+    CoreBusReq
+      <$> pcFetchInCoreS
+      <*> dAddrInCoreS
+      <*> dWdataInCoreS
+      <*> dBeInCoreS
+      <*> dRenInCoreS
+
+  -- ----- Core ⇄ Bus CDC bridge with debug taps -------------------
+  (coreReplyInCoreS, coreReqInBusS, dbgBridgeMasterS, dbgBridgeSlaveS) =
+    coreCdcBridgeWithDebug
+      clkCore rstCore enableGen
+      clkBus rstBus enableGen
+      coreReqInCoreS
+      coreReplyInBusS
+
+  -- ----- Bus + peripherals + Sdram bridge in DomBus --------------
+  ( topOutputs
+    , coreReplyInBusS
+    ) =
+   withClockResetEnable clkBus rstBus enableGen $
+    let -- The SoC consumes 'sdramReplyS' inside 'inS' and produces
           -- the matching 'sdramBusS' inside 'outS'; we close the loop
           -- by feeding 'sdramBusS' into our pure-Clash SDR SDRAM
           -- controller and feeding its 'sdramReplyS' back into 'inS'.
@@ -455,7 +509,14 @@ topEntity
               <*> jtagLoadWeS
               <*> jtagLoadRdS
               <*> jtagLoadBeS
-          outS = soc enableSramFetch enableSdramFetch firmwareImage dataImage inS
+          (outS, coreReplyInBusInner) =
+            socWithExternalCore
+              enableSramFetch
+              enableSdramFetch
+              firmwareImage
+              dataImage
+              inS
+              coreReqInBusS
           sdramBusS = soSdramBus <$> outS
           -- Phase C: CDC bridge between the bus-side SDRAM bus
           -- (DomBus, from Riski5.Sdram.sdram's adapter) and the
@@ -531,43 +592,47 @@ topEntity
           dbgFrozenFlagsS = soDbgFrozenFlagsAll <$> outS
           jtagLoadRdataS = soJtagLoadRdata <$> outS
           jtagLoadBusyS = soJtagLoadBusy <$> outS
-       in ( ledrS
-          , ledgS
-          , lcdDataS
-          , lcdRsS
-          , lcdRwS
-          , lcdEnS
-          , lcdOnS
-          , lcdBlonS
-          , sramAddrS
-          , sramDqOutS
-          , sramDqOeS
-          , sramCeNS
-          , sramOeNS
-          , sramWeNS
-          , sramUbNS
-          , sramLbNS
-          , uartSelS
-          , uartAddrS
-          , uartWdataS
-          , uartBeS
-          , uartReS
-          , sdramAddrOutS
-          , sdramBaS
-          , sdramCasNS
-          , sdramCkeS
-          , sdramCsNS
-          , sdramDqOutS
-          , sdramDqOeS
-          , sdramDqmS
-          , sdramRasNS
-          , sdramWeNS
-          , dbgPcFetchS
-          , dbgFlagsS'
-          , dbgFrozenPcS
-          , dbgFrozenFlagsS
-          , jtagLoadRdataS
-          , jtagLoadBusyS
+       in ( ( ledrS
+            , ledgS
+            , lcdDataS
+            , lcdRsS
+            , lcdRwS
+            , lcdEnS
+            , lcdOnS
+            , lcdBlonS
+            , sramAddrS
+            , sramDqOutS
+            , sramDqOeS
+            , sramCeNS
+            , sramOeNS
+            , sramWeNS
+            , sramUbNS
+            , sramLbNS
+            , uartSelS
+            , uartAddrS
+            , uartWdataS
+            , uartBeS
+            , uartReS
+            , sdramAddrOutS
+            , sdramBaS
+            , sdramCasNS
+            , sdramCkeS
+            , sdramCsNS
+            , sdramDqOutS
+            , sdramDqOeS
+            , sdramDqmS
+            , sdramRasNS
+            , sdramWeNS
+            , dbgPcFetchS
+            , dbgFlagsS'
+            , dbgFrozenPcS
+            , dbgFrozenFlagsS
+            , jtagLoadRdataS
+            , jtagLoadBusyS
+            , dbgBridgeMasterS
+            , dbgBridgeSlaveS
+            )
+          , coreReplyInBusInner
           )
 
 {- | Exported Clash-usable top-entity annotation so

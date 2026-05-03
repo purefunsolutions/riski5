@@ -1532,6 +1532,12 @@ in
         wire [31:0]  debug_frozen_flags;  // 4 × 8-bit flag snapshots
         wire         debug_reset_capture;
         wire [1:0]   debug_capture_offset; // unused — kept to match port shape
+        // Task #46 bridge diagnostic: master is in DomCore, slave in
+        // DomBus. Both bytes are sampled by altsource_probes (BDGM,
+        // BDGS) below. Bit layout per
+        // 'Riski5.CoreCdcBridge.coreCdcBridgeWithDebug' haddock.
+        wire [7:0]   debug_bridge_master; // DomCore-clocked
+        wire [7:0]   debug_bridge_slave;  // DomBus-clocked
 
         // ----- L-3 JTAG-load wires ----------------------------------
         // Sources (JTAG → fabric): drive the SDRAM IP slave-side mux
@@ -1657,7 +1663,9 @@ in
             .DEBUG_FROZEN_PC    (debug_frozen_pc),
             .DEBUG_FROZEN_FLAGS (debug_frozen_flags),
             .JTAG_LOAD_RDATA    (jtag_load_rdata),
-            .JTAG_LOAD_BUSY     (jtag_load_busy)
+            .JTAG_LOAD_BUSY     (jtag_load_busy),
+            .DEBUG_BRIDGE_MASTER (debug_bridge_master),
+            .DEBUG_BRIDGE_SLAVE  (debug_bridge_slave)
         );
 
         // ----- altsource_probe — read pcFetchS via JTAG --------------
@@ -1706,6 +1714,50 @@ in
             .enable_metastability     ("NO")
         ) u_flags_probe (
             .probe        (debug_flags),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — bridge master FSM state (task #46) -
+        // 8 bits sampled in DomCore. Tells us whether the master FSM
+        // gets stuck in MIdle (never fires reqIsLive), MBusy (fires
+        // but never sees doneEdge), or transitions correctly.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (8),
+            .instance_id              ("BDGM"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (15),
+            .enable_metastability     ("NO")
+        ) u_bridge_master_probe (
+            .probe        (debug_bridge_master),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — bridge slave FSM state (task #46) --
+        // 8 bits sampled in DomBus. Tells us whether the slave FSM
+        // sees the master's toggle edge (SIdle→SDrive), settles into
+        // SServe, captures the bus reply, and toggles done back.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (8),
+            .instance_id              ("BDGS"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (16),
+            .enable_metastability     ("NO")
+        ) u_bridge_slave_probe (
+            .probe        (debug_bridge_slave),
             .source       (),
             .source_clk   (1'b0),
             .source_ena   (1'b0)

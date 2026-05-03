@@ -15,6 +15,7 @@ import AvalonMmSpec qualified
 import BramCoreSpec qualified
 import BramSpec qualified
 import BramStallForwardSpec qualified
+import CdcSpec qualified
 import ClintSpec qualified
 import CompressedSpec qualified
 -- import CoreMarkSimSpec qualified  -- disabled: see module header
@@ -68,6 +69,7 @@ main =
       , BramSpec.tests
       , BramCoreSpec.tests
       , BramStallForwardSpec.tests
+      , CdcSpec.tests
       , ClintSpec.tests
       , CompressedSpec.tests
       -- , CoreMarkSimSpec.tests  -- disabled: see module header

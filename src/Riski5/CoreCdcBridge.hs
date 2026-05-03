@@ -35,6 +35,7 @@ module Riski5.CoreCdcBridge (
   CoreBusReq (..),
   CoreBusReply (..),
   coreCdcBridge,
+  coreCdcBridgeWithDebug,
   coreCdcBridgeTied,
 ) where
 
@@ -175,7 +176,56 @@ coreCdcBridge ::
   , Signal busDom CoreBusReq
   )
 coreCdcBridge clkC rstC enC clkB rstB enB reqInC replyInB =
-  (replyOutC, reqOutB)
+  let (replyOutC, reqOutB, _, _) =
+        coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB
+   in (replyOutC, reqOutB)
+
+{- | Diagnostic variant of 'coreCdcBridge' that also returns 8-bit
+debug bytes for the master (DomCore) and slave (DomBus) FSMs.
+Bit layout in each byte:
+
+@
+  master debug (DomCore):
+    [1:0] mPhase             (0=MIdle, 1=MBusy, 2=MDone)
+    [2]   mReqToggle         (toggles each MIdle→MBusy)
+    [3]   doneToggleC        (synced sDoneToggle)
+    [4]   doneEdgeC          (1-cycle pulse on doneToggleC change)
+    [5]   reqIsLive(reqInC)  (would-fire predicate this cycle)
+    [7:6] cbrPcFetch[1:0]    (low 2 bits of core's pcFetch — useful
+                              to see if PC is advancing)
+
+  slave debug (DomBus):
+    [1:0] sPhase             (0=SIdle, 1=SDrive, 2=SServe, 3=SDone)
+    [2]   sDoneToggle        (toggles each SDone→SIdle)
+    [3]   reqToggleB         (synced mReqToggle)
+    [4]   reqEdgeB           (1-cycle pulse on reqToggleB change)
+    [5]   replyInB.cbrStall  (bus's stall signal the slave waits on)
+    [6]   replyInB.cbrDataStall
+    [7]   sLatReq.cbrPcFetch[0] (so we can tell if sLatReq updated)
+@
+
+The debug bytes are intended for an @altsource_probe@ on each
+domain so @quartus_stp@ can sample them via JTAG and pinpoint
+which FSM phase the bridge gets stuck in.
+-}
+coreCdcBridgeWithDebug ::
+  forall coreDom busDom.
+  (KnownDomain coreDom, KnownDomain busDom) =>
+  Clock coreDom ->
+  Reset coreDom ->
+  Enable coreDom ->
+  Clock busDom ->
+  Reset busDom ->
+  Enable busDom ->
+  Signal coreDom CoreBusReq ->
+  Signal busDom CoreBusReply ->
+  ( Signal coreDom CoreBusReply
+  , Signal busDom CoreBusReq
+  , Signal coreDom (BitVector 8)
+  , Signal busDom (BitVector 8)
+  )
+coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB =
+  (replyOutC, reqOutB, dbgMasterC, dbgSlaveB)
  where
   reqToggleC = mReqToggle <$> masterStateC
   reqToggleB = syncBit clkC clkB rstB enB reqToggleC
@@ -206,9 +256,108 @@ coreCdcBridge clkC rstC enC clkB rstB enB reqInC replyInB =
     register clkB rstB enB slaveInit $
       slaveStep <$> slaveStateB <*> reqEdgeB <*> latReqB <*> replyInB
 
-  replyOutC = mReply <$> masterStateC
+  -- The reply we present to the core is computed combinationally
+  -- from the master state + the current core request. We can't just
+  -- expose 'mReply' (the latched capR) directly: that field is the
+  -- last bridge round-trip's response. Two scenarios force the
+  -- per-cycle decision:
+  --
+  --   (1) After 'MDone → MIdle' the core advances PC by 4 (because
+  --       it saw stall=False during MDone). In MIdle it's now
+  --       asking for BRAM[X+4], but mReply still holds BRAM[X]. We
+  --       MUST present stall=True (= 'defaultReply') so the core
+  --       waits for the next round-trip rather than consuming the
+  --       previous request's data — silent garbage-fetch otherwise.
+  --
+  --   (2) For self-loops (@j .@), the core executes the same
+  --       instruction at the same PC every cycle. 'reqIsLive'
+  --       returns False (PC unchanged, no data port assertion), the
+  --       FSM stays in MIdle, and no new bridge transaction fires.
+  --       But the core still needs stall=False to commit the
+  --       instruction sitting in IF/ID. So when the request matches
+  --       what 'mReply' was captured for, present 'mReply' (with
+  --       stall=False) and let the core re-execute it as many times
+  --       as it likes. Without this, every self-loop deadlocks the
+  --       bridge: the core stalls forever in MIdle, mLastSentPc never
+  --       changes, no new request fires.
+  replyOutC =
+    ( \st req -> case mPhase st of
+        MDone -> mReply st
+        MBusy -> defaultReply
+        MIdle
+          | reqIsLive req (mLastSentPc st) -> defaultReply
+          | otherwise -> mReply st
+    )
+      <$> masterStateC
+      <*> reqInC
 
-  reqOutB = sLatReq <$> slaveStateB
+  -- Drive the latched request to the bus only during the active
+  -- 'SDrive' / 'SServe' phases. Outside those phases drive an
+  -- empty request (cbrDBe = 0, cbrDRen = False, etc.) so that
+  -- side-effecting downstream slaves (notably the JTAG-UART IP,
+  -- where every cycle of @uartChipselect && uartBe != 0 &&
+  -- uartReady && !uartAcceptedS@ commits a write) don't see
+  -- lingering dBe assertions between bridge round-trips. Without
+  -- this, a single core-side SW writes the character ~5× because
+  -- 'uartAcceptedS' clears each cycle the bus's stall goes False
+  -- (= the cycle the slave captures), and any subsequent cycle
+  -- while sLatReq still holds dBe != 0 re-arms a fresh chipselect
+  -- pulse. The SDRAM bridge ('Riski5.SdramCdcBridge.slaveBus')
+  -- avoids the same class of bug by driving sibCs=False outside
+  -- its SReq phase. Caught by 'case_slave_drives_empty_in_idle'
+  -- in test/CdcSpec.hs.
+  reqOutB =
+    ( \st -> case sPhase st of
+        SDrive -> sLatReq st
+        SServe -> sLatReq st
+        _      -> emptyReq
+    )
+      <$> slaveStateB
+
+  emptyReq :: CoreBusReq
+  emptyReq = CoreBusReq 0 0 0 0 False
+
+  -- Debug taps (see haddock above for bit layout).
+  dbgMasterC =
+    ( \st req dt de ->
+        let phaseBits :: BitVector 2
+            phaseBits = case mPhase st of
+              MIdle -> 0
+              MBusy -> 1
+              MDone -> 2
+            tog = if mReqToggle st then (1 :: BitVector 1) else 0
+            dToggle = if dt then (1 :: BitVector 1) else 0
+            dEdge = if de then (1 :: BitVector 1) else 0
+            live = if reqIsLive req (mLastSentPc st) then (1 :: BitVector 1) else 0
+            pcLo = resize (cbrPcFetch req) :: BitVector 2
+         in pack (pcLo, live, dEdge, dToggle, tog, phaseBits)
+    )
+      <$> masterStateC
+      <*> reqInC
+      <*> doneToggleC
+      <*> doneEdgeC
+
+  dbgSlaveB =
+    ( \st rt re reply ->
+        let phaseBits :: BitVector 2
+            phaseBits = case sPhase st of
+              SIdle -> 0
+              SDrive -> 1
+              SServe -> 2
+              SDone -> 3
+            dTog = if sDoneToggle st then (1 :: BitVector 1) else 0
+            rToggle = if rt then (1 :: BitVector 1) else 0
+            rEdge = if re then (1 :: BitVector 1) else 0
+            stall = if cbrStall reply then (1 :: BitVector 1) else 0
+            dStall = if cbrDataStall reply then (1 :: BitVector 1) else 0
+            pcLo0 :: BitVector 1
+            pcLo0 = resize (cbrPcFetch (sLatReq st))
+         in pack (pcLo0, dStall, stall, rEdge, rToggle, dTog, phaseBits)
+    )
+      <$> slaveStateB
+      <*> reqToggleB
+      <*> reqEdgeB
+      <*> replyInB
 
 masterStep ::
   MasterState ->
@@ -229,23 +378,28 @@ masterStep st@MasterState{..} req doneEdge capR =
     MBusy
       | doneEdge -> st{mPhase = MDone, mReply = capR}
       | otherwise -> st
-    -- mReply is restored to 'defaultReply' (stall=True, imemReady=
-    -- False) so the core sees stall asserted again as soon as the
-    -- one-cycle MDone reply pulse passes. Without this, mReply
-    -- stays at the last 'capR' (stall=False) into MIdle, the core
-    -- treats the next pcFetch as already-served, and consumes the
-    -- previous request's instruction at every subsequent PC until
-    -- the bridge round-trip catches up — a silent garbage-fetch
-    -- loop that surfaces as zero UART output on silicon.
-    MDone -> st{mPhase = MIdle, mReply = defaultReply}
+    -- 'mReply' is preserved across MDone → MIdle on purpose: the
+    -- combinational 'replyOutC' decides per-cycle whether to expose
+    -- it (no new request live) or stall (new request live). Keeping
+    -- mReply here makes the self-loop case work — see 'replyOutC'.
+    MDone -> st{mPhase = MIdle}
 
--- | Treat a request as a "new request" if PC has changed (for
--- fetch) or if the data port is asserted (for load/store). This
--- is a conservative heuristic; the bus-side just services whatever
--- it receives.
+-- | A request is "new" only when the program counter changes from
+-- what the bridge last serviced. The data-port signals (cbrDRen,
+-- cbrDBe) are NOT used here because the core legitimately holds
+-- them asserted across the multi-cycle bridge round-trip while
+-- waiting for the W-stage to commit a load/store; including them
+-- would make 'reqIsLive' return True every MIdle re-entry after
+-- MDone, re-firing the bridge for the same SW dozens of times and
+-- causing downstream side-effecting slaves (notably the JTAG-UART
+-- IP) to commit the write multiple times. Each pcFetch advance
+-- marks one pipeline-advance event = one bridge transaction, and
+-- the bundled CoreBusReq carries whatever data-port assertion the
+-- X-stage has live for that PC.
+--
+-- Caught by 'case_held_sw_no_master_refire' in test/CdcSpec.hs.
 reqIsLive :: CoreBusReq -> BitVector 32 -> Bool
-reqIsLive req lastPc =
-  cbrPcFetch req P./= lastPc || cbrDRen req || cbrDBe req P./= 0
+reqIsLive req lastPc = cbrPcFetch req P./= lastPc
 
 slaveStep ::
   SlaveState ->
