@@ -416,6 +416,26 @@
         riski5-core-linux-master = self'.packages.riski5-core-linux-master-slow;
       };
 
+      # Task #36: 20 MHz silicon Linux test (verySlowClock=true).
+      # One notch slower than slowClock — same single-clock-domain
+      # mechanism, just multBy=2 → 50 × 2 / 5 = 20 MHz. Used to
+      # check whether more timing margin alone gets Linux to boot
+      # past the 30 MHz hang point right after sched_clock setup.
+      riski5-core-linux-master-veryslow = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        linuxBootMaster = true;
+        verySlowClock = true;
+      };
+      flash-riski5-linux-master-veryslow = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-linux-master-veryslow;
+      };
+      boot-linux-master-veryslow = pkgs.callPackage ../apps/boot-linux-master.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) linux-rv32-nommu riski5-dtb;
+        riski5-core-linux-master = self'.packages.riski5-core-linux-master-veryslow;
+      };
+
       riski5-core-slow = pkgs.callPackage ./riski5-core/package.nix {
         inherit quartus-ii-13;
         slowClock = true;

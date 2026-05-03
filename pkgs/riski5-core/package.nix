@@ -179,6 +179,17 @@
   # Pname gets a @-slow@ suffix when this is enabled, so both
   # variants are buildable side-by-side for A/B comparison.
   slowClock ? false,
+  # Task #36 — drop one notch further than slowClock: 50 × 2 / 5 =
+  # 20 MHz on the bus / core / DRAM_CLK. Same single-clock-domain
+  # mechanism as @slowClock@; takes precedence when both are set.
+  # Motivating hypothesis: slowClock (30 MHz) gets the kernel five
+  # printks further than the 40 MHz hang at SLUB init (now hangs
+  # right after sched_clock setup). If 20 MHz boots completely,
+  # the bug is purely timing margin and the next step is the proper
+  # multi-PLL split (CPU @ 40 MHz, SDRAM IP @ 30 MHz with FIFO
+  # bridge). If it still hangs around the same place, the timing
+  # margin is partly to blame but there's a non-timing factor too.
+  verySlowClock ? false,
 }: let
   ghcWithClash = haskellPackages.ghcWithPackages (ps:
     with ps; [
@@ -231,14 +242,29 @@
   #                                        clock aligned with the FPGA
   #                                        edge would catch the
   #                                        outputs mid-transition.
-  pllBusMultBy = if slowClock then 3 else 4;  # bus, core, DRAM_CLK: 50 × M / 5
-  pllCoreMultBy = if slowClock then 3 else 4; # tied to bus initially
-  # +90° phase shift = quarter-period delay on DRAM_CLK output. At
-  # 40 MHz / 25 ns period that's +6250 ps; at slowClock=true / 30 MHz
-  # / 33.33 ns period it's +8333 ps. The PLL counter takes the value
-  # in picoseconds.
-  pllDramPhaseShiftPs = if slowClock then "8333" else "6250";
-  slowSuffix = lib.optionalString slowClock "-slow";
+  # bus, core, DRAM_CLK: 50 × M / 5 → 40 MHz (default), 30 MHz
+  # (slowClock), 20 MHz (verySlowClock). verySlowClock takes
+  # precedence over slowClock when both are set.
+  pllBusMultBy =
+    if verySlowClock then 2
+    else if slowClock then 3
+    else 4;
+  pllCoreMultBy =
+    if verySlowClock then 2
+    else if slowClock then 3
+    else 4;
+  # +90° phase shift = quarter-period delay on DRAM_CLK output:
+  #   40 MHz / 25.00 ns period → +6250 ps
+  #   30 MHz / 33.33 ns period → +8333 ps
+  #   20 MHz / 50.00 ns period → +12500 ps
+  pllDramPhaseShiftPs =
+    if verySlowClock then "12500"
+    else if slowClock then "8333"
+    else "6250";
+  slowSuffix =
+    if verySlowClock then "-veryslow"
+    else if slowClock then "-slow"
+    else "";
 in
   stdenv.mkDerivation {
     pname =

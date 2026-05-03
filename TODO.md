@@ -1973,20 +1973,55 @@ state.**
      the clock 33 % buys the kernel through init_IRQ + time_init
      but not through the next phase (would expect "Calibrating
      delay loop" + "Memory: ..." + "devtmpfs: initialized" before
-     the first driver init). Either:
-     1. Even more margin needed → try 20 MHz (`pllBusMultBy = 2`,
-        regen SDRAM IP at clockRate=20000000).
-     2. There's a second bug past time_init unrelated to timing
-        margin — Verilator-backed hwsim would help localise it
-        without a 5-min upload-verify loop.
+     the first driver init).
+
+     **2026-05-03 task #36 — verySlowClock=true (20 MHz) reveals
+     a DIFFERENT failure mode.** With pllBusMultBy=2 (50 × 2 / 5
+     = 20 MHz) the kernel runs much further than at 30 MHz:
+
+         20 MHz: ... [all the 30 MHz progress] ...
+                 Dentry cache hash table entries: 8192   (← jump!
+                                                          was 1024
+                                                          at 40/30 MHz)
+                 Inode-cache hash table entries: 8192    (was 1024)
+                 Built 1 zonelists, mobility grouping off.
+                 mem auto-init: stack:all(zero)
+                 swapper[0]: unhandled signal 4 code 0x1
+                            at 0x802033f0
+                 cause: 00000002  (illegal instruction)
+                 Code: Unable to access instruction at 0x802033ec
+                 BUG: scheduling while atomic: ...
+
+     Two distinct symptoms:
+     1. **Hash table sizes doubled to 8192 entries** vs 1024 at
+        30/40 MHz. Same kernel + same DTB should give same sizes
+        — different size implies the kernel saw different values
+        when reading memblock metadata, i.e. SDRAM read-back
+        corruption.
+     2. **Illegal-instruction traps with "Unable to access
+        instruction at ..."** — the kernel's own trap handler
+        can't refetch the instruction at the trap site. SDRAM
+        instruction-fetch corruption.
+
+     Most likely cause: hardcoded `sdrRefreshIntervalCycles = 600`
+     in `Riski5.SdrController.defaultDe2Config`. At:
+       40 MHz: 600 × 25 ns  = 15.0 µs   (just under JEDEC 15.625 µs avg)
+       30 MHz: 600 × 33.3 ns = 20.0 µs  (over JEDEC, but worked for the short test window)
+       20 MHz: 600 × 50 ns   = 30.0 µs  (~2× JEDEC; SDRAM bits decay before refresh)
+
+     Full log:
+     [`docs/perf/linux-veryslow-20mhz-2026-05-03.log`](./docs/perf/linux-veryslow-20mhz-2026-05-03.log).
+     20 MHz silicon is NOT a clean test of timing margin alone —
+     the refresh-period violation muddies the result. To do a clean
+     20 MHz test we'd need to scale `sdrRefreshIntervalCycles`
+     with clock rate (e.g. 300 cycles at 20 MHz = 15 µs).
 
      This invalidates the "AMO/LR/SC/stack/trap" suspect chain
      for THIS panic — not for hardware in general (those bare-
      metal probes are still correct silicon-clean tests). The
      next focus should be: (a) Verilator hwsim Linux boot to see
      if it reproduces the silicon hang (if not → bug is RTL-
-     synthesis or IP-vs-RTL mismatch only); (b) try even slower
-     clock to see whether margin alone fixes the boot.
+     synthesis or IP-vs-RTL mismatch only).
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
