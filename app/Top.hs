@@ -44,6 +44,7 @@ import MemTest (memTestFirmwareWords)
 #endif
 import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
+import Riski5.Domains (DomBus)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.SdrController (
   SdrPins (..),
@@ -86,13 +87,11 @@ Clash-side refactor of @Riski5.Soc@ to expose the core's bus
 interface as a top-entity boundary is what gates the actual
 domain split.
 -}
-createDomain
-  vSystem
-    { vName = "DomBus"
-    , vPeriod = 25000
-    , vResetKind = Asynchronous
-    , vResetPolarity = ActiveLow
-    }
+-- The DomBus / DomCore / DomSdram domain declarations live in
+-- Riski5.Domains so the multi-PLL split (Phase A onwards) can
+-- reference all three from one source of truth. DomBus's period
+-- defaults to 25_000 ps = 40 MHz, matching the prior local
+-- definition; it's CPP-overrideable via @-DSOC_BUS_PERIOD_PS@.
 
 -- | SoC bus clock frequency in Hz. Set by the build system via
 -- the @-DSOC_CLOCK_HZ=...@ CPP define from

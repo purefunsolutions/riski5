@@ -82,6 +82,7 @@ library
     Riski5.Core.Presets
     Riski5.CSR
     Riski5.Decode
+    Riski5.Domains
     Riski5.Elf
     Riski5.Encode
     Riski5.FormalTop
