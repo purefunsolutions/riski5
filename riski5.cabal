@@ -144,6 +144,7 @@ library riski5-firmware
     HelloTrapStress
     LinuxBoot
     LinuxBootMaster
+    LinuxBootSim
     MemTest
     SdramLoader
 
@@ -194,6 +195,28 @@ executable riski5-linux-sim
     , bytestring   >=0.12 && <0.13
     , containers   >=0.7  && <0.8
     , riski5
+
+-- | Verilator-backed Linux boot runner. Uses the same riski5-sim
+-- libVriski5_sim_top.a + libverilated.a path as `cabal test
+-- --flag=hwsim`. Loads a kernel + DTB into the in-Verilog SDRAM
+-- chip model via the wrapper's MEM_INIT_ADDR/DATA/WRITE pins,
+-- then runs N cycles capturing UART bytes — same observable
+-- shape as `riski5-linux-sim` (which uses the pure-Haskell
+-- reference SoC) but driving the Clash-emitted Verilog under
+-- Verilator. Diagnostically: lets us see if the silicon hang
+-- reproduces against our actual RTL or only against
+-- Quartus-synthesized + IP-driven hardware.
+executable riski5-linux-hwsim
+  import:         warnings, language
+  main-is:        Main.hs
+  hs-source-dirs: tools/linux-hwsim
+  if flag(hwsim)
+    build-depends:
+      , base
+      , bytestring   >=0.12 && <0.13
+      , verilambda
+  else
+    buildable: False
 
 test-suite riski5-test
   import:         warnings, language

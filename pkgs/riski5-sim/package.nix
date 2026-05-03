@@ -95,7 +95,75 @@ in
       rm -rf "$BUILD"
       mkdir -p "$BUILD/cbits" "$BUILD/verilog"
 
-      # 1. Clash → riski5.v. Identical invocation to riski5-core.
+      # Overlay CoreMark.hs with a re-export of LinuxBootMaster's
+      # firmware. This is the same trick the silicon variants in
+      # pkgs/riski5-core/package.nix use to swap firmware without
+      # touching app/Top.hs — the unchanged @-DFIRMWARE_COREMARK@
+      # CPP path picks up @CoreMark.coreMarkFirmwareWords@ which we
+      # alias to @LinuxBootMaster.linuxBootMasterFirmwareWords@.
+      # Result: riski5-sim's BRAM contains the JTAG-Avalon-Master
+      # boot stub that polls @SDRAM[0x807FFFF4]@ for a "go"
+      # sentinel, then JALRs to @0x80000000@. The sim harness
+      # writes the go sentinel via the SDRAM init pins (or just
+      # pre-populates the trigger record alongside kernel + DTB)
+      # so the boot stub immediately advances into the kernel.
+      chmod -R u+w firmware/phase1
+      cat > firmware/phase1/CoreMark.hs <<'EOF'
+      -- SPDX-FileCopyrightText: 2026 Mika Tammi
+      -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+      --
+      -- Overlaid by the riski5-sim Nix build: re-exports
+      -- LinuxBootMaster's firmware under the CoreMark name so
+      -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+      -- bakes the Linux boot stub into BRAM. Without this, the
+      -- sim BRAM contains MemTest, which never JALRs to SDRAM
+      -- (the kernel + DTB pre-loaded by the sim harness would
+      -- never run).
+      {-# LANGUAGE DataKinds #-}
+      {-# LANGUAGE NoStarIsType #-}
+
+      module CoreMark (
+        coreMarkFirmwareWords,
+      ) where
+
+      import Clash.Prelude (BitVector)
+      import LinuxBootSim (linuxBootSimFirmwareWords)
+
+      coreMarkFirmwareWords :: [BitVector 32]
+      coreMarkFirmwareWords = linuxBootSimFirmwareWords
+      EOF
+      sed -i 's/^      //' firmware/phase1/CoreMark.hs
+
+      # Same FetchPolicy overlay as the linux-master variants in
+      # pkgs/riski5-core/package.nix — turns on fetch-side SDRAM
+      # routing so the kernel can execute from 0x80000000+.
+      cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+      -- SPDX-FileCopyrightText: 2026 Mika Tammi
+      -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+      module FetchPolicy (
+        enableSramFetch,
+        enableSdramFetch,
+      ) where
+
+      import Prelude (Bool (..))
+
+      enableSramFetch :: Bool
+      enableSramFetch = False
+
+      enableSdramFetch :: Bool
+      enableSdramFetch = True
+      EOF
+      sed -i 's/^      //' firmware/phase1/FetchPolicy.hs
+
+      echo "### riski5-sim: overlaid firmware/phase1/CoreMark.hs"
+      cat firmware/phase1/CoreMark.hs
+      echo "### riski5-sim: overlaid firmware/phase1/FetchPolicy.hs"
+      cat firmware/phase1/FetchPolicy.hs
+
+      # 1. Clash → riski5.v. Same invocation as riski5-core but
+      #    with -DFIRMWARE_COREMARK so the overlaid CoreMark.hs
+      #    feeds LinuxBootMaster's firmware into Top.hs's BRAM
+      #    initialiser instead of MemTest.
       #    IMPORTANT: must run BEFORE ip-generate. The Altera
       #    ip-generate launches a Perl subprocess through the
       #    bubblewrap-wrapped quartus-ii-13 FHS env, which leaks
@@ -105,7 +173,7 @@ in
       #    install as well). Running clash first avoids GHC ever
       #    seeing the polluted environment.
       clash --verilog -fclash-hdlsyn Quartus \
-        -XGHC2021 -XImplicitPrelude \
+        -XGHC2021 -XImplicitPrelude -DFIRMWARE_COREMARK \
         -isrc -iapp -ifirmware/phase1 \
         Top
 
