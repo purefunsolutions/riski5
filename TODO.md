@@ -2062,6 +2062,28 @@ state.**
      [docs/verification.md](./docs/verification.md)) actually
      working for whole-Linux-boot scope, not just the Hello
      firmware originally targeted.
+
+     **2026-05-03 task #38 — SDRAM model basic ops VALIDATED,
+     but kernel still hangs.** Extended LinuxBootSim diagnostic
+     proved at the byte level:
+     - Bank switching works (probe of 0x80000000/200/400/600 in
+       all 4 banks returns the correct expected kernel bytes).
+     - Cross-row reads work (probe of 0x80000800 = bank 0, row 1).
+     - WRITE → row-flush → READ cycle works (wrote 0xCAFEBABE
+       to SDRAM[0x80700000], read back `BE BA FE CA`).
+
+     None of these single-cell patterns reproduce the sustained
+     instruction-fetch stream the kernel needs. The hang is
+     somewhere in the kernel's continuous SDRAM access pattern
+     (likely interaction between the two-port adapter, the
+     SdrController FSM, and my chip model's CL=2 + I/O register
+     pipeline). Further debug requires VCD-trace analysis (hours
+     of waveform inspection) or more elaborate diagnostic
+     firmware that matches the kernel's actual fetch shape.
+
+     **Status: hwsim SDRAM model is correct at the unit-op
+     level. Whole-Linux-boot through hwsim remains blocked on
+     the deeper debug above.** Logged for future return.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
