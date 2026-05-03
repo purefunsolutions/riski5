@@ -253,6 +253,14 @@
     if verySlowClock then 2
     else if slowClock then 3
     else 4;
+  # Phase D-1 of multi-PLL split: dedicated u_altpll_core PLL for
+  # the RISC-V core. Currently produces clkCore at the same rate
+  # as clkBus (both 40 MHz default) so behaviour is unchanged from
+  # Phase C. Future Phase D-2 lands the actual Soc.hs core/bus
+  # split via the existing Riski5.CoreCdcBridge from Phase B,
+  # which will then let pllCoreMultBy diverge from pllBusMultBy
+  # to crank the core independently.
+  pllCoreDivBy = 5;
   # SDRAM domain (Phase C of multi-PLL split). Independent PLL
   # u_altpll_sdram in the wrapper Verilog. Default M=8, D=5 →
   # 50 × 8 / 5 = 80 MHz, a safe step-up from the prior 40 MHz
@@ -1292,10 +1300,9 @@ in
         // bridge (riski5_sdram_cdc_bridge). The pure-Clash SDR SDRAM
         // controller in 'Riski5.SdrController' runs on clkBus and
         // drives the DRAM_* chip pins directly.
-        // ===== PLL #1 — bus + core domain =================================
+        // ===== PLL #1 — bus domain (Phase D split clkCore off into PLL #3) ==
         wire [4:0] altpll_bus_clk_vec;
         wire       clkBus       = altpll_bus_clk_vec[0];
-        wire       clkCore      = altpll_bus_clk_vec[1];
         wire       pll_bus_locked;
         altpll u_altpll_bus (
             .areset (1'b0),
@@ -1317,21 +1324,59 @@ in
         defparam u_altpll_bus.clk0_duty_cycle        = 50;
         defparam u_altpll_bus.clk0_multiply_by       = ${toString pllBusMultBy};
         defparam u_altpll_bus.clk0_phase_shift       = "0";
-        defparam u_altpll_bus.clk1_divide_by         = 5;
-        defparam u_altpll_bus.clk1_duty_cycle        = 50;
-        defparam u_altpll_bus.clk1_multiply_by       = ${toString pllCoreMultBy};
-        defparam u_altpll_bus.clk1_phase_shift       = "0";
         defparam u_altpll_bus.compensate_clock       = "CLK0";
         defparam u_altpll_bus.inclk0_input_frequency = 20000;
         defparam u_altpll_bus.intended_device_family = "Cyclone II";
         defparam u_altpll_bus.lpm_type               = "altpll";
         defparam u_altpll_bus.operation_mode         = "NORMAL";
         defparam u_altpll_bus.port_clk0              = "PORT_USED";
-        defparam u_altpll_bus.port_clk1              = "PORT_USED";
         defparam u_altpll_bus.port_inclk0            = "PORT_USED";
         defparam u_altpll_bus.port_locked            = "PORT_USED";
         defparam u_altpll_bus.port_areset            = "PORT_USED";
         defparam u_altpll_bus.width_clock            = 5;
+
+        // ===== PLL #3 — core domain (Phase D-1 of multi-PLL split) =======
+        // Dedicated PLL for the RISC-V core. Currently produces clkCore
+        // at the same rate as clkBus (both 40 MHz default) so behaviour
+        // is unchanged — until Phase D-2 lands the actual Soc.hs core/
+        // bus split via Riski5.CoreCdcBridge, the riski5 module sees
+        // both clocks but doesn't yet domain-split internally. The
+        // separate PLL means Quartus's STA reports per-clock Fmax for
+        // the core domain independently, and once the bridge wires up
+        // we can crank pllCoreMultBy without affecting the bus rate.
+        wire [4:0] altpll_core_clk_vec;
+        wire       clkCore     = altpll_core_clk_vec[0];
+        wire       pll_core_locked;
+        altpll u_altpll_core (
+            .areset (1'b0),
+            .inclk  ({1'b0, CLOCK_50}),
+            .clk    (altpll_core_clk_vec),
+            .locked (pll_core_locked),
+            .activeclock (), .clkbad (), .clkena (4'b1111), .clkloss (),
+            .clkswitch (1'b0), .configupdate (1'b0), .enable0 (), .enable1 (),
+            .extclk (), .extclkena (4'b1111), .fbin (1'b1), .fbmimicbidir (),
+            .fbout (), .pfdena (1'b1), .phasecounterselect (4'b0),
+            .phasedone (), .phasestep (1'b0), .phaseupdown (1'b0), .pllena (1'b1),
+            .scanaclr (1'b0), .scanclk (1'b0), .scanclkena (1'b1),
+            .scandata (1'b0), .scandataout (), .scandone (), .scanread (1'b0),
+            .scanwrite (1'b0), .sclkout0 (), .sclkout1 (), .vcooverrange (),
+            .vcounderrange ()
+        );
+        defparam u_altpll_core.bandwidth_type         = "AUTO";
+        defparam u_altpll_core.clk0_divide_by         = ${toString pllCoreDivBy};
+        defparam u_altpll_core.clk0_duty_cycle        = 50;
+        defparam u_altpll_core.clk0_multiply_by       = ${toString pllCoreMultBy};
+        defparam u_altpll_core.clk0_phase_shift       = "0";
+        defparam u_altpll_core.compensate_clock       = "CLK0";
+        defparam u_altpll_core.inclk0_input_frequency = 20000;
+        defparam u_altpll_core.intended_device_family = "Cyclone II";
+        defparam u_altpll_core.lpm_type               = "altpll";
+        defparam u_altpll_core.operation_mode         = "NORMAL";
+        defparam u_altpll_core.port_clk0              = "PORT_USED";
+        defparam u_altpll_core.port_inclk0            = "PORT_USED";
+        defparam u_altpll_core.port_locked            = "PORT_USED";
+        defparam u_altpll_core.port_areset            = "PORT_USED";
+        defparam u_altpll_core.width_clock            = 5;
 
         // ===== PLL #2 — SDRAM domain (Phase C of multi-PLL split) ========
         // Independent PLL drives clkSdram (default 133.33 MHz, IS42S16400
@@ -1393,7 +1438,13 @@ in
         // Combined async-low reset for the bus + core domain. Asserted
         // (low) while the bus PLL hasn't locked or KEY[0] is held.
         wire rstBus_n  = KEY[0] & pll_bus_locked;
-        wire rstCore_n = rstBus_n; // tied while clkCore=clkBus electrically
+        // Phase D-1: rstCore_n now gated by its own PLL's locked
+        // signal so the core only comes out of reset after clkCore
+        // is stable, independent of rstBus_n. Until Phase D-2 wires
+        // up the actual coreCdcBridge between Top.hs's socCore and
+        // socBus, the riski5 module sees both clkBus and clkCore but
+        // the SoC body still uses one clock internally.
+        wire rstCore_n = KEY[0] & pll_core_locked;
         // Phase C: SDRAM reset gated by its own PLL's locked
         // signal so the SdrController only comes out of reset
         // after both KEY[0] is released AND clkSdram is stable.
@@ -1551,6 +1602,8 @@ in
         riski5 u_riski5 (
             .CLOCK_BUS    (clkBus),
             .RESET_BUS_N  (rstBus_n),
+            .CLOCK_CORE   (clkCore),
+            .RESET_CORE_N (rstCore_n),
             .CLOCK_SDRAM  (clkSdram),
             .RESET_SDRAM_N(rstSdram_n),
             .KEY         (KEY),

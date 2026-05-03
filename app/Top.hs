@@ -44,7 +44,7 @@ import MemTest (memTestFirmwareWords)
 #endif
 import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
-import Riski5.Domains (DomBus, DomSdram)
+import Riski5.Domains (DomBus, DomCore, DomSdram)
 import Riski5.SdramCdcBridge (sdramCdcBridge)
 import Riski5.Lcd (LcdPins (..))
 import Riski5.SdrController (
@@ -189,6 +189,25 @@ topEntity ::
   DomBus by the wrapper.
   -}
   "RESET_BUS_N" ::: Reset DomBus ->
+  {- | Core clock (Phase D-1 of multi-PLL split). Comes from a
+  dedicated @u_altpll_core@ instance in the wrapper Verilog.
+  Currently produces clkCore at the same rate as clkBus (40 MHz
+  default) so behaviour is identical to Phase C — the SoC body
+  in this entity still elaborates in DomBus.
+
+  Phase D-2 will land the actual Soc.hs core/bus split via the
+  existing @Riski5.CoreCdcBridge@ from Phase B; that's when this
+  port starts driving genuinely-different clock-domain logic
+  through the bridge. For now the port exists so the wrapper
+  Verilog has a real, used third PLL to validate per-PLL Fmax
+  in Quartus's STA.
+  -}
+  "CLOCK_CORE" ::: Clock DomCore ->
+  {- | Active-low reset for DomCore. Held asserted until
+  @u_altpll_core@ has locked. Synchronised into DomCore by the
+  wrapper.
+  -}
+  "RESET_CORE_N" ::: Reset DomCore ->
   {- | 133.33 MHz SDRAM controller clock — the output of
   @u_altpll_sdram|clk[0]@. Multi-PLL Phase C: the SDRAM
   controller and the chip-side @DRAM_*@ pin drivers move to this
@@ -365,6 +384,8 @@ topEntity ::
 topEntity
   clkBus
   rstBus
+  clkCore
+  rstCore
   clkSdram
   rstSdram
   keyS
