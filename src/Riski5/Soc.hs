@@ -47,6 +47,7 @@ core simply executes from address 0.
 -}
 module Riski5.Soc (
   soc,
+  socWithExternalCore,
   socSim,
   socSimAlteraUart,
   socSimFull,
@@ -64,6 +65,7 @@ import Clash.Prelude qualified as CP
 import Data.Proxy (Proxy (..))
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Core.Assembly (coreWith)
+import Riski5.CoreCdcBridge (CoreBusReply (..), CoreBusReq (..))
 import Riski5.Core.Presets (tiny32M)
 import Riski5.Gpio (GpioIn (..), GpioOut (..), gpio)
 import Riski5.JtagUart (jtagUartAlteraSim, jtagUartSim)
@@ -423,7 +425,19 @@ blank data RAM of size @d@. For phase-1 tests both default to 128
 words (512 bytes); real hardware picks larger sizes in the SoC
 instantiation inside @app\/Top.hs@.
 -}
-soc ::
+{- |
+Variant of 'soc' that takes the core's bus signals as an external
+input ('CoreBusReq') and returns the bus reply alongside SocOut.
+Lets the caller (typically @app/Top.hs@) instantiate the core in
+a different clock domain and bridge across via
+'Riski5.CoreCdcBridge.coreCdcBridge' for the multi-PLL Phase D-2
+split.
+
+Behaviour is otherwise identical to 'soc'. The plain 'soc' below
+is now a thin wrapper that instantiates 'coreWith' locally and
+calls into this function.
+-}
+socWithExternalCore ::
   forall dom p d.
   ( HiddenClockResetEnable dom
   , KnownNat p
@@ -431,67 +445,36 @@ soc ::
   , KnownNat d
   , 1 <= d
   ) =>
-  -- | Enable fetch-side SRAM routing.
-  --
-  -- When 'False' (the committed default for the main CoreMark
-  -- bitstream), the SRAM-fetch arbiter wiring is inert: the
-  -- pass-through branch wires the data-side bus directly into
-  -- 'sram', the SRAM block's fetch-data and fetch-ready outputs
-  -- collapse to constant @0@/@False@, and the final fetch mux's
-  -- @(False, False)@ arm bypasses the SRAM/SDRAM sources entirely.
-  -- Quartus re-uses the placement produced before the arbiter
-  -- landed; CoreMark silicon scores stay at the pre-arbiter level
-  -- (44.57 / 1.114 @ 40 MHz).
-  --
-  -- When 'True' (the sramexec bitstream variant), the fetch-side
-  -- decoder routes @pcFetch in SRAM range@ to the shared SRAM
-  -- controller via the arbiter so firmware can execute directly
-  -- from the off-chip 512 KB SRAM at @0x2000_0000+@.
-  --
-  -- See @docs/perf/sram-exec-probe-2026-04-24.md@ for the
-  -- placement-regression rationale.
-  Bool ->
-  -- | Enable fetch-side SDRAM routing.
-  --
-  -- Parallel toggle to 'enableSramFetch' for the off-chip 8 MB SDR
-  -- SDRAM. When 'True' (the sdramexec bitstream variant), the
-  -- fetch-side decoder routes @pcFetch in SDRAM range@ through
-  -- the 'Riski5.Sdram' adapter (which already does the 32 ↔ 16
-  -- width split for data accesses — fetches inherit the same
-  -- machinery) so firmware can execute directly from the off-chip
-  -- 8 MB at @0x8000_0000+@. This is the last architectural piece
-  -- before the core can run a Linux kernel image (kernels live in
-  -- SDRAM).
-  --
-  -- When 'False' (the committed default), the SDRAM block reduces
-  -- to the data-only @sdram@ call — bit-identical to the
-  -- pre-SDRAM-fetch SoC. The fetch mux's @(False, _)@ arms ignore
-  -- the SDRAM fetch-data / fetch-ready outputs entirely.
-  Bool ->
-  -- | initial imem contents (RV32I machine-code words)
-  Vec p (BitVector 32) ->
-  -- | initial dmem contents — unused since CM-3 replaced the 64-word
-  -- writable Vec-based dmem with the imem bus-port (a second blockRam
-  -- mirroring 'progInit'). Kept in the signature so existing test
-  -- callers don't break; drop the parameter in a later phase once
-  -- the test harnesses are updated in the same commit.
-  Vec d (BitVector 32) ->
-  -- | board-level inputs (switches, keys)
+  Bool -> -- ^ Enable fetch-side SRAM routing (see 'soc').
+  Bool -> -- ^ Enable fetch-side SDRAM routing (see 'soc').
+  Vec p (BitVector 32) -> -- ^ initial imem contents
+  Vec d (BitVector 32) -> -- ^ initial dmem contents (unused)
   Signal dom SocIn ->
-  Signal dom SocOut
-soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
+  Signal dom CoreBusReq ->
+  -- | (board-level outputs, reply going back to the core)
+  (Signal dom SocOut, Signal dom CoreBusReply)
+socWithExternalCore enableSramFetch enableSdramFetch progInit _dataInit inS coreReqS =
+  (outS, coreReplyS)
  where
-  -- ----- Core instance -----------------------------------------
-  -- The stall signal comes from the bus mux: any slave that needs
-  -- multi-cycle service can deassert ready and the core freezes
-  -- until the data settles.
-  -- The core now exposes two PC signals: 'pcFetchS' drives the
-  -- imem, 'pcExecS' is the PC of the instruction currently in the
-  -- execute stage. In the phase-1 pipelineless core they're
-  -- identical; phase-2 pipelining will make them differ by one
-  -- cycle (fetch leads execute).
-  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
-    coreWith tiny32M imemDataS imemReadyS dmemRdataS stallS dataStallS mtipS meipS
+  -- ----- Core bus interface (Phase D-2: from external core) ----
+  -- Instead of instantiating the core locally, destructure the
+  -- 'CoreBusReq' input. The reply goes back via 'coreReplyS' at
+  -- the bottom of this where-clause. Caller uses
+  -- 'Riski5.CoreCdcBridge.coreCdcBridge' to cross domains; in the
+  -- single-domain wrapper 'soc' below the same signals stay in
+  -- 'dom' with no bridge.
+  --
+  -- The original phase-1 phase comment about pcFetchS vs pcExecS:
+  -- the core exposes two PC signals — 'pcFetchS' drives the
+  -- imem, 'pcExecS' is the PC of the instruction currently in
+  -- the execute stage. The pipelineless phase-1 core makes them
+  -- identical; the bus only consumes pcFetchS, so pcExecS isn't
+  -- carried over the bridge.
+  pcFetchS = cbrPcFetch <$> coreReqS
+  dAddrS = cbrDAddr <$> coreReqS
+  dWdataS = cbrDWdata <$> coreReqS
+  dBeS = cbrDBe <$> coreReqS
+  dRenS = cbrDRen <$> coreReqS
 
   -- ----- Instruction memory (M4K-backed sync read) ------------
   -- Two read ports over the same @progInit@:
@@ -1515,6 +1498,69 @@ soc enableSramFetch enableSdramFetch progInit _dataInit inS = outS
       <*> jtagLoadBusyS
       <*> sdramRdataS
       <*> sdramDataReadyS
+
+  -- ----- Reply going back to the core (Phase D-2 boundary) ----
+  -- Bundles every signal the core consumes — imem fetch port,
+  -- data-port read result, both stall flags, and the timer +
+  -- external interrupt pulses. Caller wraps this with the
+  -- bridge (multi-domain) or feeds it straight into 'coreWith'
+  -- (single-domain via 'soc' below).
+  coreReplyS :: Signal dom CoreBusReply
+  coreReplyS =
+    CoreBusReply
+      <$> imemDataS
+      <*> imemReadyS
+      <*> dmemRdataS
+      <*> stallS
+      <*> dataStallS
+      <*> mtipS
+      <*> meipS
+
+{- |
+Single-domain SoC entry point. Backward-compatible wrapper around
+'socWithExternalCore' that locally instantiates 'coreWith'. All
+existing call sites — every test in @test/@, every silicon
+non-multi-PLL bitstream — keep working unchanged.
+
+Multi-domain callers (post-Phase-D-2 @app/Top.hs@) skip this and
+call 'socWithExternalCore' directly, instantiating the core in
+@DomCore@ and bridging to @DomBus@ via
+'Riski5.CoreCdcBridge.coreCdcBridge'.
+-}
+soc ::
+  forall dom p d.
+  ( HiddenClockResetEnable dom
+  , KnownNat p
+  , 1 <= p
+  , KnownNat d
+  , 1 <= d
+  ) =>
+  Bool ->
+  Bool ->
+  Vec p (BitVector 32) ->
+  Vec d (BitVector 32) ->
+  Signal dom SocIn ->
+  Signal dom SocOut
+soc enableSramFetch enableSdramFetch progInit dataInit inS = outS
+ where
+  -- Local core. The mutual recursion between coreReqS (depends on
+  -- coreReplyS) and coreReplyS (depends on coreReqS via the bus
+  -- body) is broken by registers inside the core and inside each
+  -- bus slave; Clash's lazy let resolves it.
+  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
+    coreWith
+      tiny32M
+      (cbrImemData <$> coreReplyS)
+      (cbrImemReady <$> coreReplyS)
+      (cbrDmemRdata <$> coreReplyS)
+      (cbrStall <$> coreReplyS)
+      (cbrDataStall <$> coreReplyS)
+      (cbrMtip <$> coreReplyS)
+      (cbrMeip <$> coreReplyS)
+  coreReqS =
+    CoreBusReq <$> pcFetchS <*> dAddrS <*> dWdataS <*> dBeS <*> dRenS
+  (outS, coreReplyS) =
+    socWithExternalCore enableSramFetch enableSdramFetch progInit dataInit inS coreReqS
 
 {- |
 Simulation wrapper that plugs 'jtagUartSim' back in at the UART bus
