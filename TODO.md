@@ -2022,6 +2022,46 @@ state.**
      next focus should be: (a) Verilator hwsim Linux boot to see
      if it reproduces the silicon hang (if not → bug is RTL-
      synthesis or IP-vs-RTL mismatch only).
+
+     **2026-05-03 task #37 — Verilator hwsim infrastructure
+     LANDED but Linux hwsim boot does not yet progress past the
+     boot stub.** Significant work in this commit chain:
+     - `pkgs/riski5-sim/verilog/riski5_sim_top.v` rebuilt to
+       match current Top.hs port surface (was 28 PINMISSING).
+     - New `sim_sdram_chip` Verilog module models the IS42S16400
+       at command-protocol level: ACTIVATE / READ / WRITE /
+       PRECHARGE / AUTO REFRESH / LMR with CL=2 read pipeline,
+       DQM byte mask, per-bank active-row tracking, 8 MB unpacked
+       array backing storage. Pre-loaded by harness via `MEM_INIT_*`
+       pins.
+     - New `firmware/phase1/LinuxBootSim.hs` minimal sim-only
+       boot stub: print 'M', delay for SDRAM init, diagnostic LW
+       from 0x80000000, print 'J', JALR to kernel.
+     - `pkgs/riski5-sim/package.nix` overlay swaps CoreMark.hs to
+       export LinuxBootSim's firmware (-DFIRMWARE_COREMARK path).
+     - New `tools/linux-hwsim/Main.hs` runner that loads kernel +
+       DTB into the simulated SDRAM via init pins, releases reset,
+       captures UART. Mirrors `tools/linux-sim` interface.
+
+     Status: SDRAM read of kernel byte at 0x80000000 returns
+     the correct expected bytes (`6f 00 c0 05`, the head.S JAL).
+     Boot stub successfully JALRs to the kernel. But after 5M
+     hwsim cycles (vs 555k in pure-Haskell sim where "Linux
+     version" appears), no further UART output. The kernel is
+     either hanging in early head.S init or hitting a model
+     bug on multi-row / multi-bank SDRAM accesses that the
+     single-cell diagnostic LW didn't exercise. Further hwsim
+     SDRAM-model debug is task #38; for now the diagnostic value
+     is 30 / 40 MHz silicon hang reproduction is undetermined
+     because the hwsim path doesn't yet execute long enough.
+
+     Effective "Linux boots in pure-Haskell sim but not in
+     silicon" finding is unchanged. The hwsim layer remains a
+     valuable target — once the SDRAM-model debug lands, we'll
+     have the third verification layer (Layer 1.75 in
+     [docs/verification.md](./docs/verification.md)) actually
+     working for whole-Linux-boot scope, not just the Hello
+     firmware originally targeted.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
