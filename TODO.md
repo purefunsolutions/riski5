@@ -1938,22 +1938,55 @@ state.**
      confirmed each individual instruction pattern works correctly
      on our silicon under SDRAM fetch contention.
 
-     **The bug is something Linux exercises that our targeted
-     stress tests don't.** Remaining culprits (priority order):
-     1. **FDT/DT corruption (task #27)** — the boot stub stages
-        DTB into SDRAM after the kernel; a corrupted byte there
-        propagates into wrong addresses kernel-side.
-     2. **Boot log divergence (task #28)** — compare with/without
-        stack-protector logs cycle-by-cycle to find the first
-        observable behavioural difference.
-     3. **Cache / longer-run effects** — the 4 stress tests each
-        run < 2 s of wall time and < 1 M ops; Linux runs millions
-        of instructions before the panic. A timing-marginal
-        intermittent corruption that fires once per 100 M ops
-        could pass all four bare tests yet still hit Linux.
-        Possible follow-up: extend HelloTrapStress's iteration max
-        to 100 k passes and run for hours to chase deep-tail
-        timing failures.
+     **2026-05-03 SIMULATOR vs SILICON DIVERGENCE — bug is
+     silicon-only.** Pure-Haskell sim (`riski5-linux-sim --full
+     KERNEL DTB 20000000`) runs 20 M instructions = simulated
+     time 0.16 s, no panic. Sim kernel cleanly reaches "Serial:
+     8250/16550 driver" at `[ 0.162788]`, well past every silicon
+     hang point. Silicon at 40 MHz hangs at SLUB init (last printk
+     `[ 0.000000] SLUB: HWalign=64...` — timer subsystem hasn't
+     started yet, every line reads `[ 0.000000]`). Logs:
+     [`docs/perf/linux-40mhz-2026-05-03.log`](./docs/perf/linux-40mhz-2026-05-03.log)
+     (silicon, hangs at SLUB).
+
+     **2026-05-03 task #35 — slowClock=true (30 MHz) gets
+     CLOSER to a full boot.** With the entire single-clock-domain
+     design re-built at 30 MHz instead of 40 MHz (same `slowClock`
+     mechanism that re-targets the PLL multiplier 4→3 and
+     regenerates the SDRAM IP at clockRate=30000000), Linux now
+     reaches FIVE more printks past the 40 MHz stop:
+
+         40 MHz: SLUB: HWalign=64...   ← stop
+         30 MHz: SLUB: HWalign=64...
+                 NR_IRQS: 64...
+                 riscv-intc: 32 local interrupts mapped
+                 clint: timer running at 40000000 Hz
+                 clocksource: clint_clocksource: ...
+                 sched_clock: 64 bits at 40MHz, ... [    0.000606]   ← stop
+
+     Hang point now lands AFTER timer subsystem is registered
+     (`sched_clock` ts is 0.000606 s — first non-zero printk
+     timestamp ever observed). Full log:
+     [`docs/perf/linux-slowclock-30mhz-2026-05-03.log`](./docs/perf/linux-slowclock-30mhz-2026-05-03.log).
+
+     **Timing-margin hypothesis is partially confirmed.** Slowing
+     the clock 33 % buys the kernel through init_IRQ + time_init
+     but not through the next phase (would expect "Calibrating
+     delay loop" + "Memory: ..." + "devtmpfs: initialized" before
+     the first driver init). Either:
+     1. Even more margin needed → try 20 MHz (`pllBusMultBy = 2`,
+        regen SDRAM IP at clockRate=20000000).
+     2. There's a second bug past time_init unrelated to timing
+        margin — Verilator-backed hwsim would help localise it
+        without a 5-min upload-verify loop.
+
+     This invalidates the "AMO/LR/SC/stack/trap" suspect chain
+     for THIS panic — not for hardware in general (those bare-
+     metal probes are still correct silicon-clean tests). The
+     next focus should be: (a) Verilator hwsim Linux boot to see
+     if it reproduces the silicon hang (if not → bug is RTL-
+     synthesis or IP-vs-RTL mismatch only); (b) try even slower
+     clock to see whether margin alone fixes the boot.
   3. Compare the two boot logs cycle-by-cycle to find exactly
      where the divergence in code path begins.
 
