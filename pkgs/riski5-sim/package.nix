@@ -174,6 +174,7 @@ in
       #    seeing the polluted environment.
       clash --verilog -fclash-hdlsyn Quartus \
         -XGHC2021 -XImplicitPrelude -DFIRMWARE_COREMARK \
+        -DSOC_CLOCK_HZ=40000000 \
         -isrc -iapp -ifirmware/phase1 \
         Top
 

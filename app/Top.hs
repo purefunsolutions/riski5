@@ -48,6 +48,7 @@ import Riski5.Lcd (LcdPins (..))
 import Riski5.SdrController (
   SdrPins (..),
   defaultDe2Config,
+  defaultDe2ConfigForClockHz,
   sdrControllerAsAlteraIp,
   sdrControllerAsAlteraIpRegistered,
  )
@@ -92,6 +93,26 @@ createDomain
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
     }
+
+-- | SoC bus clock frequency in Hz. Set by the build system via
+-- the @-DSOC_CLOCK_HZ=...@ CPP define from
+-- @pkgs/riski5-core/package.nix@ (computed from @pllBusMultBy@:
+-- @50e6 × pllBusMultBy / 5@). Defaults to 40 MHz so a plain
+-- @cabal build@ without the build-system define also works.
+--
+-- This value flows into 'defaultDe2ConfigForClockHz' so the SDRAM
+-- controller's refresh interval and power-up NOP delay scale
+-- correctly with the actual silicon clock rate. At 40 MHz the
+-- scaled values match the prior hardcoded defaults
+-- (@sdrRefreshIntervalCycles = 600@, @sdrInitNopCycles = 4100@);
+-- at 30 MHz they become 450 / 3100; at 20 MHz 300 / 2100.
+socClockHz :: Int
+socClockHz =
+#ifdef SOC_CLOCK_HZ
+  SOC_CLOCK_HZ
+#else
+  40_000_000
+#endif
 
 -- * Firmware --------------------------------------------------------
 
@@ -388,7 +409,7 @@ topEntity
             -- Riski5.sdc and the +90° DRAM_CLK in u_altpll). The
             -- two-cycle round-trip latency it adds is matched by
             -- 'sdrPipelineLatency = 2' in defaultDe2Config.
-            sdrControllerAsAlteraIpRegistered defaultDe2Config sdramBusS sdramDqInS
+            sdrControllerAsAlteraIpRegistered (defaultDe2ConfigForClockHz socClockHz) sdramBusS sdramDqInS
           ledrS = soLedR <$> outS
           ledgS = soLedG <$> outS
           lcdDataS = lcdData . soLcdPins <$> outS

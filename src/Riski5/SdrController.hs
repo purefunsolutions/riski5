@@ -63,6 +63,7 @@ module Riski5.SdrController (
   -- * Configuration
   SdrConfig (..),
   defaultDe2Config,
+  defaultDe2ConfigForClockHz,
 
   -- * Chip-side I/O bundle
   SdrPins (..),
@@ -125,22 +126,29 @@ data SdrConfig = SdrConfig
   deriving stock (Generic, Eq, Show)
   deriving anyclass (NFDataX)
 
--- | Default config sized for the DE2's IS42S16400-7TL chip running
--- on the @40 MHz@ bus clock (period 25 ns). Datasheet timings:
+-- | DE2 IS42S16400-7TL chip config, parameterised by the bus clock
+-- frequency in Hz so the cycle-count fields that have an absolute-
+-- time constraint scale automatically. Use this when the SoC is
+-- built at a non-default clock rate (e.g. @slowClock=true@ at
+-- 30 MHz, @verySlowClock=true@ at 20 MHz, or a future
+-- multi-PLL split where the SDRAM domain runs at its own rate).
 --
--- @
---   T_RCD  = 20 ns →  1 cycle min   (we use 3 — over-conservative)
---   T_RP   = 20 ns →  1 cycle min   (we use 3)
---   T_RFC  = 70 ns →  3 cycles min  (we use 7)
---   T_WR   = 14 ns →  1 cycle min   (we use 2)
---   T_MRD  = 2 cycles               (we use 2)
---   CL     = 3                      (we use 3)
--- @
+-- Time-scaled fields:
 --
--- Refresh: 4096 rows / 64 ms = 15.625 µs avg interval. At 40 MHz
--- that's 625 cycles max. We use 600 to leave a safety margin.
-defaultDe2Config :: SdrConfig
-defaultDe2Config =
+--   * @sdrRefreshIntervalCycles@ — 4096 rows / 64 ms gives a
+--     15.625 µs avg refresh interval per JEDEC. We target 15 µs
+--     to leave a small safety margin, so cycles = clockHz × 15e-6.
+--   * @sdrInitNopCycles@ — 100 µs power-up delay required by the
+--     IS42S16400 spec. cycles = clockHz × 100e-6 + a small margin
+--     to round up cleanly.
+--
+-- The other timings (T_RCD, T_RP, T_RFC, T_WR, T_MRD, CL) are
+-- expressed in cycles and are already over-conservative at 40 MHz
+-- — they remain safe at slower clocks too (a 3-cycle TRCD at
+-- 40 MHz = 75 ns; at 20 MHz = 150 ns; both ≥ 20 ns datasheet
+-- minimum). They stay constant.
+defaultDe2ConfigForClockHz :: Int -> SdrConfig
+defaultDe2ConfigForClockHz clockHz =
   SdrConfig
     { sdrTrcdCycles = 3
     , sdrTrpCycles = 3
@@ -164,14 +172,33 @@ defaultDe2Config =
     --   `sdrCasLatency cfg + sdrPipelineLatency cfg - 1` so this
     --   change is self-consistent.
     , sdrTmrdCycles = 2
-    , sdrRefreshIntervalCycles = 600
-    , sdrInitNopCycles = 4100 -- ≥100 µs at 40 MHz period 25 ns (= 4000 cycles)
+    , sdrRefreshIntervalCycles =
+        -- 15 µs target = clockHz × 15 / 1_000_000. Integer division
+        -- floors, which is fine — slightly faster refresh is always
+        -- safe (only a power/perf concern, not a correctness one).
+        -- At 40 MHz: 600. At 30 MHz: 450. At 20 MHz: 300.
+        fromIntegral (clockHz P.* (15 :: P.Int) `P.div` 1_000_000)
+    , sdrInitNopCycles =
+        -- 100 µs spec minimum. Add a 100-cycle pad on top so even
+        -- low clocks round up well above the threshold.
+        -- At 40 MHz: 4100. At 30 MHz: 3100. At 20 MHz: 2100.
+        fromIntegral (clockHz P.* (100 :: P.Int) `P.div` 1_000_000 P.+ 100)
     , sdrInitRefreshCount = 8
     , sdrPipelineLatency = 2 -- 1 cycle output reg + 1 cycle input reg
     -- ^ Matches 'sdrControllerAsAlteraIpRegistered' which adds an
     -- I/O-cell flop layer on the chip-side pins. With combinational
     -- pin output (raw 'sdrControllerAsAlteraIp'), set to 0.
     }
+
+-- | 40 MHz default config — preserves prior behaviour for callers
+-- that haven't been updated to pass an explicit frequency. All
+-- existing test/firmware imports of @defaultDe2Config@ keep working
+-- with no change.
+--
+-- Equivalent to @defaultDe2ConfigForClockHz 40_000_000@: yields
+-- @sdrRefreshIntervalCycles = 600@, @sdrInitNopCycles = 4100@.
+defaultDe2Config :: SdrConfig
+defaultDe2Config = defaultDe2ConfigForClockHz 40_000_000
 
 -- * Chip-side I/O ---------------------------------------------------
 

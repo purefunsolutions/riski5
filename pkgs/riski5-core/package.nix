@@ -999,6 +999,7 @@ in
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
               ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -isrc -iapp -ifirmware/phase1 \
               Top
 
