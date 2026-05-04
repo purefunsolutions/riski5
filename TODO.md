@@ -274,15 +274,31 @@ rules around maintaining it.
       `andi a5, s1, 0x337` then branches to handlers selectively
       (mask 0x30 → schedule, 0x6 → arch_do_signal_or_restart,
       0x1 → resume_user_mode_work) — but the outer-loop
-      bnez tests the full 0x337 mask. If bit 8 or 9 is set in
-      thread_info.flags, none of the called handlers clear it,
-      the loop spins.
-    - **Next**: instrument SDRAM model or add a topEntity DEBUG
-      port to see what value `lw s1, 0(tp)` actually reads at the
-      hang. That tells us which TIF bit is stuck. Phase D-3b
-      (CoreMark zero-output) still pending under task #49 —
-      needs a separate sim variant that doesn't overlay CoreMark.hs
-      with LinuxBootMaster.
+      bnez tests the full 0x337 mask. The PC snapshots NEVER
+      visit any of those handler addresses (schedule at 0x1ed85c,
+      etc.) — so the loop's individual branches all SKIP. By
+      elimination, bits 8 and/or 9 in s1 are set but no branch
+      handles them.
+    - **Concrete next-step recipe** for the next session:
+      1. Add `DEBUG_DMEM_RDATA :: Signal DomBus (BitVector 32)`
+         output port to `Top.hs` (sourced from the bus's
+         `dmemRdataS`). Wire through `pkgs/riski5-sim/verilog/
+         riski5_sim_top.v` + `clash-manifest.json` + Main.hs's
+         struct (same plumbing as DEBUG_PCFETCH did in commit
+         b94a430).
+      2. Sample DEBUG_DMEM_RDATA at PC=0x1ec464 — that's the
+         `lw s1, 0(tp)` cycle. The captured value IS the
+         thread_info.flags. Identifies which TIF bit is stuck.
+      3. Once the bit is known, find the kernel function that
+         sets it. Either fix the kernel config (some config option
+         is causing the bit to be set without a corresponding
+         clear path) OR find the matching architectural-state bug
+         in our core (e.g., wrong CSR result, wrong AMO behavior in
+         a specific context not covered by the current standalone
+         test).
+    - Phase D-3b (CoreMark zero-output) still pending under task #49
+      — needs a separate sim variant that doesn't overlay
+      CoreMark.hs with LinuxBootMaster.
 
 - **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
   [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
