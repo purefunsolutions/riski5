@@ -497,6 +497,13 @@ module sim_sdram_chip (
             // DQM=1 masks the byte (data ignored). DQM=0 commits.
             if (~dqm[0]) mem[linear_addr][7:0]  <= dq_in[7:0];
             if (~dqm[1]) mem[linear_addr][15:8] <= dq_in[15:8];
+            // Task #52 debug: log writes to chip cells around
+            // bus addr 0x80273380 (init_task.flags). Chip cells
+            // 0x14E6C0 (low half) and 0x14E6C1 (high half).
+            if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
+              $display("[SDRAM-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h",
+                       linear_addr, dq_in, dqm, mem[linear_addr]);
+            end
           end
           if (addr[10]) active[ba] <= 1'b0; // auto-precharge
         end else if (is_pcharge) begin

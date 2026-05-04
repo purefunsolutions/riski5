@@ -300,6 +300,36 @@ rules around maintaining it.
       independent of it.
     - **Tested: not IRQ-driven**. Forcing BOTH `mtipS=False`
       AND `meipS=False` has zero observable effect.
+    - **🎯 ROOT CAUSE FOUND** — hardware data-read corruption
+      through CoreCdcBridge. SDRAM-write tap proves: kernel writes
+      `0x00000002` to *(0x80273380), but LW returns `0x10000537`
+      (= byte encoding of an instruction at kernel offset 0x72afc).
+      So the bridge corrupts the read.
+    - **Bug location**: `src/Riski5/CoreCdcBridge.hs:576-579`,
+      slave's sDmemRdata capture:
+      ```haskell
+      dmemRdataNow =
+        if not sDataDone && not (cbrDataStall reply)
+          then cbrDmemRdata reply
+          else sDmemRdata
+      ```
+      This captures cbrDmemRdata whenever cbrDataStall=False —
+      but for an INSTRUCTION-FETCH-ONLY transaction (cbrDRen=False,
+      cbrDBe=0), the data port isn't actually responding, and
+      cbrDataStall is often False from the start. The bridge
+      captures whatever stale value happens to be on the bus's
+      combinational dmemRdataS at that cycle (often instruction
+      bytes from a shared SDRAM controller). That stale value
+      then leaks into the NEXT true LW's reply.
+    - **Fix direction**: gate the capture on `sLatReq.cbrDRen ||
+      sLatReq.cbrDBe /= 0` so sDmemRdata only updates when the
+      latched request actually wants a data-port response. If
+      no data op pending, leave sDmemRdata at 0 (or mark
+      "no data") so the next real LW captures fresh.
+    - Why amostress / lrscstress / sdramexec passed: those
+      firmwares are tight loops where every transaction has
+      cbrDRen / cbrDBe asserted, so the no-data-port path of
+      the bug doesn't arise.
     - **Diff-led hypothesis** (per user feedback — looking at diffs
       since 053ca5c, the last working Linux boot, ~57 commits ago):
       the dominant behavioral change is the **CoreCdcBridge insertion**
