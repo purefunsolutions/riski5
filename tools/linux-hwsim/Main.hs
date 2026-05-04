@@ -98,7 +98,7 @@ data Riski5SimTopPorts (f :: Type -> Type) = Riski5SimTopPorts
 -- width descending so there's no internal padding.
 
 data Riski5SimTopState = Riski5SimTopState
-  { -- 32-bit ports (offsets 0..27)
+  { -- 32-bit ports (offsets 0..31)
     sMemInitAddr :: !Word32 -- 22 used, upper 10 ignored
   , sSw :: !Word32 -- 18 used
   , sLedr :: !Word32 -- 18 used
@@ -106,7 +106,8 @@ data Riski5SimTopState = Riski5SimTopState
   , sDebugPcfetch :: !Word32 -- IF-stage PC, sampled every cycle
   , sDebugDmemRdata :: !Word32 -- bus-side dmem rdata (task #52)
   , sDebugBridgeDmemRdata :: !Word32 -- bridge-captured dmem rdata (task #52 debug 2)
-  , -- 16-bit ports (offsets 28..35)
+  , sDebugSp :: !Word32 -- regfile x2 shadow tracked via writeback (task #55)
+  , -- 16-bit ports (offsets 32..39)
     sMemInitData :: !Word16
   , sSramDqIn :: !Word16
   , sLedg :: !Word16 -- 9 used
@@ -140,7 +141,7 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 60 -- 58 bytes of fields, padded to multiple of alignment 4
+  sizeOf _ = 64 -- 62 bytes of fields, padded to multiple of alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
@@ -150,32 +151,33 @@ instance Storable Riski5SimTopState where
     debugPcfetch <- peekByteOff p 16
     debugDmemRdata <- peekByteOff p 20
     debugBridgeDmemRdata <- peekByteOff p 24
-    memInitData <- peekByteOff p 28
-    sramDqIn <- peekByteOff p 30
-    ledg <- peekByteOff p 32
-    sramDqOut <- peekByteOff p 34
-    clk <- peekByteOff p 36
-    rstN <- peekByteOff p 37
-    clkCore <- peekByteOff p 38
-    rstCoreN <- peekByteOff p 39
-    clkSdram <- peekByteOff p 40
-    rstSdramN <- peekByteOff p 41
-    key <- peekByteOff p 42
-    memInitWrite <- peekByteOff p 43
-    lcdData <- peekByteOff p 44
-    lcdRs <- peekByteOff p 45
-    lcdRw <- peekByteOff p 46
-    lcdEn <- peekByteOff p 47
-    lcdOn <- peekByteOff p 48
-    lcdBlon <- peekByteOff p 49
-    sramDqOe <- peekByteOff p 50
-    sramCeN <- peekByteOff p 51
-    sramOeN <- peekByteOff p 52
-    sramWeN <- peekByteOff p 53
-    sramUbN <- peekByteOff p 54
-    sramLbN <- peekByteOff p 55
-    uartTxValid <- peekByteOff p 56
-    uartTxByte <- peekByteOff p 57
+    debugSp <- peekByteOff p 28
+    memInitData <- peekByteOff p 32
+    sramDqIn <- peekByteOff p 34
+    ledg <- peekByteOff p 36
+    sramDqOut <- peekByteOff p 38
+    clk <- peekByteOff p 40
+    rstN <- peekByteOff p 41
+    clkCore <- peekByteOff p 42
+    rstCoreN <- peekByteOff p 43
+    clkSdram <- peekByteOff p 44
+    rstSdramN <- peekByteOff p 45
+    key <- peekByteOff p 46
+    memInitWrite <- peekByteOff p 47
+    lcdData <- peekByteOff p 48
+    lcdRs <- peekByteOff p 49
+    lcdRw <- peekByteOff p 50
+    lcdEn <- peekByteOff p 51
+    lcdOn <- peekByteOff p 52
+    lcdBlon <- peekByteOff p 53
+    sramDqOe <- peekByteOff p 54
+    sramCeN <- peekByteOff p 55
+    sramOeN <- peekByteOff p 56
+    sramWeN <- peekByteOff p 57
+    sramUbN <- peekByteOff p 58
+    sramLbN <- peekByteOff p 59
+    uartTxValid <- peekByteOff p 60
+    uartTxByte <- peekByteOff p 61
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
@@ -185,6 +187,7 @@ instance Storable Riski5SimTopState where
         , sDebugPcfetch = debugPcfetch
         , sDebugDmemRdata = debugDmemRdata
         , sDebugBridgeDmemRdata = debugBridgeDmemRdata
+        , sDebugSp = debugSp
         , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
@@ -220,32 +223,33 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 16 sDebugPcfetch
     pokeByteOff p 20 sDebugDmemRdata
     pokeByteOff p 24 sDebugBridgeDmemRdata
-    pokeByteOff p 28 sMemInitData
-    pokeByteOff p 30 sSramDqIn
-    pokeByteOff p 32 sLedg
-    pokeByteOff p 34 sSramDqOut
-    pokeByteOff p 36 sClk
-    pokeByteOff p 37 sRstN
-    pokeByteOff p 38 sClkCore
-    pokeByteOff p 39 sRstCoreN
-    pokeByteOff p 40 sClkSdram
-    pokeByteOff p 41 sRstSdramN
-    pokeByteOff p 42 sKey
-    pokeByteOff p 43 sMemInitWrite
-    pokeByteOff p 44 sLcdData
-    pokeByteOff p 45 sLcdRs
-    pokeByteOff p 46 sLcdRw
-    pokeByteOff p 47 sLcdEn
-    pokeByteOff p 48 sLcdOn
-    pokeByteOff p 49 sLcdBlon
-    pokeByteOff p 50 sSramDqOe
-    pokeByteOff p 51 sSramCeN
-    pokeByteOff p 52 sSramOeN
-    pokeByteOff p 53 sSramWeN
-    pokeByteOff p 54 sSramUbN
-    pokeByteOff p 55 sSramLbN
-    pokeByteOff p 56 sUartTxValid
-    pokeByteOff p 57 sUartTxByte
+    pokeByteOff p 28 sDebugSp
+    pokeByteOff p 32 sMemInitData
+    pokeByteOff p 34 sSramDqIn
+    pokeByteOff p 36 sLedg
+    pokeByteOff p 38 sSramDqOut
+    pokeByteOff p 40 sClk
+    pokeByteOff p 41 sRstN
+    pokeByteOff p 42 sClkCore
+    pokeByteOff p 43 sRstCoreN
+    pokeByteOff p 44 sClkSdram
+    pokeByteOff p 45 sRstSdramN
+    pokeByteOff p 46 sKey
+    pokeByteOff p 47 sMemInitWrite
+    pokeByteOff p 48 sLcdData
+    pokeByteOff p 49 sLcdRs
+    pokeByteOff p 50 sLcdRw
+    pokeByteOff p 51 sLcdEn
+    pokeByteOff p 52 sLcdOn
+    pokeByteOff p 53 sLcdBlon
+    pokeByteOff p 54 sSramDqOe
+    pokeByteOff p 55 sSramCeN
+    pokeByteOff p 56 sSramOeN
+    pokeByteOff p 57 sSramWeN
+    pokeByteOff p 58 sSramUbN
+    pokeByteOff p 59 sSramLbN
+    pokeByteOff p 60 sUartTxValid
+    pokeByteOff p 61 sUartTxByte
 
 initialState :: Riski5SimTopState
 initialState =
@@ -257,6 +261,7 @@ initialState =
     , sDebugPcfetch = 0
     , sDebugDmemRdata = 0
     , sDebugBridgeDmemRdata = 0
+    , sDebugSp = 0
     , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0
@@ -547,6 +552,24 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
       liftIO $ hPutStrLn stderr
         ("[CALLED-WARN-PRINTK] cycle=" ++ show cycs
           ++ " from prev=0x" ++ showHex prevPc "")
+    -- Task #55: sample sp at the canary save vs check PCs. Widen
+    -- the match to a small range around the actual instruction
+    -- PCs to handle pipeline slip; edge-detect on the WHOLE range
+    -- entry so we get one log per visit.
+    let inSave  = pc >= 0x801dc378 && pc <= 0x801dc380
+        inCheck = pc >= 0x801dc38c && pc <= 0x801dc394
+        prevInSave  = prevPc >= 0x801dc378 && prevPc <= 0x801dc380
+        prevInCheck = prevPc >= 0x801dc38c && prevPc <= 0x801dc394
+    when (inSave && not prevInSave) $
+      liftIO $ hPutStrLn stderr
+        ("[SP-SAVE] cycle=" ++ show cycs
+          ++ " pc=0x" ++ showHex pc ""
+          ++ " sp=0x" ++ showHex (sDebugSp s) "")
+    when (inCheck && not prevInCheck) $
+      liftIO $ hPutStrLn stderr
+        ("[SP-CHECK] cycle=" ++ show cycs
+          ++ " pc=0x" ++ showHex pc ""
+          ++ " sp=0x" ++ showHex (sDebugSp s) "")
     -- Also detect ANY major PC region change (kernel ↔ firmware)
     -- to catch jumps/redirects.
     when (prevPc >= 0x80000000 && pc < 0x80000000 && pc /= prevPc && cycs > 1000000) $

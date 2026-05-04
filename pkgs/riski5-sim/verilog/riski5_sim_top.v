@@ -147,7 +147,8 @@ module riski5_sim_top (
     // mux output at the SAMPLE cycle, which can reflect a stale
     // dataRdataLastS from an earlier LW. This signal is what the
     // core actually consumes for the latest completed LW.
-    output wire [31:0] DEBUG_BRIDGE_DMEM_RDATA
+    output wire [31:0] DEBUG_BRIDGE_DMEM_RDATA,
+    output wire [31:0] DEBUG_SP
 );
 
   // Avalon-MM-like bus tap from the Clash core to the Altera IP.
@@ -235,6 +236,9 @@ module riski5_sim_top (
   // Bridge-captured DMEM rdata tap (task #52 debug 2). What the
   // bridge actually delivers to the core for the latest LW.
   assign DEBUG_BRIDGE_DMEM_RDATA = dbg_bridge_dmem_rdata_w;
+  // SP register shadow (task #55). Updated whenever writeback
+  // commits to rd=2.
+  assign DEBUG_SP = dbg_sp_w;
 
   // ---- SDRAM chip-side wires (riski5 ⇄ sim_sdram_chip) ---------
   wire [11:0] sdram_addr_w;
@@ -259,6 +263,7 @@ module riski5_sim_top (
   wire [31:0]  dbg_pcfetch_w;
   wire [31:0]  dbg_dmem_rdata_w;
   wire [31:0]  dbg_bridge_dmem_rdata_w;
+  wire [31:0]  dbg_sp_w;
   wire [7:0]   dbg_flags_w;
   wire [127:0] dbg_frozen_pc_w;
   wire [31:0]  dbg_frozen_flags_w;
@@ -351,6 +356,7 @@ module riski5_sim_top (
       .DEBUG_PCFETCH          (dbg_pcfetch_w),
       .DEBUG_DMEM_RDATA       (dbg_dmem_rdata_w),
       .DEBUG_BRIDGE_DMEM_RDATA(dbg_bridge_dmem_rdata_w),
+      .DEBUG_SP               (dbg_sp_w),
       .DEBUG_FLAGS            (dbg_flags_w),
       .DEBUG_FROZEN_PC        (dbg_frozen_pc_w),
       .DEBUG_FROZEN_FLAGS     (dbg_frozen_flags_w),

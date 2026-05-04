@@ -423,6 +423,12 @@ topEntity ::
           -- value at sample cycle". This is exactly what the core
           -- consumes as its LW result.
           "DEBUG_BRIDGE_DMEM_RDATA" ::: Signal DomCore (BitVector 32)
+        , -- Task #55 diagnostic: shadow of regfile x2 (sp), updated
+          -- via the writeback path. Sample at the canary save vs
+          -- check PCs to see if sp drifts (= regfile bug) or stays
+          -- the same but the LW reads a wrong cell (= forwarding
+          -- or address-compute bug).
+          "DEBUG_SP" ::: Signal DomCore (BitVector 32)
         )
 topEntity
   clkBus
@@ -455,7 +461,7 @@ topEntity
   -- 'coreWith''s pipeline regs).
 
   -- ----- Core in DomCore -----------------------------------------
-  (pcFetchInCoreS, _pcExecInCoreS, dAddrInCoreS, dWdataInCoreS, dBeInCoreS, dRenInCoreS, _wbInCoreS, _rvfiInCoreS) =
+  (pcFetchInCoreS, _pcExecInCoreS, dAddrInCoreS, dWdataInCoreS, dBeInCoreS, dRenInCoreS, wbInCoreS, _rvfiInCoreS) =
     withClockResetEnable clkCore rstCore enableGen $
       coreWith
         tiny32M
@@ -466,6 +472,19 @@ topEntity
         (cbrDataStall <$> coreReplyInCoreS)
         (cbrMtip <$> coreReplyInCoreS)
         (cbrMeip <$> coreReplyInCoreS)
+
+  -- Task #55 debug: shadow x2 (sp) by tracking writeback writes to
+  -- rd=2. Catches every kernel sp update; differs from the actual
+  -- regfile only if the regfile has a HW corruption (which is what
+  -- we're hunting). Exposed as DEBUG_SP for hwsim sampling at the
+  -- canary save (PC=0x801dc37c) vs check (PC=0x801dc398) PCs.
+  debugSpS :: Signal DomCore (BitVector 32)
+  debugSpS =
+    withClockResetEnable clkCore rstCore enableGen $
+      let nextSp wb cur = case wb of
+            Just (rd, v) | rd == 2 -> v
+            _ -> cur
+       in register 0 (nextSp <$> wbInCoreS <*> debugSpS)
 
   coreReqInCoreS :: Signal DomCore CoreBusReq
   coreReqInCoreS =
@@ -669,6 +688,7 @@ topEntity
             , pcFetchInCoreS
             , dbgDmemRdataS
             , dbgBridgeDmemRdataS
+            , debugSpS
             )
           , coreReplyInBusInner
           )
