@@ -372,7 +372,8 @@ module riski5_sim_top (
       .dq_out     (sdram_dq_in_w),
       .init_addr  (MEM_INIT_ADDR),
       .init_data  (MEM_INIT_DATA),
-      .init_write (MEM_INIT_WRITE)
+      .init_write (MEM_INIT_WRITE),
+      .dbg_pc     (dbg_core_pc_w)
   );
 
 endmodule
@@ -421,7 +422,11 @@ module sim_sdram_chip (
     // Pre-load (harness drives during reset)
     input  wire [21:0] init_addr,
     input  wire [15:0] init_data,
-    input  wire        init_write
+    input  wire        init_write,
+
+    // Task #52 debug: PC tap, used by SDRAM-WRITE $display so we
+    // can correlate writes to specific kernel functions.
+    input  wire [31:0] dbg_pc
 );
 
     // 4M × 16-bit words = 8 MB
@@ -531,10 +536,14 @@ module sim_sdram_chip (
             if (~dqm[1]) mem[linear_addr][15:8] <= dq_in[15:8];
             // Task #52 debug: log writes to chip cells around
             // bus addr 0x80273380 (init_task.flags). Chip cells
-            // 0x14E6C0 (low half) and 0x14E6C1 (high half).
+            // 0x14E6C0 (low half) and 0x14E6C1 (high half). Include
+            // the kernel PC at the time of the write so we can
+            // identify which kernel function is setting TIF_SIGPENDING.
+            // Also include $time so Haskell can correlate with its
+            // own cycle counter.
             if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
-              $display("[SDRAM-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h",
-                       linear_addr, dq_in, dqm, mem[linear_addr]);
+              $display("[SDRAM-WRITE] time=%t cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
+                       $time, linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
             end
           end
           if (addr[10]) active[ba] <= 1'b0; // auto-precharge

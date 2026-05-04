@@ -474,9 +474,48 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
       liftIO $ do
         modifyIORef' rdataRef (Map.insertWith (+) (sDebugDmemRdata s) 1)
         modifyIORef' bridgeRdataRef (Map.insertWith (+) (sDebugBridgeDmemRdata s) 1)
-    -- Avoid -Wunused-binding warning on prevPc when no edge sampling
-    -- is in use this build.
-    let _ = prevPc
+    -- Task #52: count visits to each candidate caller of
+    -- signal_wake_up_state (= the kernel function that AMOOR.W's
+    -- TIF_SIGPENDING into init_task.flags). Whichever has a
+    -- non-zero count points to the caller responsible for the
+    -- spurious flag set.
+    -- Caller PCs (jal sites): 0x80019074, 0x800196f8, 0x80019ea8,
+    -- 0x80019f2c, 0x8001bee4, 0x8001c238, 0x8001c81c.
+    -- Detect the two `amoor.w zero,a5,(a0)` instructions that
+    -- set bit 1 of *(a0): one in signal_wake_up_state (0x8001be50),
+    -- one in kthread_stop (0x80031910). Whichever fires is the
+    -- AMO that writes 0x0002 to *(init_task.flags).
+    when (pc == 0x8001be50 || pc == 0x80031910) $
+      liftIO $ hPutStrLn stderr
+        ("[AMO-SET-BIT1] cycle=" ++ show cycs
+          ++ " pc=0x" ++ showHex pc ""
+          ++ " (prev=0x" ++ showHex prevPc "" ++ ")")
+    -- Also log FIRST visit to any PC in the signal_wake_up_state
+    -- function range. If this NEVER fires, the kernel is reaching
+    -- PC=0x8001be58 via a code path we don't expect.
+    when (pc == 0x8001be34 && prevPc /= 0x8001be34) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-SWUS] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Log PCs in the broader window leading up to the first
+    -- signal_wake_up_state entry. Cycle ~21M = 700K cycles before
+    -- the entry, which should cover deeper call stack history.
+    when (cycs >= 21100000 && cycs <= 21869150 && pc /= prevPc) $
+      liftIO $ hPutStrLn stderr
+        ("[TRACE] cycle=" ++ show cycs ++ " pc=0x" ++ showHex pc "")
+    -- Sanity: log first visits to a BROADER kernel range we expect
+    -- the kernel to visit during early init (anywhere in 0x8001b
+    -- range = ~256 KB of kernel code). If THIS never fires either,
+    -- the kernel's PC range must be somewhere else entirely.
+    when (cycs == 5_000_000) $
+      liftIO $ hPutStrLn stderr
+        ("[CHECKPOINT] cycle=5M pc=0x" ++ showHex pc "")
+    when (cycs == 10_000_000) $
+      liftIO $ hPutStrLn stderr
+        ("[CHECKPOINT] cycle=10M pc=0x" ++ showHex pc "")
+    when (cycs == 15_000_000) $
+      liftIO $ hPutStrLn stderr
+        ("[CHECKPOINT] cycle=15M pc=0x" ++ showHex pc "")
     if sUartTxValid s /= 0
       then do
         let b = sUartTxByte s
