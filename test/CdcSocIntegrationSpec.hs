@@ -52,6 +52,7 @@ import Riski5.CoreCdcBridge (
  )
 import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
+import Riski5.Domains (DomBus, DomCore, DomSdram)
 import Riski5.ISA
 import Riski5.JtagUart (jtagUartSim)
 import Riski5.Sdram (sdramIpSim)
@@ -69,30 +70,18 @@ import qualified Prelude as P
 import Prelude (Bool (..), Either (..), Eq, Int, Maybe (..), String, error, fmap, ($), (++), (.))
 
 -- * Test domains -------------------------------------------------
-
-createDomain
-  vSystem
-    { vName = "DomCdcSocA"
-    , vPeriod = 25000
-    , vResetKind = Asynchronous
-    , vResetPolarity = ActiveLow
-    }
-
-createDomain
-  vSystem
-    { vName = "DomCdcSocB"
-    , vPeriod = 25000
-    , vResetKind = Asynchronous
-    , vResetPolarity = ActiveLow
-    }
-
-createDomain
-  vSystem
-    { vName = "DomCdcSocC"
-    , vPeriod = 7500 -- 133 MHz, silicon SDRAM rate
-    , vResetKind = Asynchronous
-    , vResetPolarity = ActiveLow
-    }
+--
+-- Use the production 'Riski5.Domains' types directly so the periods
+-- (CPP-overrideable via @-DSOC_BUS_PERIOD_PS@ / @SOC_CORE_PERIOD_PS@
+-- / @SOC_SDRAM_PERIOD_PS@) match the silicon build exactly. With
+-- the defaults: DomBus = DomCore = 25_000 ps (40 MHz), DomSdram =
+-- 7_500 ps (133 MHz nominal — actual silicon currently runs SDRAM
+-- at 50 MHz via @pllSdramMultBy = 5@). Renaming the test-side
+-- domains used to be useful to make sim test failures unambiguous,
+-- but it had us hardcoding period values in two places — a
+-- silent-divergence hazard pointed out in review. Importing the
+-- production domains keeps the sim-vs-silicon clock topology
+-- aligned by construction.
 
 -- * Inline firmware (mirrors 'HelloSpec.helloProg') ---------------
 
@@ -167,8 +156,8 @@ sdramSwProgWords = case assemble sdramSwProg of
 -- * Harness ------------------------------------------------------
 
 {- | Bigger trace for debugging: returns the per-cycle PC the core
-asserts (in DomCdcSocA) plus the per-cycle UART TX byte (if any)
-in DomCdcSocB. Useful to see whether the core advances or
+asserts (in DomCore) plus the per-cycle UART TX byte (if any)
+in DomBus. Useful to see whether the core advances or
 deadlocks when the bridge integration goes sideways.
 -}
 runHelloThroughBridgeDbg :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
@@ -201,14 +190,14 @@ runProgThroughBridge_inner progWords n =
       dataVec = CP.repeat 0
       simMem :: Vec 16384 (BitVector 16)
       simMem = CP.repeat 0
-      clkA = tbClockGen @DomCdcSocA (CP.pure True)
-      rstA = resetGen @DomCdcSocA
-      enA = enableGen @DomCdcSocA
-      clkB = tbClockGen @DomCdcSocB (CP.pure True)
-      rstB = resetGen @DomCdcSocB
-      enB = enableGen @DomCdcSocB
+      clkA = tbClockGen @DomCore (CP.pure True)
+      rstA = resetGen @DomCore
+      enA = enableGen @DomCore
+      clkB = tbClockGen @DomBus (CP.pure True)
+      rstB = resetGen @DomBus
+      enB = enableGen @DomBus
 
-      -- Core in DomCdcSocA. Mirrors the Top.hs Phase D-3 wiring.
+      -- Core in DomCore. Mirrors the Top.hs Phase D-3 wiring.
       coreOutsA =
         CP.exposeClockResetEnable
           (coreWith
@@ -224,7 +213,7 @@ runProgThroughBridge_inner progWords n =
           rstA
           enA
       (pcFetchA, _, dAddrA, dWdataA, dBeA, dRenA, _, _) = coreOutsA
-      coreReqInCoreA :: Signal DomCdcSocA CoreBusReq
+      coreReqInCoreA :: Signal DomCore CoreBusReq
       coreReqInCoreA =
         CoreBusReq
           <$> pcFetchA
@@ -237,8 +226,8 @@ runProgThroughBridge_inner progWords n =
       (coreReplyInCoreA, coreReqInBusB) =
         coreCdcBridge clkA rstA enA clkB rstB enB coreReqInCoreA coreReplyInBusB
 
-      -- Bus + sim peripherals in DomCdcSocB.
-      inB :: Signal DomCdcSocB SocIn
+      -- Bus + sim peripherals in DomBus.
+      inB :: Signal DomBus SocIn
       inB =
         ( \ur sdr ->
             SocIn
@@ -283,9 +272,9 @@ runProgThroughBridge_inner progWords n =
       -- chip-side SDRAM controller / sim model sits in DomSdram,
       -- with the bridge crossing between them.
       sdramBusB = soSdramBus <$> outB
-      clkC = tbClockGen @DomCdcSocC (CP.pure True)
-      rstC = resetGen @DomCdcSocC
-      enC = enableGen @DomCdcSocC
+      clkC = tbClockGen @DomSdram (CP.pure True)
+      rstC = resetGen @DomSdram
+      enC = enableGen @DomSdram
       (sdramReplyB, sdramBusC) =
         sdramCdcBridge clkB rstB enB clkC rstC enC sdramBusB sdramReplyC
       sdramReplyC =
