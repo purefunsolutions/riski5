@@ -242,11 +242,29 @@ rules around maintaining it.
       Added a `_multiClockTick` helper that takes per-domain period
       counts, ready for the genuine multi-rate runs the Phase D-3b
       CoreMark + Linux mid-init debugging will need.
-    - **Next**: use the Phase E infrastructure to debug Phase D-3b
-      (CoreMark zero-output regression on multi-PLL silicon) and
-      the Linux mid-init silicon hang. Both are pre-existing
-      bugs that the multi-domain sim now has the apparatus to
-      reproduce and bisect.
+    - **Phase E-b debug (commit b94a430)**: linux-hwsim grew a
+      DEBUG_PCFETCH tap (sourced from Top.hs's DEBUG_CORE_PC =
+      pcFetchInCoreS in DomCore — NOT the bus-side soDbgPcFetch
+      that goes idle between bridge transactions and would have
+      shown a misleading "21% at PC=0" artifact). Harness builds
+      a per-PC histogram + a per-100k-cycle snapshot timeline.
+    - **MILESTONE: Linux silicon hang now reproduces in sim** (task
+      #50 in progress). 30M-cycle linux-hwsim run shows the kernel
+      reaches PC=0x801ec428..0x801ec474 — exactly the silicon hang
+      address (0x801EC400-0x801EC480 from prior reports). Hang
+      location identified: `irqentry_exit_to_user_mode` infinite
+      loop checking thread_info flags. Hypothesis: the
+      `amoand.w zero, a5, (tp)` at 0x801ec400 doesn't commit its
+      bit-clear, so the `lw s1, 0(tp)` at 0x801ec464 always reads
+      the same flags and the loop spins. Tracked as task #51 — to
+      verify by instrumenting the SDRAM model or by writing a
+      standalone HelloAmoMaskStress firmware that mimics the
+      kernel's pattern (clear + reload + recheck).
+    - **Next**: pursue task #51 (AMO commit verification) to confirm
+      or refute the AMO hypothesis. Phase D-3b (CoreMark
+      zero-output) still pending under task #49 — needs a separate
+      sim variant that doesn't overlay CoreMark.hs with
+      LinuxBootMaster.
 
 - **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
   [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
