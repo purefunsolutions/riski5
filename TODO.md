@@ -135,77 +135,41 @@ rules around maintaining it.
     `CoreBusReply` at the boundary; `app/Top.hs` instantiates
     `coreWith` in DomCore and bridges to DomBus via
     `coreCdcBridge`.
-  - **Phase D-3 — silicon hang debug** (in progress as task #46).
-    Sim integration test `CdcSocIntegrationSpec` now passes
-    (commits `a73ec47` + earlier in the same session) — UART
-    output `hello, world\n` appears once per character through
-    the bridge. Silicon CoreMark STILL hangs even after 5min
-    capture: bridge IS firing (probes BPCM/BPCS show advancing
-    PCs), core IS executing (BPCC advances through different
-    PCs), but UART IP commit counter (CMTC) stays at 0 forever.
-    `urdy=0` (waitrequest=True) in every probe sample. Three
-    new diagnostic scripts under `scripts/`:
-    `core-bridge-probe.tcl`, `uart-counter-probe.tcl`,
-    `all-flags-probe.tcl` — each documents the bit layout of
-    its probe and the interpretation tree.
+  - **Phase D-3 ✓ silicon bridge-corruption RESOLVED**
+    (commit `0c1b195`, 2026-05-04). The 12-clean-then-corrupted
+    aexttest pattern was caused by the prior `a73ec47` `cbrDBe=0
+    in SServe` "fix" that ran SRAM/SDRAM adapters' multi-cycle
+    transactions short. Reverted: bridge holds the FULL request
+    through SDrive+SServe; sim's apparent UART doubling
+    (`jtagUartSim` doesn't model the IP's waitrequest-pulse
+    serialisation) is a sim-only artefact, real silicon
+    naturally serialises commits. Verified silicon: aexttest
+    produces **294,950 clean BLSAX iterations in 10 s** with
+    zero corruption. Bridge IS rock-solid for atomics + UART.
 
-    Additional probe data from this session's silicon flash:
-    Sampled BPCC values across 8 samples:
-    `0xC8 0x34C 0x9C 0x1A88 0x11C8 0x1A90 0x1AA0 0x8A8`.
-    All are valid CoreMark `.text` addresses (verified against
-    `coremark.elf`'s objdump): `0xE0` is `calc_func`, `0x344`
-    is in `cmp_complex` / `core_list_mergesort`, `0x1A88` is
-    deep in CoreMark's matrix/list code. None of the observed
-    PCs fall in `0x241C-0x2448` which is `uart_send_char` —
-    so the core is in CoreMark's compute phase but has NOT
-    YET reached any UART output path. CoreMark only calls
-    `uart_send_char` after all 600 iterations complete (the
-    final printf banner). With the bridge's ~10× per-cycle
-    slowdown, those 600 iterations take an estimated 130s+
-    on top of the native 13.5s benchmark — but 5min capture
-    still showed no progress to the print phase.
-
-    Quartus PLL consolidation note: STA report shows ONLY ONE
-    `bus_clocks` entry: `u_altpll_sdram|pll|clk[2]` (40 MHz).
-    Quartus consolidated u_altpll_bus + u_altpll_core into the
-    same physical PLL output. clkBus and clkCore are the SAME
-    physical clock — there is no actual CDC happening on
-    silicon. The bridge's `dualFlipFlopSynchronizer` logic
-    still runs but introduces only synchronous register delay,
-    not metastability resolution.
-
-    Open hypotheses for next session:
-    1. The bridge's per-pipeline-advance overhead is >10×, not
-       ~10× as estimated — CoreMark's 600 iterations take far
-       longer than 5 min to complete. Try a multi-hour
-       capture, or use a vastly simpler firmware
-       (`riski5-core-aexttest` prints "BLSAX" in a tight loop
-       and would surface CMTC>0 within seconds).
-    2. The core IS executing CoreMark code but takes a trap on
-       some operation (illegal instruction, misalign, etc.)
-       and the trap handler is non-printing.
-    3. SDRAM access through CoreCdcBridge → SdramCdcBridge has
-       a subtle silicon issue where reads return wrong data,
-       causing CoreMark to compute wrong values that loop
-       forever. The bridge's `cbrDRen` keep during SServe might
-       interact badly with the SDRAM adapter's multi-cycle
-       state machine in ways sim doesn't catch.
-
+  - **Phase D-3a — silicon CoreMark slow / silent**
+    (still pending). `riski5-core-coremark` doesn't print
+    anything in 5 min capture even with the resolved bridge.
+    Aexttest works perfectly, so the bridge logic is fine —
+    the issue is CoreMark-specific. Hypotheses:
+    1. CoreMark with bridge per-pipeline-advance overhead is
+       way more than 10×; 600 iterations × 9 ms native →
+       maybe 30+ minutes silicon wall-time before the final
+       print phase. Try a multi-hour capture.
+    2. CoreMark touches SDRAM (despite the .data ending in
+       SRAM); a SDRAM-via-CoreCdcBridge interaction that
+       aexttest doesn't trigger.
+    3. CoreMark hits a trap (unaligned access, illegal
+       instruction) and the handler is non-printing.
     Concrete next steps:
-    - **Try `riski5-core-aexttest` first** — simple `BLSAX` loop,
-      lots of UART writes per second. If CMTC>0 within seconds,
-      the bridge IS working for UART; CoreMark hang is then
-      isolated to CoreMark's compute phase (likely SDRAM-related).
-      If CMTC=0 too, the bridge is fundamentally broken for UART.
-    - Add a probe for slave's `sLatReq.cbrDAddr + cbrDBe` so we
-      can directly observe whether SW writes ever reach the
-      bridge slave with the right address + byte enable.
-    - Re-read the Quartus fit report for the multi-PLL Phase
-      D-2 build — verify the syncBitVector actually synthesised
-      as expected and check the false_path constraints.
-    - Try `riski5-core-amostress` — exercises SDRAM intensively;
-      if it hangs differently from CoreMark, we have a clue
-      about whether SDRAM-via-bridge works at all.
+    - Bisect by trying intermediate-complexity firmwares:
+      `riski5-core-amostress` (SDRAM atomics), then
+      `riski5-core-sdramexec` (SDRAM-resident code), then
+      CoreMark.
+    - Add probe for slave's `sLatReq.cbrDAddr + cbrDBe` to
+      observe what addresses CoreMark hits.
+    - Try a multi-hour CoreMark capture (just leave
+      nios2-terminal running for an hour).
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
