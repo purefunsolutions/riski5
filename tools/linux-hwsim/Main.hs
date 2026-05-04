@@ -98,19 +98,20 @@ data Riski5SimTopPorts (f :: Type -> Type) = Riski5SimTopPorts
 -- width descending so there's no internal padding.
 
 data Riski5SimTopState = Riski5SimTopState
-  { -- 32-bit ports (offsets 0..19)
+  { -- 32-bit ports (offsets 0..23)
     sMemInitAddr :: !Word32 -- 22 used, upper 10 ignored
   , sSw :: !Word32 -- 18 used
   , sLedr :: !Word32 -- 18 used
   , sSramAddr :: !Word32 -- 18 used
   , sDebugPcfetch :: !Word32 -- IF-stage PC, sampled every cycle
-  , -- 16-bit ports (offsets 20..27)
+  , sDebugDmemRdata :: !Word32 -- bus-side dmem rdata (task #52)
+  , -- 16-bit ports (offsets 24..31)
     sMemInitData :: !Word16
   , sSramDqIn :: !Word16
   , sLedg :: !Word16 -- 9 used
   , sSramDqOut :: !Word16
-  , -- 8-bit ports (offsets 28..49). Phase E-b adds clk_core /
-    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 30..33 so the
+  , -- 8-bit ports (offsets 32..53). Phase E-b adds clk_core /
+    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 34..37 so the
     -- harness can drive each Clash domain's clock independently.
     sClk :: !Word8 -- bus-domain clock (clk in Verilog)
   , sRstN :: !Word8 -- bus-domain reset (active low)
@@ -138,7 +139,7 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 52 -- 50 bytes of fields, padded to multiple of alignment 4
+  sizeOf _ = 56 -- 54 bytes of fields, padded to multiple of alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
@@ -146,32 +147,33 @@ instance Storable Riski5SimTopState where
     ledr <- peekByteOff p 8
     sramAddr <- peekByteOff p 12
     debugPcfetch <- peekByteOff p 16
-    memInitData <- peekByteOff p 20
-    sramDqIn <- peekByteOff p 22
-    ledg <- peekByteOff p 24
-    sramDqOut <- peekByteOff p 26
-    clk <- peekByteOff p 28
-    rstN <- peekByteOff p 29
-    clkCore <- peekByteOff p 30
-    rstCoreN <- peekByteOff p 31
-    clkSdram <- peekByteOff p 32
-    rstSdramN <- peekByteOff p 33
-    key <- peekByteOff p 34
-    memInitWrite <- peekByteOff p 35
-    lcdData <- peekByteOff p 36
-    lcdRs <- peekByteOff p 37
-    lcdRw <- peekByteOff p 38
-    lcdEn <- peekByteOff p 39
-    lcdOn <- peekByteOff p 40
-    lcdBlon <- peekByteOff p 41
-    sramDqOe <- peekByteOff p 42
-    sramCeN <- peekByteOff p 43
-    sramOeN <- peekByteOff p 44
-    sramWeN <- peekByteOff p 45
-    sramUbN <- peekByteOff p 46
-    sramLbN <- peekByteOff p 47
-    uartTxValid <- peekByteOff p 48
-    uartTxByte <- peekByteOff p 49
+    debugDmemRdata <- peekByteOff p 20
+    memInitData <- peekByteOff p 24
+    sramDqIn <- peekByteOff p 26
+    ledg <- peekByteOff p 28
+    sramDqOut <- peekByteOff p 30
+    clk <- peekByteOff p 32
+    rstN <- peekByteOff p 33
+    clkCore <- peekByteOff p 34
+    rstCoreN <- peekByteOff p 35
+    clkSdram <- peekByteOff p 36
+    rstSdramN <- peekByteOff p 37
+    key <- peekByteOff p 38
+    memInitWrite <- peekByteOff p 39
+    lcdData <- peekByteOff p 40
+    lcdRs <- peekByteOff p 41
+    lcdRw <- peekByteOff p 42
+    lcdEn <- peekByteOff p 43
+    lcdOn <- peekByteOff p 44
+    lcdBlon <- peekByteOff p 45
+    sramDqOe <- peekByteOff p 46
+    sramCeN <- peekByteOff p 47
+    sramOeN <- peekByteOff p 48
+    sramWeN <- peekByteOff p 49
+    sramUbN <- peekByteOff p 50
+    sramLbN <- peekByteOff p 51
+    uartTxValid <- peekByteOff p 52
+    uartTxByte <- peekByteOff p 53
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
@@ -179,6 +181,7 @@ instance Storable Riski5SimTopState where
         , sLedr = ledr
         , sSramAddr = sramAddr
         , sDebugPcfetch = debugPcfetch
+        , sDebugDmemRdata = debugDmemRdata
         , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
@@ -212,32 +215,33 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 8 sLedr
     pokeByteOff p 12 sSramAddr
     pokeByteOff p 16 sDebugPcfetch
-    pokeByteOff p 20 sMemInitData
-    pokeByteOff p 22 sSramDqIn
-    pokeByteOff p 24 sLedg
-    pokeByteOff p 26 sSramDqOut
-    pokeByteOff p 28 sClk
-    pokeByteOff p 29 sRstN
-    pokeByteOff p 30 sClkCore
-    pokeByteOff p 31 sRstCoreN
-    pokeByteOff p 32 sClkSdram
-    pokeByteOff p 33 sRstSdramN
-    pokeByteOff p 34 sKey
-    pokeByteOff p 35 sMemInitWrite
-    pokeByteOff p 36 sLcdData
-    pokeByteOff p 37 sLcdRs
-    pokeByteOff p 38 sLcdRw
-    pokeByteOff p 39 sLcdEn
-    pokeByteOff p 40 sLcdOn
-    pokeByteOff p 41 sLcdBlon
-    pokeByteOff p 42 sSramDqOe
-    pokeByteOff p 43 sSramCeN
-    pokeByteOff p 44 sSramOeN
-    pokeByteOff p 45 sSramWeN
-    pokeByteOff p 46 sSramUbN
-    pokeByteOff p 47 sSramLbN
-    pokeByteOff p 48 sUartTxValid
-    pokeByteOff p 49 sUartTxByte
+    pokeByteOff p 20 sDebugDmemRdata
+    pokeByteOff p 24 sMemInitData
+    pokeByteOff p 26 sSramDqIn
+    pokeByteOff p 28 sLedg
+    pokeByteOff p 30 sSramDqOut
+    pokeByteOff p 32 sClk
+    pokeByteOff p 33 sRstN
+    pokeByteOff p 34 sClkCore
+    pokeByteOff p 35 sRstCoreN
+    pokeByteOff p 36 sClkSdram
+    pokeByteOff p 37 sRstSdramN
+    pokeByteOff p 38 sKey
+    pokeByteOff p 39 sMemInitWrite
+    pokeByteOff p 40 sLcdData
+    pokeByteOff p 41 sLcdRs
+    pokeByteOff p 42 sLcdRw
+    pokeByteOff p 43 sLcdEn
+    pokeByteOff p 44 sLcdOn
+    pokeByteOff p 45 sLcdBlon
+    pokeByteOff p 46 sSramDqOe
+    pokeByteOff p 47 sSramCeN
+    pokeByteOff p 48 sSramOeN
+    pokeByteOff p 49 sSramWeN
+    pokeByteOff p 50 sSramUbN
+    pokeByteOff p 51 sSramLbN
+    pokeByteOff p 52 sUartTxValid
+    pokeByteOff p 53 sUartTxByte
 
 initialState :: Riski5SimTopState
 initialState =
@@ -247,6 +251,7 @@ initialState =
     , sLedr = 0
     , sSramAddr = 0
     , sDebugPcfetch = 0
+    , sDebugDmemRdata = 0
     , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0
@@ -429,8 +434,11 @@ runUartStream ::
   IORef [Word8] ->
   IORef (Map Word32 Int) ->
   IORef [(Int, Word32)] ->
+  IORef (Map Word32 Int) ->
+  -- ^ task #52: histogram of dmem rdata values seen at PC=0x801ec464
+  -- (the kernel's stuck `lw s1, 0(tp)`).
   SimM Riski5SimTopPorts Riski5SimTopState Int
-runUartStream maxCycles bufRef pcRef snapsRef = go maxCycles 0
+runUartStream maxCycles bufRef pcRef snapsRef rdataRef = go maxCycles 0
  where
   go 0 cycs = pure cycs
   go k cycs = do
@@ -443,6 +451,12 @@ runUartStream maxCycles bufRef pcRef snapsRef = go maxCycles 0
     -- and dense enough to localise long stalls.
     when (cycs `mod` 100_000 == 0) $
       liftIO $ modifyIORef' snapsRef ((cycs, pc) :)
+    -- Task #52: sample dmem rdata when the core is at the LW
+    -- in irqentry_exit_to_user_mode (PC=0x801ec464). Histogram
+    -- the values seen — should reveal the stuck thread_info.flags.
+    when (pc == 0x801ec464) $
+      liftIO $
+        modifyIORef' rdataRef (Map.insertWith (+) (sDebugDmemRdata s) 1)
     if sUartTxValid s /= 0
       then do
         let b = sUartTxByte s
@@ -485,6 +499,7 @@ runHwsim kPath dPath maxSteps = do
   bufRef <- newIORef []
   pcRef <- newIORef Map.empty
   snapsRef <- newIORef []
+  rdataRef <- newIORef Map.empty
   cycles <- runSim riski5Backend $ do
     -- Hold ALL THREE domain resets asserted while we pre-load SDRAM
     -- (all rst_*_n=0). Each reset gates the corresponding domain's
@@ -510,10 +525,11 @@ runHwsim kPath dPath maxSteps = do
     clockCycle
     -- Release all three resets in lockstep.
     modifyState $ \s -> s {sRstN = 1, sRstCoreN = 1, sRstSdramN = 1}
-    runUartStream maxSteps bufRef pcRef snapsRef
+    runUartStream maxSteps bufRef pcRef snapsRef rdataRef
   collected <- readIORef bufRef
   pcMap <- readIORef pcRef
   snaps <- readIORef snapsRef
+  rdataMap <- readIORef rdataRef
   let bytes = reverse collected
   hPutStrLn stderr ""
   hPutStrLn stderr "--- linux-hwsim done ---"
@@ -569,6 +585,20 @@ runHwsim kPath dPath maxSteps = do
           "  cycle " ++ show c ++ ": PC = 0x" ++ pad8 (showHex pc "")
     )
     (reverse snaps)
+  hPutStrLn stderr ""
+  hPutStrLn stderr "--- DMEM rdata histogram at PC=0x801ec464 (task #52) ---"
+  if Map.null rdataMap
+    then hPutStrLn stderr "  (kernel never reached PC=0x801ec464)"
+    else
+      mapM_
+        ( \(rdata, n) ->
+            hPutStrLn stderr $
+              "  rdata = 0x" ++ pad8 (showHex rdata "")
+                ++ "  ("
+                ++ show n
+                ++ " samples)"
+        )
+        (sortBy (comparing (Down . snd)) (Map.toList rdataMap))
   where
     pad8 :: String -> String
     pad8 s = replicate (8 - length s) '0' ++ s

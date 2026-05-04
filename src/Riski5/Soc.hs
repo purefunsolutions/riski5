@@ -273,6 +273,16 @@ data SocOut = SocOut
   hangs (the @sramexec@ iter-2 issue specifically) without
   needing SignalTap II's full waveform capture flow.
   -}
+  , soDbgDmemRdata :: BitVector 32
+  {- ^ The bus-side @dmemRdataS@ — what the SoC body returns
+  to the core's data port for the most recent LW. Exposed for
+  the Linux mid-init hang debug (task #52): the kernel's
+  @irqentry_exit_to_user_mode@ loop spins on a @lw s1, 0(tp)@
+  whose result has stuck flag bits, but we don't know WHICH bits
+  without reading the LW's actual return value. Sampling this
+  signal whenever DEBUG_PCFETCH == 0x801ec464 reveals the
+  thread_info.flags value the kernel is seeing.
+  -}
   , soDbgFlags :: BitVector 8
   {- ^ Packed diagnostic flags for the second @altsource_probe@.
   Bit layout:
@@ -1490,6 +1500,7 @@ socWithExternalCore enableSramFetch enableSdramFetch progInit _dataInit inS core
       <*> uartIpBusS
       <*> sdramBusS
       <*> pcFetchS
+      <*> dmemRdataS
       <*> dbgFlagsS
       <*> frozenPcFetchAllS
       <*> dbgFrozenFlagsAllS

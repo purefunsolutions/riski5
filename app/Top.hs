@@ -409,6 +409,12 @@ topEntity ::
           -- @BPCC@ in the wrapper. If @BPCC@ never advances past 0,
           -- the core itself is stuck before the bridge ever fires.
           "DEBUG_CORE_PC" ::: Signal DomCore (BitVector 32)
+        , -- Task #52 diagnostic: bus-side @dmemRdataS@ — what the
+          -- SoC body returns to the core's data port for the most
+          -- recent LW. Sampling this at PC=0x801ec464 reveals the
+          -- thread_info.flags value the kernel is reading in the
+          -- exit_to_user_mode infinite loop.
+          "DEBUG_DMEM_RDATA" ::: Signal DomBus (BitVector 32)
         )
 topEntity
   clkBus
@@ -604,6 +610,7 @@ topEntity
           sdramRasNS = sdrRasN <$> sdramPinsS
           sdramWeNS = sdrWeN <$> sdramPinsS
           dbgPcFetchS = soDbgPcFetch <$> outS
+          dbgDmemRdataS = soDbgDmemRdata <$> outS
           dbgFlagsS' = soDbgFlags <$> outS
           dbgFrozenPcS = soDbgFrozenPcAll <$> outS
           dbgFrozenFlagsS = soDbgFrozenFlagsAll <$> outS
@@ -651,6 +658,7 @@ topEntity
             , dbgBridgeMasterPcS
             , dbgBridgeSlavePcS
             , pcFetchInCoreS
+            , dbgDmemRdataS
             )
           , coreReplyInBusInner
           )

@@ -128,7 +128,16 @@ module riski5_sim_top (
     // (= 0 between bridge transactions in the bridge slave's
     // SIdle/SDone phases). The core-side view is the one a human
     // debugging "where is the kernel hung" wants.
-    output wire [31:0] DEBUG_PCFETCH
+    output wire [31:0] DEBUG_PCFETCH,
+
+    // --- DMEM rdata observation tap (task #52 debug) ---
+    //
+    // Live bus-side @dmemRdataS@ — the value the SoC body returns
+    // to the core's data port for the most recent LW. The harness
+    // samples this whenever DEBUG_PCFETCH == 0x801ec464 (the LW
+    // in the kernel's irqentry_exit_to_user_mode loop) to identify
+    // which thread_info.flags bit is stuck.
+    output wire [31:0] DEBUG_DMEM_RDATA
 );
 
   // Avalon-MM-like bus tap from the Clash core to the Altera IP.
@@ -197,6 +206,9 @@ module riski5_sim_top (
   // wrapper port-list comment). dbg_core_pc_w is wired below
   // from the riski5 instance's DEBUG_CORE_PC output.
   assign DEBUG_PCFETCH = dbg_core_pc_w;
+  // DMEM rdata tap (task #52). Bus-side view; sourced from the
+  // riski5 instance's new DEBUG_DMEM_RDATA output.
+  assign DEBUG_DMEM_RDATA = dbg_dmem_rdata_w;
 
   // ---- SDRAM chip-side wires (riski5 ⇄ sim_sdram_chip) ---------
   wire [11:0] sdram_addr_w;
@@ -213,10 +225,12 @@ module riski5_sim_top (
 
   // ---- Debug taps -------
   // dbg_pcfetch_w is exposed at sim top as DEBUG_PCFETCH (Phase E-b).
+  // dbg_dmem_rdata_w is exposed at sim top as DEBUG_DMEM_RDATA (#52).
   // The remaining debug ports below stay dangling — sim doesn't
   // need them yet, and exposing every one inflates the C ABI for
   // no current consumer.
   wire [31:0]  dbg_pcfetch_w;
+  wire [31:0]  dbg_dmem_rdata_w;
   wire [7:0]   dbg_flags_w;
   wire [127:0] dbg_frozen_pc_w;
   wire [31:0]  dbg_frozen_flags_w;
@@ -307,6 +321,7 @@ module riski5_sim_top (
       .SDRAM_RAS_N            (sdram_ras_n_w),
       .SDRAM_WE_N             (sdram_we_n_w),
       .DEBUG_PCFETCH          (dbg_pcfetch_w),
+      .DEBUG_DMEM_RDATA       (dbg_dmem_rdata_w),
       .DEBUG_FLAGS            (dbg_flags_w),
       .DEBUG_FROZEN_PC        (dbg_frozen_pc_w),
       .DEBUG_FROZEN_FLAGS     (dbg_frozen_flags_w),
