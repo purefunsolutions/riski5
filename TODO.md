@@ -125,14 +125,52 @@ rules around maintaining it.
        hang is the pre-existing tasks #35 / #36 issue,
        unrelated to multi-PLL. Log:
        [`docs/perf/linux-multipll-cdcfix-2026-05-03.log`](./docs/perf/linux-multipll-cdcfix-2026-05-03.log).
-  - **Phase D — Core domain split** (next, queued as task #43).
-    Split `soc` into `socCore` (DomCore) + `socBus` (DomBus)
-    with `CoreBusReq`/`CoreBusReply` records carrying combined
-    ifetch + data port traffic. Top.hs adds CLOCK_CORE +
-    RESET_CORE_N input ports. package.nix grows a third PLL
-    instance `u_altpll_core` with `pllCoreMultBy` / `pllCoreDivBy`
-    parameters. Riski5.sdc gains the third clock declaration
-    and the `coreCdcBridge` register-pair false-paths.
+  - **Phase D-1 ✓ u_altpll_core PLL infrastructure**
+    (**LANDED 2026-05-03**, commit `c71b8d9`). Third PLL
+    instance, currently produces clkCore at the same rate as
+    clkBus.
+  - **Phase D-2 ✓ Soc.hs core/bus split via socWithExternalCore**
+    (**LANDED 2026-05-03**, commit `5ccde32`). New
+    `socWithExternalCore` function exposes `CoreBusReq` /
+    `CoreBusReply` at the boundary; `app/Top.hs` instantiates
+    `coreWith` in DomCore and bridges to DomBus via
+    `coreCdcBridge`.
+  - **Phase D-3 — silicon hang debug** (in progress as task #46).
+    Sim integration test `CdcSocIntegrationSpec` now passes
+    (commits `a73ec47` + earlier in the same session) — UART
+    output `hello, world\n` appears once per character through
+    the bridge. Silicon CoreMark STILL hangs even after 5min
+    capture: bridge IS firing (probes BPCM/BPCS show advancing
+    PCs), core IS executing (BPCC advances through different
+    PCs), but UART IP commit counter (CMTC) stays at 0 forever.
+    `urdy=0` (waitrequest=True) in every probe sample. Three
+    new diagnostic scripts under `scripts/`:
+    `core-bridge-probe.tcl`, `uart-counter-probe.tcl`,
+    `all-flags-probe.tcl` — each documents the bit layout of
+    its probe and the interpretation tree. Open hypotheses for
+    next session:
+    1. Bit-skew metastability in the syncBitVector for the
+       101-bit packed CoreBusReq.
+    2. Quartus PLL consolidation merging clkCore + clkBus into
+       the same physical clock changes syncBit's silicon
+       behavior subtly.
+    3. The bridge slave's 1-cycle SDrive window is too brief
+       for the Altera JTAG-UART IP to capture and commit (CMTC
+       counts `uart_sel & uart_wr & waitrequest` — these never
+       coincide).
+    4. dBe (M-stage) vs pcFetch (IF-stage) misalignment in the
+       bundle the bridge captures, losing SW writes.
+    Concrete next steps:
+    - Add a probe for slave's sLatReq.cbrDAddr + cbrDBe so we
+      can directly observe whether SW writes ever reach the
+      bridge slave with the right address + byte enable.
+    - Try a simpler firmware variant
+      (`riski5-core-aexttest` prints "BLSAX" — much shorter
+      hot loop than CoreMark) to see if any UART output ever
+      lands.
+    - Re-read the Quartus fit report for the multi-PLL Phase
+      D-2 build — verify the syncBitVector actually synthesised
+      as expected and check the false_path constraints.
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
