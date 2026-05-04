@@ -147,35 +147,44 @@ rules around maintaining it.
     produces **294,950 clean BLSAX iterations in 10 s** with
     zero corruption. Bridge IS rock-solid for atomics + UART.
 
-  - **Phase D-3a — silicon SDRAM-via-chained-bridges hang**
-    (remaining). Bisect via `riski5-core-amostress` (which
-    writes SDRAM-resident inner loop then JALRs to SDRAM)
-    prints just "B" then stops. The boot byte makes it through
-    bus → JTAG-UART (via CoreCdcBridge), but the next phase
-    (SDRAM SW or SDRAM IF fetch) hangs. CoreMark uses SDRAM
-    extensively; same root cause. The chain is:
-        core → CoreCdcBridge → bus → SdramCdcBridge → SDRAM
-    Two chained bridges with their own toggle-handshake FSMs
-    likely race or deadlock when one bridge's slave is the
-    other bridge's master.
+  - **Phase D-3a — silicon SDRAM-via-chained-bridges hang —
+    likely SdramCdcBridge slave reqEdge-loss race** (remaining).
+    Bisect via `riski5-core-amostress`: silicon hangs at the
+    3rd back-to-back SDRAM SW (tC, bank 2) inside the SDRAM-
+    resident inner loop. PC = 0x80000044, all stalls asserted,
+    CMTC=1 (only the 'B' boot byte made it). The 1st SW (tA,
+    bank 0) and 2nd (tB, bank 1) worked — so basic SDRAM SW
+    via bridge chain works; just back-to-back fails. Probable
+    cause: 'Riski5.SdramCdcBridge.slaveStep' loses incoming
+    `reqEdge` pulses when the slave is mid-transaction (SReq,
+    SAwaitValid, SDone). Each 32-bit SW = 2 sub-transactions
+    (lo+hi half), each requiring its own bridge round-trip,
+    issued back-to-back. 4 banks × 2 = 8 sub-transactions per
+    inner-loop iteration. Master accepts back-to-back via
+    `MDoneW | sibCs -> startBusy` (toggle flip), but slave's
+    SDone unconditionally goes to SIdle without checking for
+    pending reqEdge. If the second master toggle propagates
+    while slave is SDone, the edge is consumed by SDone→SIdle
+    transition but no new transaction is started.
+
+    **Sim NOT reproducible** — the pure-Clash 'sdramIpSim' has
+    1-cycle waitrequest, so the slave finishes processing
+    before back-to-back can race. Real 'SdrController' has
+    10-15 cycle latency per access (CL=2 + ACT/CAS + refresh
+    interruptions), enough for back-to-back to overlap.
     Concrete next steps:
-    - Add probe for slave's `sLatReq.cbrDAddr + cbrDBe` to
-      observe whether SDRAM SWs ever reach the bridge slave.
-    - Examine SdramCdcBridge slave's interaction with the bus
-      adapter `Riski5.Sdram.sdram` — maybe the adapter's
-      multi-cycle FSM isn't compatible with the bus's
-      bridge-induced stall pattern.
-    - Try `riski5-core-sdramexec` and `riski5-core-sdramstress`
-      to bisect SDRAM read vs write vs IF-fetch issues
-      separately.
-    - Worst case fallback: tie DomCore and DomBus to one
-      shared physical clock at the wrapper level (Quartus
-      already consolidates them anyway); then the
-      CoreCdcBridge becomes effectively pass-through with
-      sync-register delay only, removing the "two FSMs in
-      different domains chain" risk. Phase D-2 still works
-      semantically since the source-level domain split is
-      preserved.
+    - **Implement reqEdge-pending latch in SdramCdcBridge
+      slave.** Add a `sPendingEdge :: Bool` field that latches
+      True on `reqEdge` arrivals during non-SIdle phases.
+      Modify SDone → SIdle transition to start the next
+      transaction directly if `sPendingEdge = True`. This
+      preserves back-to-back acceptance semantics that the
+      master-side already implements.
+    - Add a sim test that uses an SDRAM model with realistic
+      multi-cycle waitrequest to reproduce the back-to-back
+      race in pure-Clash sim — the existing 'sdramIpSim' is
+      too fast.
+    - Verify silicon fix with `riski5-core-amostress`.
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
