@@ -497,12 +497,51 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
       liftIO $ hPutStrLn stderr
         ("[CALLED-SWUS] cycle=" ++ show cycs
           ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
-    -- Log PCs in the broader window leading up to the first
-    -- signal_wake_up_state entry. Cycle ~21M = 700K cycles before
-    -- the entry, which should cover deeper call stack history.
-    when (cycs >= 21100000 && cycs <= 21869150 && pc /= prevPc) $
+    -- Detect entry to __send_signal_locked (the trigger one level
+    -- up the call chain).
+    when (pc == 0x8001c400 && prevPc /= 0x8001c400) $
       liftIO $ hPutStrLn stderr
-        ("[TRACE] cycle=" ++ show cycs ++ " pc=0x" ++ showHex pc "")
+        ("[CALLED-SSL] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Detect entry to send_signal_locked (one more level up).
+    -- Also instrument force_sig_info_to_task (0x8001dfc4),
+    -- force_sig_fault (0x8001e870), force_sigsegv (0x8001e6a4).
+    when (pc == 0x8001dfc4 && prevPc /= 0x8001dfc4) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-FSITT] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    when (pc == 0x8001e870 && prevPc /= 0x8001e870) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-FSF] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    when (pc == 0x8001e6a4 && prevPc /= 0x8001e6a4) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-FSSEGV] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Detect entry to handle_exception (the kernel's trap entry).
+    when (pc == 0x801f22b4 && prevPc /= 0x801f22b4) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-HE] cycle=" ++ show cycs
+          ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Detect entries to do_trap_* functions.
+    when (pc == 0x80009d18 && prevPc /= 0x80009d18) $
+      liftIO $ hPutStrLn stderr
+        ("[TRAP-ERROR] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80009d7c && prevPc /= 0x80009d7c) $
+      liftIO $ hPutStrLn stderr
+        ("[TRAP-MISALIGNED] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801ebcc8 && prevPc /= 0x801ebcc8) $
+      liftIO $ hPutStrLn stderr
+        ("[TRAP-STORE-FAULT] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801ebc94 && prevPc /= 0x801ebc94) $
+      liftIO $ hPutStrLn stderr
+        ("[TRAP-STORE-MISALIGN] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801eb878 && prevPc /= 0x801eb878) $
+      liftIO $ hPutStrLn stderr
+        ("[TRAP-UNKNOWN] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80009c28 && prevPc /= 0x80009c28) $
+      liftIO $ hPutStrLn stderr
+        ("[DO-TRAP] cycle=" ++ show cycs ++ " from prev=0x" ++ showHex prevPc "")
     -- Sanity: log first visits to a BROADER kernel range we expect
     -- the kernel to visit during early init (anywhere in 0x8001b
     -- range = ~256 KB of kernel code). If THIS never fires either,

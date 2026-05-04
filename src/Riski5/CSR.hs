@@ -94,7 +94,19 @@ data Csrs = Csrs
 initCsrs :: Csrs
 initCsrs =
   Csrs
-    { cMstatus = 0
+    { -- mstatus.MPP (bits 12:11) defaults to M-mode = 0b11 because
+      -- this core only implements M-mode. Linux's trap handlers READ
+      -- this on every trap entry to decide whether the offending
+      -- instruction was in user or kernel mode (handle_break routes
+      -- user-mode EBREAKs to SIGTRAP and kernel-mode EBREAKs to
+      -- the WARN/BUG path). Initialising MPP to 0 (= U-mode) makes
+      -- the kernel treat M-mode WARN_ON()s as user-mode signals,
+      -- which queues SIGTRAP for init_task and hangs the boot CPU
+      -- in irqentry_exit_to_user_mode forever (task #52). Per the
+      -- RISC-V priv spec, for M-only cores MPP is a WARL field that
+      -- can ONLY hold the M-mode value, so 0b11 is the architecturally
+      -- correct default — leaving it 0 was a spec violation.
+      cMstatus = 0b11 `shiftL` 11
     , cMtvec = 0
     , cMepc = 0
     , cMcause = 0
@@ -175,9 +187,27 @@ applyTrap cause epc tval cs =
       oldMie = oldStatus .&. bit 3 -- MIE bit (bit 3)
       -- MPIE := old MIE (shifted to bit 7); clear MIE.
       mpieSet = if oldMie /= 0 then bit 7 else 0
+      -- MPP := previous privilege mode. Our core only implements
+      -- M-mode (no U/S/H), so the prev mode is always M-mode = 0b11
+      -- (bits 12:11). Linux's trap handlers READ mstatus.MPP to
+      -- decide whether the trap came from user or kernel — e.g.
+      -- handle_break (arch/riscv/kernel/traps.c) routes EBREAKs
+      -- from user mode to force_sig_fault(SIGTRAP) and EBREAKs from
+      -- kernel mode to report_bug() (the WARN_ON / BUG_ON path).
+      -- If MPP is left at 0 (U-mode), every WARN_ON in the kernel
+      -- ends up queuing a SIGTRAP for the boot CPU's idle task,
+      -- and the idle task spins in irqentry_exit_to_user_mode
+      -- forever because no signal handler clears TIF_SIGPENDING.
+      -- Caught by Linux mid-init hang on Verilator hwsim AND
+      -- silicon (task #52): early_init_dt_scan_root WARN()s about
+      -- missing #address-cells (a separate bug downstream from
+      -- this), the WARN's ebreak entered handle_break, kernel saw
+      -- MPP=0 and shipped a SIGTRAP, idle task hung on it.
+      mppMmode = 0b11 `shiftL` 11 -- bits[12:11] = 0b11
       newStatus =
-        (oldStatus .&. complement (bit 3 .|. bit 7))
+        (oldStatus .&. complement (bit 3 .|. bit 7 .|. (0b11 `shiftL` 11)))
           .|. mpieSet
+          .|. mppMmode
    in cs
         { cMcause = cause
         , cMepc = epc
