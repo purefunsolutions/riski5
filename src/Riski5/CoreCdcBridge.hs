@@ -96,6 +96,20 @@ data MasterPhase = MIdle | MBusy | MDone
 data MasterState = MasterState
   { mPhase :: MasterPhase
   , mLastSentPc :: BitVector 32
+  , -- | The data-port byte-enable last latched at MIdle→MBusy. Used
+    -- by 'reqIsLive' so the bridge fires a NEW transaction whenever
+    -- the core asserts a fresh data-port operation at the same PC —
+    -- the AMO FU's read→write phase transition does exactly this
+    -- (cbrDBe goes 0→0xF mid-AMO without PC advancing). Without this
+    -- track, the AMO's write phase would silently never reach the
+    -- bus and the swap would not commit (caught on silicon by
+    -- amostress hitting bank-A failAL with rd==tExpected, indicating
+    -- the AMO write never updated mem[tA]).
+    mLastDBe :: BitVector 4
+  , -- | The data-port read-enable last latched. Same role as
+    -- 'mLastDBe' for completeness — covers a hypothetical AMO write→
+    -- read sequence at the same PC.
+    mLastDRen :: Bool
   , mReqToggle :: Bool
   , mReply :: CoreBusReply
   }
@@ -110,7 +124,7 @@ masterInit :: MasterState
 -- treated as a fresh request and crosses the bridge. Without this,
 -- both PC and mLastSentPc start at 0 → reqIsLive returns False →
 -- bridge never fires → core deadlocks waiting for fetch reply.
-masterInit = MasterState MIdle 0xFFFF_FFFF False defaultReply
+masterInit = MasterState MIdle 0xFFFF_FFFF 0 False False defaultReply
 
 -- * Slave FSM (DomBus side)
 
@@ -134,6 +148,32 @@ data SlaveState = SlaveState
   , sLatReq :: CoreBusReq
   , sDoneToggle :: Bool
   , sCapReply :: CoreBusReply
+  , -- | Latched once 'cbrDataStall' has gone False at least once during
+    -- this transaction. After this, the bridge masks the data-port
+    -- fields ('cbrDBe', 'cbrDRen', 'cbrDWdata') driven onto the bus so
+    -- 'Riski5.Sdram.sdram' (which has data-priority arbitration and
+    -- keeps re-issuing the held SW indefinitely while IF would starve)
+    -- can finally serve the IF stage. Without this, an SDRAM-resident
+    -- pipeline running a data SW to SDRAM deadlocks the bridge: data
+    -- completes and re-fires forever, IF never gets served, 'cbrStall'
+    -- stays True forever. Caught on silicon by amostress hanging at
+    -- PC=0x80000044 (3rd cross-row SDRAM SW with concurrent SDRAM IF).
+    sDataDone :: Bool
+  , -- | Latched once 'cbrStall' has gone False at least once during
+    -- this transaction. Same per-port-done-tracking idea as
+    -- 'sDataDone'. The 'sImemRdata' below captures the instruction
+    -- word at the cycle imemReady fires so it survives any number of
+    -- subsequent re-fetches Sdram might do before the data side also
+    -- completes.
+    sImemDone :: Bool
+  , -- | Captured instruction word at the cycle 'cbrStall' first
+    -- dropped to False. Held through the rest of SServe so the final
+    -- 'sCapReply' carries the right imem data even if Sdram re-fetches
+    -- in the interim.
+    sImemRdata :: BitVector 32
+  , -- | Captured load rdata at the cycle 'cbrDataStall' first dropped
+    -- to False. Same role as 'sImemRdata' but for the data port.
+    sDmemRdata :: BitVector 32
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -145,6 +185,10 @@ slaveInit =
     , sLatReq = CoreBusReq 0 0 0 0 False
     , sDoneToggle = False
     , sCapReply = defaultReply
+    , sDataDone = False
+    , sImemDone = False
+    , sImemRdata = 0
+    , sDmemRdata = 0
     }
 
 -- * Bridge
@@ -334,7 +378,8 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
           | doneE -> capR{cbrStall = True, cbrDataStall = True}
           | otherwise -> defaultReply
         MIdle
-          | reqIsLive req (mLastSentPc st) -> defaultReply
+          | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st) ->
+              defaultReply
           | otherwise -> mReply st
     )
       <$> masterStateC
@@ -344,17 +389,24 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
 
   -- Drive the latched request to the bus differently per phase:
   --
-  --   * 'SDrive' / 'SServe' (waiting for bus stall to release):
-  --     keep the FULL request asserted (cbrPcFetch + cbrDAddr +
-  --     cbrDWdata + cbrDBe + cbrDRen). The bus's slave adapters
-  --     (BRAM, SRAM, SDRAM, JTAG-UART) all expect the master to
-  --     hold the request stable until they release stall. Cutting
-  --     short any field mid-transaction breaks the slave's
-  --     multi-cycle handling. The UART doubling that occurs in sim
-  --     because of the held @dBe@ is acceptable: it's masked by
-  --     the bus's @uartAcceptedS@ latch in single-domain mode (the
-  --     hot path past 'CdcSocIntegrationSpec.case_hello_through_bridge'
-  --     captures it as a sim-only artefact).
+  --   * 'SDrive': keep the FULL request asserted (cbrPcFetch +
+  --     cbrDAddr + cbrDWdata + cbrDBe + cbrDRen). One cycle of
+  --     full-request drive is enough for the bus's slave adapters
+  --     (BRAM, SRAM, SDRAM, JTAG-UART) to register their initial
+  --     captures. See 'SlavePhase' note on why SDrive exists.
+  --   * 'SServe': mask the data-port fields once 'sDataDone' has
+  --     latched (= cbrDataStall has dropped at least once = the
+  --     data-port adapter has accepted/completed the SW or LW). This
+  --     prevents 'Riski5.Sdram.sdram', whose internal arbitration
+  --     gives data priority and re-issues a held data SW indefinitely,
+  --     from starving the IF stage when both ports target SDRAM (as
+  --     in the amostress inner loop with SDRAM-resident code + cross-
+  --     row data SWs). Without the mask the bridge deadlocks: data
+  --     completes + re-fires forever, IF never gets served, cbrStall
+  --     stays True, slave waits forever. Same mask also eliminates
+  --     the UART-doubling sim artefact previously papered over with
+  --     'halveRuns' in CdcSocIntegrationSpec — once cbrDBe goes 0,
+  --     the JTAG-UART IP only sees one accept per SW.
   --   * 'SIdle' / 'SDone': drive everything zero so no data-port
   --     activity leaks through between transactions.
   --
@@ -365,8 +417,12 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
   reqOutB =
     ( \st -> case sPhase st of
         SDrive -> sLatReq st
-        SServe -> sLatReq st
-        _      -> emptyReq
+        SServe ->
+          let req = sLatReq st
+           in if sDataDone st
+                then req{cbrDBe = 0, cbrDRen = False, cbrDWdata = 0}
+                else req
+        _ -> emptyReq
     )
       <$> slaveStateB
 
@@ -384,7 +440,7 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
             tog = if mReqToggle st then (1 :: BitVector 1) else 0
             dToggle = if dt then (1 :: BitVector 1) else 0
             dEdge = if de then (1 :: BitVector 1) else 0
-            live = if reqIsLive req (mLastSentPc st) then (1 :: BitVector 1) else 0
+            live = if reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st) then (1 :: BitVector 1) else 0
             pcLo = resize (cbrPcFetch req) :: BitVector 2
          in pack (pcLo, live, dEdge, dToggle, tog, phaseBits)
     )
@@ -431,10 +487,12 @@ masterStep ::
 masterStep st@MasterState{..} req doneEdge capR =
   case mPhase of
     MIdle
-      | reqIsLive req mLastSentPc ->
+      | reqIsLive req mLastSentPc mLastDBe mLastDRen ->
           st
             { mPhase = MBusy
             , mLastSentPc = cbrPcFetch req
+            , mLastDBe = cbrDBe req
+            , mLastDRen = cbrDRen req
             , mReqToggle = not mReqToggle
             }
       | otherwise -> st
@@ -447,22 +505,33 @@ masterStep st@MasterState{..} req doneEdge capR =
     -- mReply here makes the self-loop case work — see 'replyOutC'.
     MDone -> st{mPhase = MIdle}
 
--- | A request is "new" only when the program counter changes from
--- what the bridge last serviced. The data-port signals (cbrDRen,
--- cbrDBe) are NOT used here because the core legitimately holds
--- them asserted across the multi-cycle bridge round-trip while
--- waiting for the W-stage to commit a load/store; including them
--- would make 'reqIsLive' return True every MIdle re-entry after
--- MDone, re-firing the bridge for the same SW dozens of times and
--- causing downstream side-effecting slaves (notably the JTAG-UART
--- IP) to commit the write multiple times. Each pcFetch advance
--- marks one pipeline-advance event = one bridge transaction, and
--- the bundled CoreBusReq carries whatever data-port assertion the
--- X-stage has live for that PC.
+-- | A request is "new" when ANY of these holds:
 --
--- Caught by 'case_held_sw_no_master_refire' in test/CdcSpec.hs.
-reqIsLive :: CoreBusReq -> BitVector 32 -> Bool
-reqIsLive req lastPc = cbrPcFetch req P./= lastPc
+--   * The program counter changed from what the bridge last
+--     serviced — the normal pipeline-advance trigger.
+--   * The data-port byte-enable transitioned from zero to non-zero
+--     while PC stayed the same — covers the AMO FU's read→write
+--     phase transition (cbrDBe goes 0→0xF mid-AMO without the F
+--     stage advancing) and any future multi-phase data-port FUs.
+--     Without this, the AMO's write phase would silently never
+--     fire a bridge transaction and the swap would not commit.
+--   * The data-port read-enable transitioned from False to True —
+--     symmetric to the dBe edge for hypothetical write→read at the
+--     same PC.
+--
+-- We intentionally use *rising-edge* checks rather than "is non-zero"
+-- so a held SW (cbrDBe=0xF for many cycles while M-stage stalls on
+-- the bridge round-trip) does not refire the bridge dozens of times,
+-- which would cause downstream side-effecting slaves (notably the
+-- JTAG-UART IP) to commit the write multiple times.
+--
+-- Caught by 'case_held_sw_no_master_refire' (no spurious refires) and
+-- the AMO silicon test 'amostress' (write phase actually commits).
+reqIsLive :: CoreBusReq -> BitVector 32 -> BitVector 4 -> Bool -> Bool
+reqIsLive req lastPc lastDBe lastDRen =
+  cbrPcFetch req P./= lastPc
+    P.|| (lastDBe P.== 0 P.&& cbrDBe req P./= 0)
+    P.|| (P.not lastDRen P.&& cbrDRen req)
 
 slaveStep ::
   SlaveState ->
@@ -473,19 +542,57 @@ slaveStep ::
 slaveStep st@SlaveState{..} reqEdge latReq reply =
   case sPhase of
     SIdle
-      | reqEdge -> st{sPhase = SDrive, sLatReq = latReq}
+      | reqEdge ->
+          st
+            { sPhase = SDrive
+            , sLatReq = latReq
+            , sDataDone = False
+            , sImemDone = False
+            , sImemRdata = 0
+            , sDmemRdata = 0
+            }
       | otherwise -> st
     -- One settle cycle after sLatReq updates so the bus's slave
     -- responses (notably blockRam-backed imemDataBramS, which has a
     -- 1-cycle sync-read latency) reflect the new pcFetch / dAddr
     -- before we capture them. See note on 'SlavePhase'.
     SDrive -> st{sPhase = SServe}
-    SServe
-      -- Wait for the bus to indicate the request is fully serviced.
-      -- For fetch+data, both stalls must be deasserted.
-      | not (cbrStall reply) && not (cbrDataStall reply) ->
-          st{sPhase = SDone, sCapReply = reply}
-      | otherwise -> st
+    SServe ->
+      let imemDoneNow = sImemDone || not (cbrStall reply)
+          dataDoneNow = sDataDone || not (cbrDataStall reply)
+          imemRdataNow =
+            if not sImemDone && not (cbrStall reply)
+              then cbrImemData reply
+              else sImemRdata
+          dmemRdataNow =
+            if not sDataDone && not (cbrDataStall reply)
+              then cbrDmemRdata reply
+              else sDmemRdata
+          capReply' =
+            reply
+              { cbrImemData = imemRdataNow
+              , cbrImemReady = True
+              , cbrDmemRdata = dmemRdataNow
+              , cbrStall = False
+              , cbrDataStall = False
+              }
+       in if imemDoneNow && dataDoneNow
+            then
+              st
+                { sPhase = SDone
+                , sCapReply = capReply'
+                , sImemDone = True
+                , sDataDone = True
+                , sImemRdata = imemRdataNow
+                , sDmemRdata = dmemRdataNow
+                }
+            else
+              st
+                { sImemDone = imemDoneNow
+                , sDataDone = dataDoneNow
+                , sImemRdata = imemRdataNow
+                , sDmemRdata = dmemRdataNow
+                }
     SDone -> st{sPhase = SIdle, sDoneToggle = not sDoneToggle}
 
 -- * Packing helpers

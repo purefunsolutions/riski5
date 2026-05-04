@@ -147,44 +147,69 @@ rules around maintaining it.
     produces **294,950 clean BLSAX iterations in 10 s** with
     zero corruption. Bridge IS rock-solid for atomics + UART.
 
-  - **Phase D-3a — silicon SDRAM-via-chained-bridges hang —
-    likely SdramCdcBridge slave reqEdge-loss race** (remaining).
-    Bisect via `riski5-core-amostress`: silicon hangs at the
-    3rd back-to-back SDRAM SW (tC, bank 2) inside the SDRAM-
-    resident inner loop. PC = 0x80000044, all stalls asserted,
-    CMTC=1 (only the 'B' boot byte made it). The 1st SW (tA,
-    bank 0) and 2nd (tB, bank 1) worked — so basic SDRAM SW
-    via bridge chain works; just back-to-back fails. Probable
-    cause: 'Riski5.SdramCdcBridge.slaveStep' loses incoming
-    `reqEdge` pulses when the slave is mid-transaction (SReq,
-    SAwaitValid, SDone). Each 32-bit SW = 2 sub-transactions
-    (lo+hi half), each requiring its own bridge round-trip,
-    issued back-to-back. 4 banks × 2 = 8 sub-transactions per
-    inner-loop iteration. Master accepts back-to-back via
-    `MDoneW | sibCs -> startBusy` (toggle flip), but slave's
-    SDone unconditionally goes to SIdle without checking for
-    pending reqEdge. If the second master toggle propagates
-    while slave is SDone, the edge is consumed by SDone→SIdle
-    transition but no new transaction is started.
-
-    **Sim NOT reproducible** — the pure-Clash 'sdramIpSim' has
-    1-cycle waitrequest, so the slave finishes processing
-    before back-to-back can race. Real 'SdrController' has
-    10-15 cycle latency per access (CL=2 + ACT/CAS + refresh
-    interruptions), enough for back-to-back to overlap.
-    Concrete next steps:
-    - **Implement reqEdge-pending latch in SdramCdcBridge
-      slave.** Add a `sPendingEdge :: Bool` field that latches
-      True on `reqEdge` arrivals during non-SIdle phases.
-      Modify SDone → SIdle transition to start the next
-      transaction directly if `sPendingEdge = True`. This
-      preserves back-to-back acceptance semantics that the
-      master-side already implements.
-    - Add a sim test that uses an SDRAM model with realistic
-      multi-cycle waitrequest to reproduce the back-to-back
-      race in pure-Clash sim — the existing 'sdramIpSim' is
-      too fast.
-    - Verify silicon fix with `riski5-core-amostress`.
+  - **Phase D-3a ✓ silicon SDRAM-via-chained-bridges RESOLVED for
+    amostress** (2026-05-04). Root cause was NOT
+    `SdramCdcBridge` reqEdge loss (that hypothesis disproved by
+    the `sPendingEdge` fix landing zero silicon improvement) — it
+    was `Riski5.CoreCdcBridge` slave holding the FULL latched
+    `sLatReq` through SServe while waiting for both `cbrStall`
+    and `cbrDataStall` to drop simultaneously. When IF and DATA
+    both target SDRAM (amostress inner loop runs from SDRAM with
+    cross-row data SWs), `Riski5.Sdram.sdram`'s data-priority
+    arbiter kept re-issuing the held data SW indefinitely → IF
+    starved → `cbrStall` stayed True forever → bridge deadlocked.
+    Two-part fix in `src/Riski5/CoreCdcBridge.hs`:
+    - **Slave: per-port done tracking + data-port mask.** New
+      `sDataDone` / `sImemDone` / `sImemRdata` / `sDmemRdata`
+      fields latch each port's first-completion edge and the
+      response payload at that cycle. Once `sDataDone` latches,
+      `reqOutB` masks `cbrDBe`/`cbrDRen`/`cbrDWdata` to 0 so
+      `Riski5.Sdram.sdram` sees `dataSel=False` and finally
+      serves the IF stage. Final `sCapReply` carries the merged
+      response (correct imem rdata + dmem rdata regardless of
+      completion order).
+    - **Master: `cbrDBe`/`cbrDRen` rising-edge re-fire.** AMO FU
+      holds the same PC across `AmoRead` (cbrDRen=True, cbrDBe=0)
+      and `AmoWrite` (cbrDRen=False, cbrDBe=0xF) — only the dBe
+      transition signals the new bus operation. New `mLastDBe` /
+      `mLastDRen` master-state fields make `reqIsLive` fire on
+      `(lastDBe==0 && currentDBe/=0)` or `(not lastDRen && currentDRen)`
+      in addition to the PC-change check. Without this, AMO's
+      write phase silently never commits to memory.
+    Both halves needed: without the slave mask, IF starves;
+    without the master edge, AMO writes are silently dropped.
+    Silicon verified: `riski5-core-amostress` produces continuous
+    `..............DB...........DB...` (64 dots per inner-loop
+    iteration + 'D' end-of-loop + 'B' BRAM-bootstrap restart),
+    indefinitely with zero failures. aexttest, hello, sdramexec
+    all still work.
+  - **Phase D-3b — CoreMark variant silicon hang persists**
+    (NEW sub-task). With the Phase D-3a fix landed, all SDRAM-
+    touching variants work, but `riski5-core-coremark` still
+    produces zero UART output within 60 s. CoreMark uses BRAM
+    (text + rodata + .data LMA) and SRAM (.bss + stack + .data
+    VMA) only — never touches SDRAM — so the Phase D-3a fix
+    doesn't help. The hang predates the Phase D-3a fix (was
+    visible from commit `0c1b195` onwards). Same root-cause
+    pattern as Phase D-3a is unlikely (no SDRAM contention),
+    suggesting either (a) the BSS zero loop in `start.S`
+    triggers a different bridge corner case under the bridge's
+    CDC latency × 2500-iteration scale, (b) a Quartus place-
+    and-route issue specific to the CoreMark bitstream's
+    larger .text section, or (c) the C-runtime `_start` /
+    `main()` path interacts with the bridge differently than
+    the handwritten Asm firmwares do (e.g. function-call
+    sequence, prologue/epilogue stack ops). Concrete next
+    steps:
+    - Add a single putchar('X') very early in `start.S` (before
+      BSS zero, before any SRAM touch) to confirm the bridge
+      delivers BRAM-IF-only fetches at the C-runtime path.
+    - If putchar fires: bisect by inserting putchar between BSS
+      zero, .data copy, and `jal main` to localise which step
+      hangs.
+    - If putchar doesn't fire: investigate Quartus place-and-
+      route differences (`reports/Riski5.fit.rpt` LE/M4K vs
+      working variants).
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
