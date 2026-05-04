@@ -300,16 +300,44 @@ rules around maintaining it.
       independent of it.
     - **Tested: not IRQ-driven**. Forcing BOTH `mtipS=False`
       AND `meipS=False` has zero observable effect.
-    - **Next** (handoff to a focused human session — task #52):
-      - Add SDRAM-cell tap in `pkgs/riski5-sim/verilog/sim_sdram_chip.v`
-        that logs every WRITE to chip cell ~0x14E6C0 (= bus addr
-        0x80273380). Identifies which kernel function corrupts *tp.
-      - OR git bisect between 053ca5c (last working Linux boot) and
-        HEAD (~57 commits) to find the regression point.
-      - OR examine kernel source for what writes a 4-byte
-        instruction-encoded value to init_task during early boot
-        (setup_vm relocation? alternative-instruction patching?
-        __user_rt_sigreturn copy for nommu?).
+    - **Diff-led hypothesis** (per user feedback — looking at diffs
+      since 053ca5c, the last working Linux boot, ~57 commits ago):
+      the dominant behavioral change is the **CoreCdcBridge insertion**
+      (Phase D-2, commit 5ccde32). Before that, the core was directly
+      wired to the bus. After, every memory access goes through a
+      bridge FSM with ~10 cycles of round-trip latency. Hardware
+      features that may be MISSING or BROKEN through the bridge:
+        * **AMO atomicity** — AmoFU does Read-then-Write as TWO
+          separate bridge transactions. Between them, IF-stage
+          fetches go through the bridge. If the AmoFU's captured
+          "original value" reflects stale bus rdata instead of the
+          actual SDRAM read result, AMO writes wrong data back.
+          Could explain how *tp becomes 0x10000537 (= the byte
+          encoding of `lui a0, 0x10000`, an instruction at kernel
+          offset 0x72afc) — the AMO captured a stale instruction
+          fetch's rdata and wrote that back to *tp.
+        * **LR/SC reservation through bridge** — kernel has 149 SC.W
+          instructions paired with LR.W. Our AmoFU's reservation
+          register doesn't clear on trap (spec-permitted). But if
+          bridge timing or some edge case invalidates the reservation
+          spuriously, SC.W returns failure, the kernel's atomic
+          `clear_bit` doesn't commit, the flag stays set, the loop
+          spins.
+        * **FENCE.I treated as NOP** — kernel does fence.i after
+          relocations; our core treats it as no-op. With direct
+          wire this was OK; through the bridge it may not be.
+    - **Next** (handoff for a focused human session):
+      1. Add AMO-Read-phase tap (`AmoBus.amoDmemAddr` + dmemRdata
+         at AmoRead → AmoWrite transition) → compare with actual
+         SDRAM contents at that addr. If AMO reads stale bridge
+         data, that's the bug.
+      2. Or: count SC.W success/fail rate during the hang. If
+         most SC.W fail, reservation is being lost through bridge.
+      3. Or: git bisect 053ca5c..HEAD with linux-hwsim to find the
+         regression commit.
+      4. Or: instrument `pkgs/riski5-sim/verilog/sim_sdram_chip.v`
+         to log every WRITE to chip cell 0x14E6C0 (= bus addr
+         0x80273380) along with the writing instruction PC.
     - Phase D-3b (CoreMark zero-output) still pending under task #49
       — needs a separate sim variant that doesn't overlay
       CoreMark.hs with LinuxBootMaster.
