@@ -210,15 +210,43 @@ rules around maintaining it.
     - If putchar doesn't fire: investigate Quartus place-and-
       route differences (`reports/Riski5.fit.rpt` LE/M4K vs
       working variants).
-  - **Phase E — multi-domain test + hwsim updates**
-    (queued as task #44). New `test/CoreCdcSpec.hs` +
-    `test/SdramCdcSpec.hs` with non-equal clock periods using
-    `Clash.Explicit.Prelude.tbClockGen`. Verilator hwsim
-    wrapper at `pkgs/riski5-sim/verilog/riski5_sim_top.v`
-    grows `clk_core` + `clk_sdram` input ports alongside the
-    existing `clk` for true multi-clock simulation; the
-    harness in `tools/linux-hwsim/Main.hs` ticks each at its
-    own configured period.
+  - **Phase E — multi-domain test + hwsim updates** —
+    **DONE (task #44, commits 76b52e6 + f94b621)**.
+    - **Phase E-a (commit 76b52e6)**: new `test/CoreCdcSpec.hs`
+      (10 tests) and `test/SdramCdcSpec.hs` (9 tests) exercising
+      both bridges at genuinely-asymmetric source/destination
+      clock periods (DomCore 80/40 MHz vs DomBus 40/80 MHz +
+      odd-ratio 58.8/40 MHz; DomSdram 100/133/~90.9 MHz vs
+      DomBus 40 MHz). Includes a regression test for the Phase
+      D-3a IF-starvation deadlock (`case_if_starvation_phase_d3a`)
+      and the AMO read→write phase rising-edge case
+      (`case_amo_read_write_progresses`). All 19 new tests pass;
+      the only failure in the wider 329-test suite is the
+      pre-existing SdrControllerSpec "back-to-back reads survive
+      refreshes mid-burst" — verified unrelated by stashing E-a
+      and re-running.
+    - **Phase E-b (commit f94b621)**: Verilator hwsim wrapper at
+      `pkgs/riski5-sim/verilog/riski5_sim_top.v` gained
+      `clk_core` + `clk_sdram` + `rst_core_n` + `rst_sdram_n`
+      input ports alongside the existing `clk`/`rst_n`. The Phase
+      D-1 sim build had silently been broken since commit c71b8d9
+      (Verilator complained about missing CLOCK_CORE / DEBUG_BRIDGE_*
+      pins); this restores it AND adds genuine multi-clock
+      infrastructure. The clash-manifest.json got the new ports;
+      `tools/linux-hwsim/Main.hs` + `test/SocHwSim.hs` got the
+      matching struct layout; sim_sdram_chip's clock now comes from
+      `clk_sdram` so its CL=2 read pipeline tracks the SDRAM
+      controller. End-to-end verified: linux-hwsim runs the boot
+      stub through to JALR-into-kernel (32 UART bytes in 1M
+      cycles, identical observable to pre-Phase-E behaviour).
+      Added a `_multiClockTick` helper that takes per-domain period
+      counts, ready for the genuine multi-rate runs the Phase D-3b
+      CoreMark + Linux mid-init debugging will need.
+    - **Next**: use the Phase E infrastructure to debug Phase D-3b
+      (CoreMark zero-output regression on multi-PLL silicon) and
+      the Linux mid-init silicon hang. Both are pre-existing
+      bugs that the multi-domain sim now has the apparatus to
+      reproduce and bisect.
 
 - **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
   [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
