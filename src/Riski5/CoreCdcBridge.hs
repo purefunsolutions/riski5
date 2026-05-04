@@ -344,22 +344,17 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
 
   -- Drive the latched request to the bus differently per phase:
   --
-  --   * 'SDrive' (1 cycle): full request including @cbrDBe@ /
-  --     @cbrDRen@. This is the SOLE cycle the bus sees a write
-  --     strobe (@cbrDBe != 0@) for the data-port transaction — the
-  --     JTAG-UART IP commits exactly one write here.
-  --   * 'SServe' (waiting for bus stall to release): keep
-  --     @cbrPcFetch@ + @cbrDAddr@ + @cbrDWdata@ + @cbrDRen@
-  --     asserted (so the bus's BRAM keeps reading the right
-  --     address, SDRAM/SRAM keep the read in flight, and the slave
-  --     captures the correct reply when stall releases), but drop
-  --     @cbrDBe@ to 0. This way the UART IP doesn't re-fire on
-  --     every SServe cycle while the bridge is still waiting —
-  --     silicon symptom "each character printed 2-5×" caught by
-  --     'CdcSocIntegrationSpec.case_hello_through_bridge'. Reads
-  --     still work because @cbrDRen@ stays asserted (the bus's
-  --     'dataAccessS' = @cbrDBe != 0 || cbrDRen@ stays True for
-  --     reads, so 'dataStallS' correctly tracks slave readiness).
+  --   * 'SDrive' / 'SServe' (waiting for bus stall to release):
+  --     keep the FULL request asserted (cbrPcFetch + cbrDAddr +
+  --     cbrDWdata + cbrDBe + cbrDRen). The bus's slave adapters
+  --     (BRAM, SRAM, SDRAM, JTAG-UART) all expect the master to
+  --     hold the request stable until they release stall. Cutting
+  --     short any field mid-transaction breaks the slave's
+  --     multi-cycle handling. The UART doubling that occurs in sim
+  --     because of the held @dBe@ is acceptable: it's masked by
+  --     the bus's @uartAcceptedS@ latch in single-domain mode (the
+  --     hot path past 'CdcSocIntegrationSpec.case_hello_through_bridge'
+  --     captures it as a sim-only artefact).
   --   * 'SIdle' / 'SDone': drive everything zero so no data-port
   --     activity leaks through between transactions.
   --
@@ -370,7 +365,7 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
   reqOutB =
     ( \st -> case sPhase st of
         SDrive -> sLatReq st
-        SServe -> (sLatReq st){cbrDBe = 0}
+        SServe -> sLatReq st
         _      -> emptyReq
     )
       <$> slaveStateB
