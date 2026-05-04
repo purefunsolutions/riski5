@@ -236,6 +236,7 @@ test-suite riski5-test
     BramStallForwardSpec
     CdcSocIntegrationSpec
     CdcSpec
+    CoreCdcSpec
     ClintSpec
     CompressedSpec
     CoreMarkRealBytes
@@ -254,6 +255,7 @@ test-suite riski5-test
     PlicSpec
     ReferenceSpec
     RegfileSpec
+    SdramCdcSpec
     SdramExecSpec
     SdramSpec
     SdramTwoPortSpec

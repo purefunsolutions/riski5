@@ -17,6 +17,7 @@ import BramSpec qualified
 import BramStallForwardSpec qualified
 import CdcSocIntegrationSpec qualified
 import CdcSpec qualified
+import CoreCdcSpec qualified
 import ClintSpec qualified
 import CompressedSpec qualified
 -- import CoreMarkSimSpec qualified  -- disabled: see module header
@@ -34,6 +35,7 @@ import PlicSocSpec qualified
 import PlicSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SdramCdcSpec qualified
 import SdramExecSpec qualified
 import SdramSpec qualified
 import SdramTwoPortSpec qualified
@@ -71,6 +73,7 @@ main =
       , BramCoreSpec.tests
       , BramStallForwardSpec.tests
       , CdcSpec.tests
+      , CoreCdcSpec.tests
       , CdcSocIntegrationSpec.tests
       , ClintSpec.tests
       , CompressedSpec.tests
@@ -84,6 +87,7 @@ main =
       , SramStallForwardSpec.tests
       , SramTwoPortSpec.tests
       , SdramSpec.tests
+      , SdramCdcSpec.tests
       , SdramExecSpec.tests
       , SdramTwoPortSpec.tests
       , SdrControllerSpec.tests
