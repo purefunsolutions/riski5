@@ -55,6 +55,7 @@ import Riski5.Core.Presets (tiny32M)
 import Riski5.ISA
 import Riski5.JtagUart (jtagUartSim)
 import Riski5.Sdram (sdramIpSim)
+import Riski5.SdramCdcBridge (sdramCdcBridge)
 import Riski5.Soc (
   SocIn (..),
   SocOut (..),
@@ -62,7 +63,7 @@ import Riski5.Soc (
  )
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
+import Test.Tasty.HUnit (Assertion, assertBool, assertEqual, testCase)
 import qualified Data.List as L
 import qualified Prelude as P
 import Prelude (Bool (..), Either (..), Eq, Int, Maybe (..), String, error, fmap, ($), (++), (.))
@@ -81,6 +82,14 @@ createDomain
   vSystem
     { vName = "DomCdcSocB"
     , vPeriod = 25000
+    , vResetKind = Asynchronous
+    , vResetPolarity = ActiveLow
+    }
+
+createDomain
+  vSystem
+    { vName = "DomCdcSocC"
+    , vPeriod = 7500 -- 133 MHz, silicon SDRAM rate
     , vResetKind = Asynchronous
     , vResetPolarity = ActiveLow
     }
@@ -108,6 +117,53 @@ helloProgWords = case assemble helloProg of
   Left err -> error ("helloProg failed to assemble: " ++ P.show err)
   Right ws -> ws
 
+{- | Tiny SDRAM-write-then-UART firmware. Probes whether a SW
+to SDRAM through the bridge chain ever completes (returns from
+the per-port stall window) — same hang silicon shows on
+'riski5-core-amostress' (prints "B" then nothing past the first
+SDRAM SW).
+
+Sequence:
+
+  1. Print 'A' to UART (proves bus + UART work).
+  2. SW 'B' to SDRAM[0] (the load-bearing test — does the
+     bridge chain CoreCdcBridge → bus → Riski5.Sdram complete?)
+  3. Print 'C' to UART (proves the SDRAM SW returned and the
+     core's pipeline advanced).
+
+Expected sim output: ['A', 'C'] (or with sim's UART doubling,
+['A', 'A', 'C', 'C']). If sim only emits 'A' and never 'C', the
+bridge hangs in sim → we have a reproducer to debug.
+-}
+sdramSwProg :: Asm ()
+sdramSwProg = do
+  -- Setup.
+  lui uartReg 0x10000     -- UART base = 0x1000_0000
+  lui sdramReg 0x80000    -- SDRAM base = 0x8000_0000
+  addi tmpReg x0 (P.fromIntegral (P.fromEnum 'A'))
+  emit (Sw uartReg tmpReg 0)
+  -- The load-bearing SW — to SDRAM through the bridge chain.
+  addi tmpReg x0 (P.fromIntegral (P.fromEnum 'B'))
+  emit (Sw sdramReg tmpReg 0)
+  -- Print 'C' if we got here. If this byte never appears, the
+  -- previous SW never completed.
+  addi tmpReg x0 (P.fromIntegral (P.fromEnum 'C'))
+  emit (Sw uartReg tmpReg 0)
+  spin <- label
+  j spin
+ where
+  uartReg :: Reg
+  uartReg = x10
+  sdramReg :: Reg
+  sdramReg = x11
+  tmpReg :: Reg
+  tmpReg = x12
+
+sdramSwProgWords :: [BitVector 32]
+sdramSwProgWords = case assemble sdramSwProg of
+  Left err -> error ("sdramSwProg failed to assemble: " ++ P.show err)
+  Right ws -> ws
+
 -- * Harness ------------------------------------------------------
 
 {- | Bigger trace for debugging: returns the per-cycle PC the core
@@ -123,11 +179,24 @@ runHelloThroughBridge :: Int -> [Maybe (BitVector 8)]
 runHelloThroughBridge n = case runHelloThroughBridge_inner n of (_, txs, _, _) -> txs
 
 runHelloThroughBridge_inner :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
-runHelloThroughBridge_inner n =
+runHelloThroughBridge_inner = runProgThroughBridge_inner helloProgWords
+
+runSdramSwThroughBridge_inner :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
+runSdramSwThroughBridge_inner = runProgThroughBridge_inner sdramSwProgWords
+
+{- | Generic harness — runs an arbitrary inline program through
+the bridge and returns (pcFetch trace, UART tx trace, bus-side req
+trace, core-side req trace). 'runHelloThroughBridge_inner' is a
+specialisation for the Hello firmware; this is the parameterised
+form so other test cases can reuse it.
+-}
+runProgThroughBridge_inner ::
+  [BitVector 32] -> Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
+runProgThroughBridge_inner progWords n =
   let progVec :: Vec 128 (BitVector 32)
       progVec =
         V.unsafeFromList
-          (P.take 128 (helloProgWords ++ P.repeat 0x0000_0013))
+          (P.take 128 (progWords ++ P.repeat 0x0000_0013))
       dataVec :: Vec 64 (BitVector 32)
       dataVec = CP.repeat 0
       simMem :: Vec 16384 (BitVector 16)
@@ -209,9 +278,18 @@ runHelloThroughBridge_inner n =
           (ambBe <$> uartBusB)
           (ambRe <$> uartBusB)
 
+      -- SDRAM chain via the SdramCdcBridge — models the silicon
+      -- topology where Riski5.Sdram.sdram sits in DomBus and the
+      -- chip-side SDRAM controller / sim model sits in DomSdram,
+      -- with the bridge crossing between them.
       sdramBusB = soSdramBus <$> outB
-      sdramReplyB =
-        CP.exposeClockResetEnable (sdramIpSim simMem sdramBusB) clkB rstB enB
+      clkC = tbClockGen @DomCdcSocC (CP.pure True)
+      rstC = resetGen @DomCdcSocC
+      enC = enableGen @DomCdcSocC
+      (sdramReplyB, sdramBusC) =
+        sdramCdcBridge clkB rstB enB clkC rstC enC sdramBusB sdramReplyC
+      sdramReplyC =
+        CP.exposeClockResetEnable (sdramIpSim simMem sdramBusC) clkC rstC enC
    in ( CE.sampleN n pcFetchA
       , CE.sampleN n uartTxB
       , CE.sampleN n coreReqInBusB
@@ -228,6 +306,7 @@ tests =
     , testCase "Hello firmware: core PC advances past reset PC=0" case_pc_advances
     , testCase "Hello firmware: SW transactions reach bus side" case_sw_reaches_bus
     , testCase "Hello firmware: core asserts correct dAddr for SW" case_core_dAddr
+    , testCase "SDRAM SW: bridge → bus → Riski5.Sdram → sdramIpSim returns" case_sdram_sw_returns
     ]
 
 case_hello_through_bridge :: Assertion
@@ -369,3 +448,38 @@ case_core_dAddr = do
     )
     True
     (coreUartWrites P.> 0)
+
+case_sdram_sw_returns :: Assertion
+case_sdram_sw_returns = do
+  -- 'sdramSwProg' writes 'A' to UART, then 'B' to SDRAM[0], then
+  -- 'C' to UART. If the chain bridge → bus → Riski5.Sdram →
+  -- sdramIpSim correctly handles the SDRAM SW, the firmware reaches
+  -- the third instruction and emits 'C'. If the SDRAM SW hangs (the
+  -- silicon symptom in 'riski5-core-amostress'), only 'A' appears
+  -- and 'C' never does.
+  --
+  -- Generous 5000-cycle budget: bridge round-trip ~10 cycles ×
+  -- 4 instructions before SDRAM-SW + SDRAM-SW round-trip ~20 cycles
+  -- + bridge round-trip ~10 cycles for the post-SDRAM 'C'. Total
+  -- realistic ~50 cycles; 5000 leaves ample slack to surface a
+  -- deadlock as a missing-byte assert rather than a hang.
+  let trace = runSdramSwThroughBridge_inner 5000
+      (_, txBytes_, _, _) = trace
+      txBytes = [b | Just b <- txBytes_]
+      txString :: String
+      txString = P.map (P.toEnum . P.fromIntegral) txBytes
+      hasA = 'A' `P.elem` txString
+      hasC = 'C' `P.elem` txString
+  P.putStrLn $ "  [diag] UART trace: " ++ P.show txString
+  assertBool
+    ( "expected 'A' on UART (proves bus + UART work) — got "
+        ++ P.show txString
+    )
+    hasA
+  assertBool
+    ( "expected 'C' on UART (proves SDRAM SW returned). If 'C' is "
+        ++ "missing, the bridge → bus → Riski5.Sdram chain hung on "
+        ++ "the SDRAM SW. trace was: "
+        ++ P.show txString
+    )
+    hasC
