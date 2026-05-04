@@ -540,6 +540,17 @@ module sim_sdram_chip (
               $display("[CANARY-READ] cell=0x%h returning=0x%h pc=0x%h",
                        linear_addr, mem[linear_addr], dbg_pc);
             end
+            // Task #55 debug 3: log ALL chip reads when the F-stage
+            // PC is in the seq_buf_printf canary-check region
+            // (PCs 0x801dc380-0x801dc3a8 +/- pipeline depth = roughly
+            // 0x801dc370-0x801dc3c0). These are the actual reads the
+            // canary check LW issues — should see one for sp+12 of
+            // seq_buf_printf. If the cell != 0x24E35E/F (where canary
+            // was saved), that confirms sp/s0 register corruption.
+            if (dbg_pc >= 32'h801dc370 && dbg_pc <= 32'h801dc3c0) begin
+              $display("[CHECK-READ] cell=0x%h returning=0x%h pc=0x%h",
+                       linear_addr, mem[linear_addr], dbg_pc);
+            end
           end else begin
             // Read of an inactive bank — undefined chip behaviour,
             // model as zeros (matches a typical un-written cell).
