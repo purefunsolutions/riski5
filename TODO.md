@@ -358,12 +358,26 @@ rules around maintaining it.
       / initialised, or the nbcon kthread isn't being scheduled
       because no timer IRQs fire (CLINT mtimecmp setup may need a
       separate fix).
-    - **Boot stub re-ran ONCE** between cycles 30M and 90M (UART
-      output shows two copies of the boot-stub probe sequence).
-      This suggests the kernel triggered a CPU reset somewhere
-      around cycle 45M-60M. Possibly from a panic() or an
-      unrecoverable trap path. Worth investigating but not
-      blocking the main fix.
+    - **Mid-boot CPU reset pinpointed** (commit ca07219): at cycle
+      51,064,396, PC drops from `0x801e7fac` directly to `0x0`
+      (firmware/boot stub entry). Investigation: PC 0x801e7fac is
+      inside `vscnprintf` (offset 0x4 past the .L1017 epilogue's
+      `lw ra,12(sp)`). The instruction at 0x801e7fa4 is `ret` (=
+      `jalr x0, ra, 0`). For PC to become 0 from this `ret`, `ra`
+      must have been 0 when the ret executed — meaning the
+      `lw ra,12(sp)` at 0x801e7f88 loaded zero from the stack.
+    - Most likely cause: **kernel idle-task stack overflow** into
+      BSS-cleared memory (sp dropped below 0x80270000 = bottom of
+      init_stack into the BSS region we zero-cleared, so saved-ra
+      reads come back as 0). vscnprintf is called from printk;
+      each early printk + WARN_ON cascade consumes stack. With
+      enough recursive calls, sp underflows.
+    - Less likely: a HW LW glitch returning 0 for a specific
+      stack address. The bridge isn't corrupting reads (we proved
+      that earlier in this task), so the SDRAM cell at sp+12 must
+      really hold 0 when the LW happens.
+    - Worth separate investigation but not blocking the original
+      task #52 fix.
     - **Other downstream bug**: kernel claims "No '#address-cells'
       in root node" in `early_init_dt_scan_root` even though our
       DTB does contain the property (verified via
