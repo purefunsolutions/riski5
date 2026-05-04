@@ -96,18 +96,19 @@ data Riski5SimTopPorts (f :: Type -> Type) = Riski5SimTopPorts
 -- field at offset 34 from the @sizeOf = 36@ multiple-of-alignment.
 
 data Riski5SimTopState = Riski5SimTopState
-  { -- 32-bit ports (offsets 0..15)
+  { -- 32-bit ports (offsets 0..19)
     sMemInitAddr :: !Word32
   , sSw :: !Word32
   , sLedr :: !Word32
   , sSramAddr :: !Word32
-  , -- 16-bit ports (offsets 16..23)
+  , sDebugPcfetch :: !Word32
+  , -- 16-bit ports (offsets 20..27)
     sMemInitData :: !Word16
   , sSramDqIn :: !Word16
   , sLedg :: !Word16
   , sSramDqOut :: !Word16
-  , -- 8-bit ports (offsets 24..45). Phase E-b adds clk_core /
-    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 26..29 so the
+  , -- 8-bit ports (offsets 28..49). Phase E-b adds clk_core /
+    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 30..33 so the
     -- harness can drive each Clash domain's clock independently.
     sClk :: !Word8 -- bus-domain clock
   , sRstN :: !Word8 -- bus-domain reset (active low)
@@ -135,45 +136,47 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 48 -- 46 bytes of fields, padded to alignment 4
+  sizeOf _ = 52 -- 50 bytes of fields, padded to alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
     sw <- peekByteOff p 4
     ledr <- peekByteOff p 8
     sramAddr <- peekByteOff p 12
-    memInitData <- peekByteOff p 16
-    sramDqIn <- peekByteOff p 18
-    ledg <- peekByteOff p 20
-    sramDqOut <- peekByteOff p 22
-    clk <- peekByteOff p 24
-    rstN <- peekByteOff p 25
-    clkCore <- peekByteOff p 26
-    rstCoreN <- peekByteOff p 27
-    clkSdram <- peekByteOff p 28
-    rstSdramN <- peekByteOff p 29
-    key <- peekByteOff p 30
-    memInitWrite <- peekByteOff p 31
-    lcdData <- peekByteOff p 32
-    lcdRs <- peekByteOff p 33
-    lcdRw <- peekByteOff p 34
-    lcdEn <- peekByteOff p 35
-    lcdOn <- peekByteOff p 36
-    lcdBlon <- peekByteOff p 37
-    sramDqOe <- peekByteOff p 38
-    sramCeN <- peekByteOff p 39
-    sramOeN <- peekByteOff p 40
-    sramWeN <- peekByteOff p 41
-    sramUbN <- peekByteOff p 42
-    sramLbN <- peekByteOff p 43
-    txValid <- peekByteOff p 44
-    txByte <- peekByteOff p 45
+    debugPcfetch <- peekByteOff p 16
+    memInitData <- peekByteOff p 20
+    sramDqIn <- peekByteOff p 22
+    ledg <- peekByteOff p 24
+    sramDqOut <- peekByteOff p 26
+    clk <- peekByteOff p 28
+    rstN <- peekByteOff p 29
+    clkCore <- peekByteOff p 30
+    rstCoreN <- peekByteOff p 31
+    clkSdram <- peekByteOff p 32
+    rstSdramN <- peekByteOff p 33
+    key <- peekByteOff p 34
+    memInitWrite <- peekByteOff p 35
+    lcdData <- peekByteOff p 36
+    lcdRs <- peekByteOff p 37
+    lcdRw <- peekByteOff p 38
+    lcdEn <- peekByteOff p 39
+    lcdOn <- peekByteOff p 40
+    lcdBlon <- peekByteOff p 41
+    sramDqOe <- peekByteOff p 42
+    sramCeN <- peekByteOff p 43
+    sramOeN <- peekByteOff p 44
+    sramWeN <- peekByteOff p 45
+    sramUbN <- peekByteOff p 46
+    sramLbN <- peekByteOff p 47
+    txValid <- peekByteOff p 48
+    txByte <- peekByteOff p 49
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
         , sSw = sw
         , sLedr = ledr
         , sSramAddr = sramAddr
+        , sDebugPcfetch = debugPcfetch
         , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
@@ -206,32 +209,33 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 4 sSw
     pokeByteOff p 8 sLedr
     pokeByteOff p 12 sSramAddr
-    pokeByteOff p 16 sMemInitData
-    pokeByteOff p 18 sSramDqIn
-    pokeByteOff p 20 sLedg
-    pokeByteOff p 22 sSramDqOut
-    pokeByteOff p 24 sClk
-    pokeByteOff p 25 sRstN
-    pokeByteOff p 26 sClkCore
-    pokeByteOff p 27 sRstCoreN
-    pokeByteOff p 28 sClkSdram
-    pokeByteOff p 29 sRstSdramN
-    pokeByteOff p 30 sKey
-    pokeByteOff p 31 sMemInitWrite
-    pokeByteOff p 32 sLcdData
-    pokeByteOff p 33 sLcdRs
-    pokeByteOff p 34 sLcdRw
-    pokeByteOff p 35 sLcdEn
-    pokeByteOff p 36 sLcdOn
-    pokeByteOff p 37 sLcdBlon
-    pokeByteOff p 38 sSramDqOe
-    pokeByteOff p 39 sSramCeN
-    pokeByteOff p 40 sSramOeN
-    pokeByteOff p 41 sSramWeN
-    pokeByteOff p 42 sSramUbN
-    pokeByteOff p 43 sSramLbN
-    pokeByteOff p 44 sUartTxValid
-    pokeByteOff p 45 sUartTxByte
+    pokeByteOff p 16 sDebugPcfetch
+    pokeByteOff p 20 sMemInitData
+    pokeByteOff p 22 sSramDqIn
+    pokeByteOff p 24 sLedg
+    pokeByteOff p 26 sSramDqOut
+    pokeByteOff p 28 sClk
+    pokeByteOff p 29 sRstN
+    pokeByteOff p 30 sClkCore
+    pokeByteOff p 31 sRstCoreN
+    pokeByteOff p 32 sClkSdram
+    pokeByteOff p 33 sRstSdramN
+    pokeByteOff p 34 sKey
+    pokeByteOff p 35 sMemInitWrite
+    pokeByteOff p 36 sLcdData
+    pokeByteOff p 37 sLcdRs
+    pokeByteOff p 38 sLcdRw
+    pokeByteOff p 39 sLcdEn
+    pokeByteOff p 40 sLcdOn
+    pokeByteOff p 41 sLcdBlon
+    pokeByteOff p 42 sSramDqOe
+    pokeByteOff p 43 sSramCeN
+    pokeByteOff p 44 sSramOeN
+    pokeByteOff p 45 sSramWeN
+    pokeByteOff p 46 sSramUbN
+    pokeByteOff p 47 sSramLbN
+    pokeByteOff p 48 sUartTxValid
+    pokeByteOff p 49 sUartTxByte
 
 -- * Backend wiring
 
@@ -242,6 +246,7 @@ initialState =
     , sSw = 0
     , sLedr = 0
     , sSramAddr = 0
+    , sDebugPcfetch = 0
     , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0

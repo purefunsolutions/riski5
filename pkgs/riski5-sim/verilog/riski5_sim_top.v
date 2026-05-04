@@ -114,7 +114,21 @@ module riski5_sim_top (
     // actually latches a byte from av_writedata. Haskell harness
     // samples these to build the TX byte stream.
     output wire        UART_TX_VALID,
-    output wire [7:0]  UART_TX_BYTE
+    output wire [7:0]  UART_TX_BYTE,
+
+    // --- PC observation tap (Phase E-b debug) ---
+    //
+    // Live IF-stage program counter from Riski5.Core (the
+    // DEBUG_CORE_PC port = pcFetchInCoreS in DomCore). The
+    // harness samples this every cycle to build a PC histogram
+    // — exactly what we need to bisect "kernel hangs at PC X"
+    // silicon bugs in Verilator before round-tripping to the
+    // FPGA. NOT to be confused with topEntity's DEBUG_PCFETCH
+    // port, which carries the SoC-body's bus-side view of PC
+    // (= 0 between bridge transactions in the bridge slave's
+    // SIdle/SDone phases). The core-side view is the one a human
+    // debugging "where is the kernel hung" wants.
+    output wire [31:0] DEBUG_PCFETCH
 );
 
   // Avalon-MM-like bus tap from the Clash core to the Altera IP.
@@ -179,6 +193,11 @@ module riski5_sim_top (
   assign UART_TX_VALID = wr_pending;
   assign UART_TX_BYTE  = wr_pending_byte;
 
+  // PC tap exposed at sim top (core-side, NOT bus-side — see
+  // wrapper port-list comment). dbg_core_pc_w is wired below
+  // from the riski5 instance's DEBUG_CORE_PC output.
+  assign DEBUG_PCFETCH = dbg_core_pc_w;
+
   // ---- SDRAM chip-side wires (riski5 ⇄ sim_sdram_chip) ---------
   wire [11:0] sdram_addr_w;
   wire [1:0]  sdram_ba_w;
@@ -192,7 +211,11 @@ module riski5_sim_top (
   wire        sdram_we_n_w;
   wire [15:0] sdram_dq_in_w;
 
-  // ---- Debug taps left dangling (not exposed at sim top) -------
+  // ---- Debug taps -------
+  // dbg_pcfetch_w is exposed at sim top as DEBUG_PCFETCH (Phase E-b).
+  // The remaining debug ports below stay dangling — sim doesn't
+  // need them yet, and exposing every one inflates the C ABI for
+  // no current consumer.
   wire [31:0]  dbg_pcfetch_w;
   wire [7:0]   dbg_flags_w;
   wire [127:0] dbg_frozen_pc_w;
