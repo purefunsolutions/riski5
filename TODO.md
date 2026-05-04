@@ -279,23 +279,37 @@ rules around maintaining it.
       etc.) — so the loop's individual branches all SKIP. By
       elimination, bits 8 and/or 9 in s1 are set but no branch
       handles them.
-    - **Concrete next-step recipe** for the next session:
-      1. Add `DEBUG_DMEM_RDATA :: Signal DomBus (BitVector 32)`
-         output port to `Top.hs` (sourced from the bus's
-         `dmemRdataS`). Wire through `pkgs/riski5-sim/verilog/
-         riski5_sim_top.v` + `clash-manifest.json` + Main.hs's
-         struct (same plumbing as DEBUG_PCFETCH did in commit
-         b94a430).
-      2. Sample DEBUG_DMEM_RDATA at PC=0x1ec464 — that's the
-         `lw s1, 0(tp)` cycle. The captured value IS the
-         thread_info.flags. Identifies which TIF bit is stuck.
-      3. Once the bit is known, find the kernel function that
-         sets it. Either fix the kernel config (some config option
-         is causing the bit to be set without a corresponding
-         clear path) OR find the matching architectural-state bug
-         in our core (e.g., wrong CSR result, wrong AMO behavior in
-         a specific context not covered by the current standalone
-         test).
+    - **DEBUG_DMEM_RDATA tap landed** (commit 51eb413). Histogram at
+      PC=0x801ec464 returned a single value: **rdata = 0x10000537**
+      (429,552 samples).
+    - **0x10000537 is the byte encoding of `lui a0, 0x10000`** —
+      an INSTRUCTION, not flags. That instruction appears 7× in the
+      kernel image (first at offset 0x72afc, inside `dma_free_attrs`).
+      So the kernel is reading INSTRUCTION BYTES when it expects
+      `init_task.flags` data. Two possibilities: (a) some kernel
+      init copies instruction bytes to the init_task region, or
+      (b) a hardware data-path bug returns wrong-address data.
+    - **Boot-stub probe confirmed clean upload**: `*0x80273380 = 0`
+      at boot time, before kernel runs. So the kernel WRITES
+      0x10000537 there during execution.
+    - **Tested: Phase D-3a's data-port mask is NOT the cause**.
+      Reverted the mask in CoreCdcBridge and re-ran 30M cycles —
+      kernel hangs much earlier at PC 0x800000bc (BSS-clear BLT)
+      because IF starves through SDRAM-resident code. The mask is
+      needed for IF-progress and the irqentry_exit hang is
+      independent of it.
+    - **Tested: not IRQ-driven**. Forcing BOTH `mtipS=False`
+      AND `meipS=False` has zero observable effect.
+    - **Next** (handoff to a focused human session — task #52):
+      - Add SDRAM-cell tap in `pkgs/riski5-sim/verilog/sim_sdram_chip.v`
+        that logs every WRITE to chip cell ~0x14E6C0 (= bus addr
+        0x80273380). Identifies which kernel function corrupts *tp.
+      - OR git bisect between 053ca5c (last working Linux boot) and
+        HEAD (~57 commits) to find the regression point.
+      - OR examine kernel source for what writes a 4-byte
+        instruction-encoded value to init_task during early boot
+        (setup_vm relocation? alternative-instruction patching?
+        __user_rt_sigreturn copy for nommu?).
     - Phase D-3b (CoreMark zero-output) still pending under task #49
       — needs a separate sim variant that doesn't overlay
       CoreMark.hs with LinuxBootMaster.
