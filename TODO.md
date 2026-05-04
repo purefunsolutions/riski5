@@ -348,6 +348,30 @@ rules around maintaining it.
       no longer stuck in irqentry_exit_to_user_mode. No `printk`
       output yet by 30M cycles — likely SDRAM-bound init being
       slow, or downstream printk/UART driver bring-up issue.
+    - **90M-cycle follow-up**: kernel now reaches printk RING BUFFER
+      code (functions `desc_read`, `data_push_tail`, `data_alloc`,
+      `_prb_commit`, `prb_first_seq`, `_prb_read_valid`,
+      `nbcon_kthread_func`, etc. — confirmed via PC histogram).
+      So `printk` IS being called, but data lands in the ring
+      buffer without being flushed to the JTAG-UART. Most likely
+      cause: `earlycon=juart,mmio,0x10000000` isn't getting parsed
+      / initialised, or the nbcon kthread isn't being scheduled
+      because no timer IRQs fire (CLINT mtimecmp setup may need a
+      separate fix).
+    - **Boot stub re-ran ONCE** between cycles 30M and 90M (UART
+      output shows two copies of the boot-stub probe sequence).
+      This suggests the kernel triggered a CPU reset somewhere
+      around cycle 45M-60M. Possibly from a panic() or an
+      unrecoverable trap path. Worth investigating but not
+      blocking the main fix.
+    - **Other downstream bug**: kernel claims "No '#address-cells'
+      in root node" in `early_init_dt_scan_root` even though our
+      DTB does contain the property (verified via
+      `dtc -I dtb -O dts result-dtb/riski5.dtb`). With the MPP
+      fix, this WARN is now harmless (kernel recovers via
+      report_bug). But it indicates the FDT parser is mis-reading
+      the DTB — possibly a separate HW issue with how
+      `of_get_flat_dt_prop` walks the FDT.
 
     --- (Below: original ROOT CAUSE writeup; KEEP for context but it
     is REFUTED — the bridge captures correctly.) ---
