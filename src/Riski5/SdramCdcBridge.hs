@@ -132,33 +132,12 @@ data SlaveState = SlaveState
   , sLatWr :: Bool
   , sDoneToggle :: Bool
   , sCapRdata :: BitVector 16
-  , -- | True when @reqEdge@ fired during a non-SIdle phase (= the
-    -- master sent a back-to-back transaction while we were still
-    -- mid-processing). The SDone → SIdle transition consumes this
-    -- and immediately starts the next transaction with the
-    -- already-synchronised payload, instead of dropping the edge.
-    --
-    -- Without this latch, back-to-back master toggles arriving
-    -- during SReq / SAwaitValid / SDone are silently lost — the
-    -- one-cycle reqEdge pulse is consumed by whatever case branch
-    -- the slave is in, and the slave returns to SIdle with no
-    -- record that a new request is waiting. Silicon symptom on
-    -- 'riski5-core-amostress': hangs at the 3rd consecutive SDRAM
-    -- SW (3rd of 8 sub-transactions in one inner-loop iteration —
-    -- 4 banks × 2 sub-transactions each), with PC=0x80000044, all
-    -- stalls asserted. The pure-Clash 'sdramIpSim' has 1-cycle
-    -- waitrequest, so the slave finishes processing before the next
-    -- toggle arrives — the race is hidden in sim. The real
-    -- 'SdrController' takes ~10-15 cycles per access (CL=2 +
-    -- multi-cycle ACT/CAS + refresh), enough for back-to-back to
-    -- overlap.
-    sPendingEdge :: Bool
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
 
 slaveInit :: SlaveState
-slaveInit = SlaveState SIdle 0 0 0 False False False 0 False
+slaveInit = SlaveState SIdle 0 0 0 False False False 0
 
 -- * Bridge
 
@@ -298,53 +277,29 @@ slaveStep ::
   SdramIpReply ->
   SlaveState
 slaveStep st@SlaveState{..} reqEdge latBundle reply =
-  -- Always latch a reqEdge that arrives during non-SIdle phases.
-  -- The SIdle case below consumes it directly so the latch never
-  -- sees that path.
-  let st' = if reqEdge && sPhase /= SIdle
-              then st{sPendingEdge = True}
-              else st
-      -- A combined "start a new transaction" decision: True iff
-      -- (we're in SIdle and reqEdge fired this cycle) OR (we're
-      -- about to leave SDone with a pending edge from an earlier
-      -- back-to-back arrival).
-      startNow = case sPhase of
-        SIdle -> reqEdge
-        SDone -> sPendingEdge
-        _     -> False
-      (a, w, be, rd, wr) = unpackLatched latBundle
-      enterReq =
-        st'
-          { sPhase = SReq
-          , sLatAddr = a
-          , sLatWdata = w
-          , sLatBe = be
-          , sLatRd = rd
-          , sLatWr = wr
-          , sPendingEdge = False
-          }
-  in case sPhase of
+  case sPhase of
     SIdle
-      | startNow -> enterReq
-      | otherwise -> st'
+      | reqEdge ->
+          let (a, w, be, rd, wr) = unpackLatched latBundle
+           in st
+                { sPhase = SReq
+                , sLatAddr = a
+                , sLatWdata = w
+                , sLatBe = be
+                , sLatRd = rd
+                , sLatWr = wr
+                }
+      | otherwise -> st
     SReq
       | not (sirWaitrequest reply) ->
           if sLatRd
-            then st'{sPhase = SAwaitValid}
-            else st'{sPhase = SDone}
-      | otherwise -> st'
+            then st{sPhase = SAwaitValid}
+            else st{sPhase = SDone}
+      | otherwise -> st
     SAwaitValid
-      | sirValid reply -> st'{sPhase = SDone, sCapRdata = sirRdata reply}
-      | otherwise -> st'
-    SDone
-      -- Start the next transaction immediately if a back-to-back
-      -- master toggle arrived while we were processing this one.
-      -- The done-toggle still flips so the master sees this
-      -- transaction's completion.
-      | startNow ->
-          enterReq{sDoneToggle = not sDoneToggle}
-      | otherwise ->
-          st'{sPhase = SIdle, sDoneToggle = not sDoneToggle}
+      | sirValid reply -> st{sPhase = SDone, sCapRdata = sirRdata reply}
+      | otherwise -> st
+    SDone -> st{sPhase = SIdle, sDoneToggle = not sDoneToggle}
 
 masterReply :: MasterState -> SdramIpReply
 masterReply MasterState{..} =
