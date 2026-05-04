@@ -525,14 +525,20 @@ module sim_sdram_chip (
               $display("[SDRAM-READ-TP] cell=0x%h returning=0x%h",
                        linear_addr, mem[linear_addr]);
             end
-            // Task #52 debug 2: log ANY read returning 0x0537 or 0x1000
-            // — those are the half-words of 0x10000537 (= `lui a0,
-            // 0x10000`) that the bridge captures as the LW result.
-            // Check the ACTUAL data being returned, not the cell address,
-            // to catch all instances regardless of which cell holds them.
-            if (mem[linear_addr] == 16'h0537 || mem[linear_addr] == 16'h1000) begin
-              $display("[SDRAM-READ-VAL] cell=0x%h returning=0x%h",
-                       linear_addr, mem[linear_addr]);
+            // Task #55 debug: log ALL reads from cells in the
+            // init_stack region (bytes 0x80270000..0x80272000 =
+            // chip cells with row 0x4E0..0x4E3 across all banks).
+            // Compare to writes (below) to find any read that
+            // returns wrong data — that pinpoints a HW corruption.
+            if (active_row[ba] >= 12'h4E0 && active_row[ba] <= 12'h4E3) begin
+              $display("[STACK-READ] cell=0x%h returning=0x%h pc=0x%h",
+                       linear_addr, mem[linear_addr], dbg_pc);
+            end
+            // Task #55 debug 2: log reads of the canary cell at
+            // tp+744 = byte 0x80273668 = chip cells 0x34E634/35.
+            if (linear_addr == 22'h34E634 || linear_addr == 22'h34E635) begin
+              $display("[CANARY-READ] cell=0x%h returning=0x%h pc=0x%h",
+                       linear_addr, mem[linear_addr], dbg_pc);
             end
           end else begin
             // Read of an inactive bank — undefined chip behaviour,
@@ -557,6 +563,18 @@ module sim_sdram_chip (
             if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
               $display("[SDRAM-WRITE] time=%t cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
                        $time, linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
+            end
+            // Task #55 debug: log ALL writes to cells in the init_stack
+            // region (rows 0x4E0..0x4E3 across all banks).
+            if (active_row[ba] >= 12'h4E0 && active_row[ba] <= 12'h4E3) begin
+              $display("[STACK-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
+                       linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
+            end
+            // Task #55 debug 2: log writes of the canary cell at
+            // tp+744 = byte 0x80273668 = chip cells 0x34E634/35.
+            if (linear_addr == 22'h34E634 || linear_addr == 22'h34E635) begin
+              $display("[CANARY-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
+                       linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
             end
           end
           if (addr[10]) active[ba] <= 1'b0; // auto-precharge
