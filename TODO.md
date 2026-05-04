@@ -372,6 +372,11 @@ rules around maintaining it.
       reads come back as 0). vscnprintf is called from printk;
       each early printk + WARN_ON cascade consumes stack. With
       enough recursive calls, sp underflows.
+    - Confirmed: kernel config has CONFIG_THREAD_SIZE_ORDER=1 (= 8KB
+      stack — quite small). Bumping to ORDER=2 (= 16KB) or ORDER=3
+      (= 32KB) might fix the overflow without other code changes.
+      Quick experiment: change in pkgs/linux-rv32-nommu/riski5-overlay.config
+      and rebuild.
     - Less likely: a HW LW glitch returning 0 for a specific
       stack address. The bridge isn't corrupting reads (we proved
       that earlier in this task), so the SDRAM cell at sp+12 must
