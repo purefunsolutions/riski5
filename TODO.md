@@ -147,29 +147,35 @@ rules around maintaining it.
     produces **294,950 clean BLSAX iterations in 10 s** with
     zero corruption. Bridge IS rock-solid for atomics + UART.
 
-  - **Phase D-3a — silicon CoreMark slow / silent**
-    (still pending). `riski5-core-coremark` doesn't print
-    anything in 5 min capture even with the resolved bridge.
-    Aexttest works perfectly, so the bridge logic is fine —
-    the issue is CoreMark-specific. Hypotheses:
-    1. CoreMark with bridge per-pipeline-advance overhead is
-       way more than 10×; 600 iterations × 9 ms native →
-       maybe 30+ minutes silicon wall-time before the final
-       print phase. Try a multi-hour capture.
-    2. CoreMark touches SDRAM (despite the .data ending in
-       SRAM); a SDRAM-via-CoreCdcBridge interaction that
-       aexttest doesn't trigger.
-    3. CoreMark hits a trap (unaligned access, illegal
-       instruction) and the handler is non-printing.
+  - **Phase D-3a — silicon SDRAM-via-chained-bridges hang**
+    (remaining). Bisect via `riski5-core-amostress` (which
+    writes SDRAM-resident inner loop then JALRs to SDRAM)
+    prints just "B" then stops. The boot byte makes it through
+    bus → JTAG-UART (via CoreCdcBridge), but the next phase
+    (SDRAM SW or SDRAM IF fetch) hangs. CoreMark uses SDRAM
+    extensively; same root cause. The chain is:
+        core → CoreCdcBridge → bus → SdramCdcBridge → SDRAM
+    Two chained bridges with their own toggle-handshake FSMs
+    likely race or deadlock when one bridge's slave is the
+    other bridge's master.
     Concrete next steps:
-    - Bisect by trying intermediate-complexity firmwares:
-      `riski5-core-amostress` (SDRAM atomics), then
-      `riski5-core-sdramexec` (SDRAM-resident code), then
-      CoreMark.
     - Add probe for slave's `sLatReq.cbrDAddr + cbrDBe` to
-      observe what addresses CoreMark hits.
-    - Try a multi-hour CoreMark capture (just leave
-      nios2-terminal running for an hour).
+      observe whether SDRAM SWs ever reach the bridge slave.
+    - Examine SdramCdcBridge slave's interaction with the bus
+      adapter `Riski5.Sdram.sdram` — maybe the adapter's
+      multi-cycle FSM isn't compatible with the bus's
+      bridge-induced stall pattern.
+    - Try `riski5-core-sdramexec` and `riski5-core-sdramstress`
+      to bisect SDRAM read vs write vs IF-fetch issues
+      separately.
+    - Worst case fallback: tie DomCore and DomBus to one
+      shared physical clock at the wrapper level (Quartus
+      already consolidates them anyway); then the
+      CoreCdcBridge becomes effectively pass-through with
+      sync-register delay only, removing the "two FSMs in
+      different domains chain" risk. Phase D-2 still works
+      semantically since the source-level domain split is
+      preserved.
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
