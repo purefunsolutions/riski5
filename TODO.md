@@ -261,12 +261,26 @@ rules around maintaining it.
       amoand.w *does* commit through the bridge. Initial confusion
       was terminal rendering of NUL bytes plus 0x20-prefixed bytes
       that looked like they meant the wrong thing.
-    - **Next**: task #52 — investigate what's actually causing the
-      stuck TIF flag. Priority suspects: (a) stuck mtipS / meipS
-      keeping MIP set so the loop's `csrsi mstatus, 8` immediately
-      traps and re-sets TIF_NEED_RESCHED every iteration; (b) a
-      TIF bit set that none of the loop's branches handle. Phase
-      D-3b (CoreMark zero-output) still pending under task #49 —
+    - **Task #52 — IRQ hypothesis REFUTED too**. Pure-Haskell
+      `riski5-linux-sim` reaches "Linux version" printk at cycle
+      555K (PC=0x80188ebc, 28 UART bytes) — and SocSim explicitly
+      doesn't model interrupts at all ("PLIC. External interrupts
+      can't fire because we never raise them"). Forcing
+      `mtipS = pure False` in `Riski5.Clint` and rerunning
+      Verilator hwsim for 30M cycles: still hangs at
+      0x801ec428..0x801ec474. So the timer IRQ isn't the cause.
+    - Disassembly of the hang region: kernel's
+      `irqentry_exit_to_user_mode` exit loop checks
+      `andi a5, s1, 0x337` then branches to handlers selectively
+      (mask 0x30 → schedule, 0x6 → arch_do_signal_or_restart,
+      0x1 → resume_user_mode_work) — but the outer-loop
+      bnez tests the full 0x337 mask. If bit 8 or 9 is set in
+      thread_info.flags, none of the called handlers clear it,
+      the loop spins.
+    - **Next**: instrument SDRAM model or add a topEntity DEBUG
+      port to see what value `lw s1, 0(tp)` actually reads at the
+      hang. That tells us which TIF bit is stuck. Phase D-3b
+      (CoreMark zero-output) still pending under task #49 —
       needs a separate sim variant that doesn't overlay CoreMark.hs
       with LinuxBootMaster.
 
