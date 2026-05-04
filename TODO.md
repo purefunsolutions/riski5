@@ -147,30 +147,65 @@ rules around maintaining it.
     new diagnostic scripts under `scripts/`:
     `core-bridge-probe.tcl`, `uart-counter-probe.tcl`,
     `all-flags-probe.tcl` — each documents the bit layout of
-    its probe and the interpretation tree. Open hypotheses for
-    next session:
-    1. Bit-skew metastability in the syncBitVector for the
-       101-bit packed CoreBusReq.
-    2. Quartus PLL consolidation merging clkCore + clkBus into
-       the same physical clock changes syncBit's silicon
-       behavior subtly.
-    3. The bridge slave's 1-cycle SDrive window is too brief
-       for the Altera JTAG-UART IP to capture and commit (CMTC
-       counts `uart_sel & uart_wr & waitrequest` — these never
-       coincide).
-    4. dBe (M-stage) vs pcFetch (IF-stage) misalignment in the
-       bundle the bridge captures, losing SW writes.
+    its probe and the interpretation tree.
+
+    Additional probe data from this session's silicon flash:
+    Sampled BPCC values across 8 samples:
+    `0xC8 0x34C 0x9C 0x1A88 0x11C8 0x1A90 0x1AA0 0x8A8`.
+    All are valid CoreMark `.text` addresses (verified against
+    `coremark.elf`'s objdump): `0xE0` is `calc_func`, `0x344`
+    is in `cmp_complex` / `core_list_mergesort`, `0x1A88` is
+    deep in CoreMark's matrix/list code. None of the observed
+    PCs fall in `0x241C-0x2448` which is `uart_send_char` —
+    so the core is in CoreMark's compute phase but has NOT
+    YET reached any UART output path. CoreMark only calls
+    `uart_send_char` after all 600 iterations complete (the
+    final printf banner). With the bridge's ~10× per-cycle
+    slowdown, those 600 iterations take an estimated 130s+
+    on top of the native 13.5s benchmark — but 5min capture
+    still showed no progress to the print phase.
+
+    Quartus PLL consolidation note: STA report shows ONLY ONE
+    `bus_clocks` entry: `u_altpll_sdram|pll|clk[2]` (40 MHz).
+    Quartus consolidated u_altpll_bus + u_altpll_core into the
+    same physical PLL output. clkBus and clkCore are the SAME
+    physical clock — there is no actual CDC happening on
+    silicon. The bridge's `dualFlipFlopSynchronizer` logic
+    still runs but introduces only synchronous register delay,
+    not metastability resolution.
+
+    Open hypotheses for next session:
+    1. The bridge's per-pipeline-advance overhead is >10×, not
+       ~10× as estimated — CoreMark's 600 iterations take far
+       longer than 5 min to complete. Try a multi-hour
+       capture, or use a vastly simpler firmware
+       (`riski5-core-aexttest` prints "BLSAX" in a tight loop
+       and would surface CMTC>0 within seconds).
+    2. The core IS executing CoreMark code but takes a trap on
+       some operation (illegal instruction, misalign, etc.)
+       and the trap handler is non-printing.
+    3. SDRAM access through CoreCdcBridge → SdramCdcBridge has
+       a subtle silicon issue where reads return wrong data,
+       causing CoreMark to compute wrong values that loop
+       forever. The bridge's `cbrDRen` keep during SServe might
+       interact badly with the SDRAM adapter's multi-cycle
+       state machine in ways sim doesn't catch.
+
     Concrete next steps:
-    - Add a probe for slave's sLatReq.cbrDAddr + cbrDBe so we
+    - **Try `riski5-core-aexttest` first** — simple `BLSAX` loop,
+      lots of UART writes per second. If CMTC>0 within seconds,
+      the bridge IS working for UART; CoreMark hang is then
+      isolated to CoreMark's compute phase (likely SDRAM-related).
+      If CMTC=0 too, the bridge is fundamentally broken for UART.
+    - Add a probe for slave's `sLatReq.cbrDAddr + cbrDBe` so we
       can directly observe whether SW writes ever reach the
       bridge slave with the right address + byte enable.
-    - Try a simpler firmware variant
-      (`riski5-core-aexttest` prints "BLSAX" — much shorter
-      hot loop than CoreMark) to see if any UART output ever
-      lands.
     - Re-read the Quartus fit report for the multi-PLL Phase
       D-2 build — verify the syncBitVector actually synthesised
       as expected and check the false_path constraints.
+    - Try `riski5-core-amostress` — exercises SDRAM intensively;
+      if it hangs differently from CoreMark, we have a clue
+      about whether SDRAM-via-bridge works at all.
   - **Phase E — multi-domain test + hwsim updates**
     (queued as task #44). New `test/CoreCdcSpec.hs` +
     `test/SdramCdcSpec.hs` with non-equal clock periods using
