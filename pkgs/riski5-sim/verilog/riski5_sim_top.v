@@ -137,7 +137,17 @@ module riski5_sim_top (
     // samples this whenever DEBUG_PCFETCH == 0x801ec464 (the LW
     // in the kernel's irqentry_exit_to_user_mode loop) to identify
     // which thread_info.flags bit is stuck.
-    output wire [31:0] DEBUG_DMEM_RDATA
+    output wire [31:0] DEBUG_DMEM_RDATA,
+
+    // --- Bridge-captured DMEM rdata tap (task #52 debug 2) ---
+    //
+    // What the bridge actually presents to the core as the LW result
+    // (= coreReplyInCoreS.cbrDmemRdata). MAY DIFFER from
+    // DEBUG_DMEM_RDATA above: that one shows the bus's combinational
+    // mux output at the SAMPLE cycle, which can reflect a stale
+    // dataRdataLastS from an earlier LW. This signal is what the
+    // core actually consumes for the latest completed LW.
+    output wire [31:0] DEBUG_BRIDGE_DMEM_RDATA
 );
 
   // Avalon-MM-like bus tap from the Clash core to the Altera IP.
@@ -209,6 +219,9 @@ module riski5_sim_top (
   // DMEM rdata tap (task #52). Bus-side view; sourced from the
   // riski5 instance's new DEBUG_DMEM_RDATA output.
   assign DEBUG_DMEM_RDATA = dbg_dmem_rdata_w;
+  // Bridge-captured DMEM rdata tap (task #52 debug 2). What the
+  // bridge actually delivers to the core for the latest LW.
+  assign DEBUG_BRIDGE_DMEM_RDATA = dbg_bridge_dmem_rdata_w;
 
   // ---- SDRAM chip-side wires (riski5 ⇄ sim_sdram_chip) ---------
   wire [11:0] sdram_addr_w;
@@ -226,11 +239,13 @@ module riski5_sim_top (
   // ---- Debug taps -------
   // dbg_pcfetch_w is exposed at sim top as DEBUG_PCFETCH (Phase E-b).
   // dbg_dmem_rdata_w is exposed at sim top as DEBUG_DMEM_RDATA (#52).
+  // dbg_bridge_dmem_rdata_w is exposed as DEBUG_BRIDGE_DMEM_RDATA (#52 debug 2).
   // The remaining debug ports below stay dangling — sim doesn't
   // need them yet, and exposing every one inflates the C ABI for
   // no current consumer.
   wire [31:0]  dbg_pcfetch_w;
   wire [31:0]  dbg_dmem_rdata_w;
+  wire [31:0]  dbg_bridge_dmem_rdata_w;
   wire [7:0]   dbg_flags_w;
   wire [127:0] dbg_frozen_pc_w;
   wire [31:0]  dbg_frozen_flags_w;
@@ -322,6 +337,7 @@ module riski5_sim_top (
       .SDRAM_WE_N             (sdram_we_n_w),
       .DEBUG_PCFETCH          (dbg_pcfetch_w),
       .DEBUG_DMEM_RDATA       (dbg_dmem_rdata_w),
+      .DEBUG_BRIDGE_DMEM_RDATA(dbg_bridge_dmem_rdata_w),
       .DEBUG_FLAGS            (dbg_flags_w),
       .DEBUG_FROZEN_PC        (dbg_frozen_pc_w),
       .DEBUG_FROZEN_FLAGS     (dbg_frozen_flags_w),
@@ -484,6 +500,13 @@ module sim_sdram_chip (
         end else if (is_read) begin
           if (active[ba]) begin
             read_d1 <= mem[linear_addr];
+            // Task #52 debug: log reads of chip cells around
+            // bus addr 0x80273380 (init_task.flags). Chip cells
+            // 0x14E6C0 (low half) and 0x14E6C1 (high half).
+            if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
+              $display("[SDRAM-READ] cell=0x%h returning=0x%h",
+                       linear_addr, mem[linear_addr]);
+            end
           end else begin
             // Read of an inactive bank — undefined chip behaviour,
             // model as zeros (matches a typical un-written cell).

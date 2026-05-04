@@ -415,6 +415,14 @@ topEntity ::
           -- thread_info.flags value the kernel is reading in the
           -- exit_to_user_mode infinite loop.
           "DEBUG_DMEM_RDATA" ::: Signal DomBus (BitVector 32)
+        , -- Task #52 diagnostic 2: bridge-side @cbrDmemRdata@ —
+          -- what the bridge's master FSM actually presents to the
+          -- core. May DIFFER from the bus-side signal above because
+          -- the bridge captures + caches; sampling both lets us
+          -- distinguish "bridge corrupts" from "bus shows stale
+          -- value at sample cycle". This is exactly what the core
+          -- consumes as its LW result.
+          "DEBUG_BRIDGE_DMEM_RDATA" ::: Signal DomCore (BitVector 32)
         )
 topEntity
   clkBus
@@ -611,6 +619,7 @@ topEntity
           sdramWeNS = sdrWeN <$> sdramPinsS
           dbgPcFetchS = soDbgPcFetch <$> outS
           dbgDmemRdataS = soDbgDmemRdata <$> outS
+          dbgBridgeDmemRdataS = cbrDmemRdata <$> coreReplyInCoreS
           dbgFlagsS' = soDbgFlags <$> outS
           dbgFrozenPcS = soDbgFrozenPcAll <$> outS
           dbgFrozenFlagsS = soDbgFrozenFlagsAll <$> outS
@@ -659,6 +668,7 @@ topEntity
             , dbgBridgeSlavePcS
             , pcFetchInCoreS
             , dbgDmemRdataS
+            , dbgBridgeDmemRdataS
             )
           , coreReplyInBusInner
           )
