@@ -98,7 +98,21 @@ runHelloSoc nCycles =
       dataVec :: Vec 64 (BitVector 32)
       dataVec = CP.repeat 0
       inputSig =
-        fromList (P.repeat SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0, sisUartIrq = P.False})
+        fromList
+          ( P.repeat
+              SocInSim
+                { sisSwitches = 0
+                , sisKeys = 0xF
+                , sisSramDqIn = 0
+                , sisUartIrq = P.False
+                , sisJtagLoadMode = P.False
+                , sisJtagLoadAddr = 0
+                , sisJtagLoadWdata = 0
+                , sisJtagLoadWe = P.False
+                , sisJtagLoadRd = P.False
+                , sisJtagLoadBe = 0
+                }
+          )
       go ::
         (HiddenClockResetEnable System) =>
         Signal System SocOutSim

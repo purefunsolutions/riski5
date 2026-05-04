@@ -744,9 +744,33 @@ core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   -- 'fValidTrackS' counts it so the first real instruction
   -- captures @ifValid = True@.
 
+  -- 'fValidTrackS' was originally @register False@ to mark the
+  -- first post-reset cycle as not-yet-valid (the imem read for
+  -- @pcFetch=0@ hasn't completed yet). The 1-cycle deferral
+  -- handled the BRAM read latency cleanly in single-domain.
+  --
+  -- Under the multi-domain CoreCdcBridge, the FIRST @stall=False@
+  -- cycle (= first MDone of the bridge) carries genuinely-valid
+  -- imem data — the bridge waited the full round-trip and only
+  -- pulses stall=False once the reply has the BRAM[reset_pc] read
+  -- properly captured. Init=False would mean the bridge's first
+  -- transaction's instruction (typically the @LUI@ that sets up
+  -- the stack pointer or peripheral base) gets captured into
+  -- IF/ID with @ifValid=False@, propagates as a bubble through
+  -- the pipeline, never writes its rd back to the regfile, and
+  -- the next dependent instruction (typically a @SW@ that uses
+  -- the just-loaded base address) reads @x_rd@ as 0 from the
+  -- regfile because forwarding can't pick up an emValid=False
+  -- entry. The silicon symptom is "every SW commits to address 0"
+  -- — caught by 'CdcSocIntegrationSpec.case_core_dAddr'.
+  --
+  -- Init=True is safe in single-domain too because the first
+  -- @blockRam@ read returns @progInit !! 0@ (= the reset_pc
+  -- instruction) at cycle 0, not undefined garbage — so capturing
+  -- it with @ifValid=True@ is correct.
   fValidTrackS :: Signal dom Bool
   fValidTrackS =
-    register False $
+    register True $
       mux stallInternalS fValidTrackS (pure True)
 
   ifIdS :: Signal dom IfId

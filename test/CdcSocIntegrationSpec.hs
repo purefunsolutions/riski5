@@ -114,15 +114,14 @@ asserts (in DomCdcSocA) plus the per-cycle UART TX byte (if any)
 in DomCdcSocB. Useful to see whether the core advances or
 deadlocks when the bridge integration goes sideways.
 -}
-runHelloThroughBridgeDbg :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq])
+runHelloThroughBridgeDbg :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
 runHelloThroughBridgeDbg n =
-  let (pcs, txs, busReqs) = runHelloThroughBridge_inner n
-   in (pcs, txs, busReqs)
+  runHelloThroughBridge_inner n
 
 runHelloThroughBridge :: Int -> [Maybe (BitVector 8)]
-runHelloThroughBridge n = case runHelloThroughBridge_inner n of (_, txs, _) -> txs
+runHelloThroughBridge n = case runHelloThroughBridge_inner n of (_, txs, _, _) -> txs
 
-runHelloThroughBridge_inner :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq])
+runHelloThroughBridge_inner :: Int -> ([BitVector 32], [Maybe (BitVector 8)], [CoreBusReq], [CoreBusReq])
 runHelloThroughBridge_inner n =
   let progVec :: Vec 128 (BitVector 32)
       progVec =
@@ -215,6 +214,7 @@ runHelloThroughBridge_inner n =
    in ( CE.sampleN n pcFetchA
       , CE.sampleN n uartTxB
       , CE.sampleN n coreReqInBusB
+      , CE.sampleN n coreReqInCoreA
       )
 
 -- * Cases --------------------------------------------------------
@@ -226,6 +226,7 @@ tests =
     [ testCase "Hello firmware UART output through bridge spells 'hello, world\\n'" case_hello_through_bridge
     , testCase "Hello firmware: core PC advances past reset PC=0" case_pc_advances
     , testCase "Hello firmware: SW transactions reach bus side" case_sw_reaches_bus
+    , testCase "Hello firmware: core asserts correct dAddr for SW" case_core_dAddr
     ]
 
 case_hello_through_bridge :: Assertion
@@ -250,7 +251,7 @@ case_pc_advances = do
   -- instruction per pipeline-advance). After 5000 cycles the
   -- core's pcFetch must have advanced past 0; if it stays at 0
   -- forever the bridge isn't actually delivering the reset fetch.
-  let (pcs, _, _) = runHelloThroughBridgeDbg 5000
+  let (pcs, _, _, _) = runHelloThroughBridgeDbg 5000
       distinctPcs = P.length (P.foldr (\x acc -> if x `P.elem` acc then acc else x : acc) [] (P.take 5000 pcs))
       maxPc = P.maximum pcs
       firstNonZero = P.length (P.takeWhile (P.== 0) pcs)
@@ -274,7 +275,7 @@ case_pc_advances = do
 
 case_sw_reaches_bus :: Assertion
 case_sw_reaches_bus = do
-  let (_, _, busReqs) = runHelloThroughBridgeDbg 5000
+  let (_, _, busReqs, _) = runHelloThroughBridgeDbg 5000
       cyclesWithSw = [(i, r) | (i, r) <- P.zip [0 :: Int ..] busReqs, cbrDBe r CP./= 0]
       uniqueSwAddrs =
         P.foldr
@@ -297,3 +298,39 @@ case_sw_reaches_bus = do
     )
     True
     (uartWrites P.> 0)
+
+case_core_dAddr :: Assertion
+case_core_dAddr = do
+  let (pcs, _, _, coreReqs) = runHelloThroughBridgeDbg 5000
+      cyclesWithCoreSw = [(i, r) | (i, r) <- P.zip [0 :: Int ..] coreReqs, cbrDBe r CP./= 0]
+      uniqueCoreAddrs =
+        P.foldr
+          (\(_, r) acc -> if cbrDAddr r `P.elem` acc then acc else cbrDAddr r : acc)
+          []
+          cyclesWithCoreSw
+      coreUartWrites =
+        P.length [() | (_, r) <- cyclesWithCoreSw, cbrDAddr r CP.== 0x10000000]
+      -- Print first 5 SW cycles in detail.
+      first5 = P.take 5 cyclesWithCoreSw
+  P.mapM_ (\(i, r) -> P.putStrLn $
+    "  [diag] cycle " ++ P.show i ++
+    ": pcFetch=0x" ++ P.show (pcs P.!! i) ++
+    " cbrDAddr=0x" ++ P.show (cbrDAddr r) ++
+    " cbrDWdata=0x" ++ P.show (cbrDWdata r) ++
+    " cbrDBe=" ++ P.show (cbrDBe r)
+    ) first5
+  P.putStrLn $ "  [diag] CORE-side cycles with dBe!=0: " ++ P.show (P.length cyclesWithCoreSw)
+  P.putStrLn $ "  [diag] CORE-side unique dAddrs: " ++ P.show uniqueCoreAddrs
+  P.putStrLn $ "  [diag] CORE-side cycles writing to UART base: " ++ P.show coreUartWrites
+  -- If the core ASSERTS dAddr=0x10000000 but the bus sees dAddr=0,
+  -- the bug is in the bridge (CDC dropping the address). If the
+  -- core ALSO asserts dAddr=0, the bug is upstream — the X-stage
+  -- forwarding/regfile read for x11 doesn't pick up LUI's
+  -- 0x10000000 writeback in time.
+  assertEqual
+    ( "expected core to assert UART address (got "
+        ++ P.show coreUartWrites
+        ++ " core cycles dBe!=0+dAddr=UART)"
+    )
+    True
+    (coreUartWrites P.> 0)
