@@ -319,7 +319,16 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
   capReplyBundleC = syncBitVector clkB clkC rstC enC capReplyBundleB
   capReplyC = unpackReply <$> capReplyBundleC
 
-  -- Latched core request crosses Core→Bus quasi-static.
+  -- Latched core request crosses Core→Bus quasi-static. Source from
+  -- the LIVE 'reqInC' (NOT a latched master-state field) so the
+  -- bundle leads the @mReqToggle@ by 1 cycle: by the time the toggle
+  -- edge propagates through the CDC sync, the bundle has been stable
+  -- for ≥1 cycle on the source side, giving the slave's
+  -- @syncBitVector@ a safely-stable window. The pipeline-stall
+  -- guarantee on the core side keeps reqInC's contributing fields
+  -- (cbrPcFetch from the F stage, cbrDAddr/cbrDBe/cbrDWdata from
+  -- the M stage) constant through MBusy because @stallInternalS@
+  -- holds those stages frozen.
   latReqBundleC = packReq <$> reqInC
   latReqBundleB = syncBitVector clkC clkB rstB enB latReqBundleC
   latReqB = unpackReq <$> latReqBundleB
