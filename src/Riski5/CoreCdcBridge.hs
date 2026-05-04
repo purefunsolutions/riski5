@@ -567,14 +567,35 @@ slaveStep st@SlaveState{..} reqEdge latReq reply =
     -- before we capture them. See note on 'SlavePhase'.
     SDrive -> st{sPhase = SServe}
     SServe ->
-      let imemDoneNow = sImemDone || not (cbrStall reply)
-          dataDoneNow = sDataDone || not (cbrDataStall reply)
+      let -- Whether the latched request actually has a data-port
+          -- operation pending. Without this gate, IF-only
+          -- transactions (cbrDRen=False, cbrDBe=0) see
+          -- cbrDataStall=False from the very first SServe cycle (the
+          -- bus drives dataStallS=False whenever dataAccessS=False),
+          -- and the bridge captures whatever stale value happens to
+          -- be on the bus's combinational dmemRdataS — typically a
+          -- BRAM word from addr 0 (the firmware's `lui a0, 0x10000`
+          -- = 0x10000537). That stale value then poisons mReply, and
+          -- the next time the master is in MIdle without a live req,
+          -- the core sees the poisoned value as a "fake LW result"
+          -- via the bridge's MIdle-otherwise → mReply path. Gating
+          -- the capture (and the dataDone signal) on actually-pending
+          -- data port use keeps mReply stable until a real LW lands.
+          dataPortPending =
+            cbrDRen sLatReq || cbrDBe sLatReq /= 0
+          imemDoneNow = sImemDone || not (cbrStall reply)
+          dataDoneNow =
+            sDataDone
+              || not dataPortPending
+              || not (cbrDataStall reply)
           imemRdataNow =
             if not sImemDone && not (cbrStall reply)
               then cbrImemData reply
               else sImemRdata
           dmemRdataNow =
-            if not sDataDone && not (cbrDataStall reply)
+            if not sDataDone
+              && dataPortPending
+              && not (cbrDataStall reply)
               then cbrDmemRdata reply
               else sDmemRdata
           capReply' =

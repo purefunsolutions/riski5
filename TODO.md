@@ -315,16 +315,23 @@ rules around maintaining it.
       bit for the boot CPU's idle task (no actual signal pending),
       so *(tp) stays 0x2 forever and the exit_to_user_mode_loop
       spins.
-    - **Why pure-Haskell sim boots past this**: pure sim doesn't
-      simulate interrupts/exceptions, so the kernel never enters
-      irqentry_exit_to_user_mode in the first place. Verilator hwsim
-      DOES exercise the IRQ exit path because something during init
-      sets TIF_SIGPENDING.
-    - **Real next step**: find WHY TIF_SIGPENDING is set on init_task
-      during boot. Suspects: (a) PLIC/CLINT raising a phantom IRQ
-      that the kernel translates into a signal; (b) a kernel
-      sanity-check that erroneously sets the bit; (c) some sysctl
-      value the kernel reads from MMIO returning unexpected data.
+    - **EXPERIMENT confirms kernel is correct, HW is wrong**: forced
+      *(tp)=0 by patching the SDRAM chip model to refuse writes to
+      cells 0x14E6C0/C1 (= byte 0x80273380 = init_task.flags). With
+      this hack, kernel BOOTS PAST the irqentry_exit_to_user_mode
+      loop and visits PCs all over the kernel — many in trap
+      handlers (handle_riscv_irq, do_trap_*, sigaddset, on_sig_stack,
+      is_valid_bugaddr). 280 SDRAM-WRITE-BLOCKED events recorded:
+      kernel kept trying to set 0x0002. So the kernel REPEATEDLY
+      sets TIF_SIGPENDING in response to SOMETHING our hardware does.
+    - **Real next step**: find WHAT trap or exception triggers the
+      kernel to call set_thread_flag(TIF_SIGPENDING). Suspects:
+      (a) misaligned access exception (kernel does misaligned stores
+      that our hardware traps); (b) store access fault (writing to
+      unmapped or read-only address); (c) illegal instruction
+      (kernel uses an instruction we don't decode, e.g., WFI, FENCE
+      variants, or RV32A AMOs we mis-handle). Add tap to log
+      do_trap entry and capture the cause/PC at the trap site.
 
     --- (Below: original ROOT CAUSE writeup; KEEP for context but it
     is REFUTED — the bridge captures correctly.) ---
