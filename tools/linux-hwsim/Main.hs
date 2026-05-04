@@ -505,6 +505,48 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
         ("[CPU-RESET] cycle=" ++ show cycs
           ++ " from kernel pc=0x" ++ showHex prevPc ""
           ++ " to firmware pc=0x" ++ showHex pc "")
+    -- Detect entries to earlycon-related kernel functions to find
+    -- where the chain breaks.
+    when (pc == 0x8020a584 && prevPc /= 0x8020a584) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-SETUP-EARLYCON] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8020a858 && prevPc /= 0x8020a858) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-PARAM-SETUP-EARLYCON] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8020a8f4 && prevPc /= 0x8020a8f4) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-OF-SETUP-EARLYCON] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8020b274 && prevPc /= 0x8020b274) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-JTAGUART-EARLYCON] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8020e450 && prevPc /= 0x8020e450) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-DT-CHOSEN-STDOUT] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8020e9dc && prevPc /= 0x8020e9dc) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-DT-CHOSEN] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801f2f3c && prevPc /= 0x801f2f3c) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-START-KERNEL] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801f73c8 && prevPc /= 0x801f73c8) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-SETUP-ARCH] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80002b44 && prevPc /= 0x80002b44) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-PRINTK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x800013b4 && prevPc /= 0x800013b4) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-WARN-PRINTK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
     -- Also detect ANY major PC region change (kernel ↔ firmware)
     -- to catch jumps/redirects.
     when (prevPc >= 0x80000000 && pc < 0x80000000 && pc /= prevPc && cycs > 1000000) $

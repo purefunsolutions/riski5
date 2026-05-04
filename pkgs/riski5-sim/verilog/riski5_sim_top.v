@@ -188,6 +188,19 @@ module riski5_sim_top (
   assign uart_rdata  = jtag_uart_readdata;
   assign uart_ready  = ~jtag_uart_waitrequest;
 
+  // Task #52 follow-up: log every kernel JTAG-UART write attempt.
+  // Catches both "kernel never tries to write" (no events) AND
+  // "kernel tries but waitrequest blocks" (events but UART_TX_VALID
+  // never fires). Limit to data-register writes (uart_addr[2]==0)
+  // to skip control-register writes during driver init.
+  always @(posedge clk) begin
+    if (uart_sel & jtag_uart_wr & (uart_addr[2] == 1'b0)) begin
+      $display("[UART-WRITE-ATTEMPT] addr=0x%h data=0x%h be=%b waitreq=%b accepted=%b pc=0x%h",
+               uart_addr, uart_wdata, uart_be, jtag_uart_waitrequest,
+               (jtag_uart_waitrequest), dbg_core_pc_w);
+    end
+  end
+
   // UART-TX tap. The Altera IP commits av_writedata[7:0] to the TX
   // FIFO on the cycle AFTER the master first presented
   // chipselect+~write_n+waitrequest=1 (fifo_wr is registered).
