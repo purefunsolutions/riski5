@@ -253,18 +253,22 @@ rules around maintaining it.
       reaches PC=0x801ec428..0x801ec474 — exactly the silicon hang
       address (0x801EC400-0x801EC480 from prior reports). Hang
       location identified: `irqentry_exit_to_user_mode` infinite
-      loop checking thread_info flags. Hypothesis: the
-      `amoand.w zero, a5, (tp)` at 0x801ec400 doesn't commit its
-      bit-clear, so the `lw s1, 0(tp)` at 0x801ec464 always reads
-      the same flags and the loop spins. Tracked as task #51 — to
-      verify by instrumenting the SDRAM model or by writing a
-      standalone HelloAmoMaskStress firmware that mimics the
-      kernel's pattern (clear + reload + recheck).
-    - **Next**: pursue task #51 (AMO commit verification) to confirm
-      or refute the AMO hypothesis. Phase D-3b (CoreMark
-      zero-output) still pending under task #49 — needs a separate
-      sim variant that doesn't overlay CoreMark.hs with
-      LinuxBootMaster.
+      loop checking thread_info flags via mask 0x337.
+    - **Task #51 — AMO commit hypothesis REFUTED**. Built a minimal
+      AMO probe in the boot stub (`sw 0xFFFFFFFF; amoand.w zero,
+      0xFFFFFF00, (addr); lw verify`); raw `od` hex of UART output
+      shows `41 00 ff ff ff` after the post-AMO marker — the
+      amoand.w *does* commit through the bridge. Initial confusion
+      was terminal rendering of NUL bytes plus 0x20-prefixed bytes
+      that looked like they meant the wrong thing.
+    - **Next**: task #52 — investigate what's actually causing the
+      stuck TIF flag. Priority suspects: (a) stuck mtipS / meipS
+      keeping MIP set so the loop's `csrsi mstatus, 8` immediately
+      traps and re-sets TIF_NEED_RESCHED every iteration; (b) a
+      TIF bit set that none of the loop's branches handle. Phase
+      D-3b (CoreMark zero-output) still pending under task #49 —
+      needs a separate sim variant that doesn't overlay CoreMark.hs
+      with LinuxBootMaster.
 
 - **Linux-on-riski5 — Path A (nommu, M-mode).** Plan in
   [`docs/linux-boot.md`](./docs/linux-boot.md) v2. Goal: boot a
