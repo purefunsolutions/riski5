@@ -504,7 +504,16 @@ module sim_sdram_chip (
             // bus addr 0x80273380 (init_task.flags). Chip cells
             // 0x14E6C0 (low half) and 0x14E6C1 (high half).
             if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
-              $display("[SDRAM-READ] cell=0x%h returning=0x%h",
+              $display("[SDRAM-READ-TP] cell=0x%h returning=0x%h",
+                       linear_addr, mem[linear_addr]);
+            end
+            // Task #52 debug 2: log ANY read returning 0x0537 or 0x1000
+            // — those are the half-words of 0x10000537 (= `lui a0,
+            // 0x10000`) that the bridge captures as the LW result.
+            // Check the ACTUAL data being returned, not the cell address,
+            // to catch all instances regardless of which cell holds them.
+            if (mem[linear_addr] == 16'h0537 || mem[linear_addr] == 16'h1000) begin
+              $display("[SDRAM-READ-VAL] cell=0x%h returning=0x%h",
                        linear_addr, mem[linear_addr]);
             end
           end else begin

@@ -447,10 +447,10 @@ runUartStream ::
   -- bridge is presenting a different value than the bus mux shows;
   -- if they match, the bus signal IS the LW result the kernel sees.
   SimM Riski5SimTopPorts Riski5SimTopState Int
-runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCycles 0
+runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCycles 0 0
  where
-  go 0 cycs = pure cycs
-  go k cycs = do
+  go 0 cycs _prevPc = pure cycs
+  go k cycs prevPc = do
     clockCycle
     s <- peekState
     let pc = sDebugPcfetch s
@@ -460,18 +460,23 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
     -- and dense enough to localise long stalls.
     when (cycs `mod` 100_000 == 0) $
       liftIO $ modifyIORef' snapsRef ((cycs, pc) :)
-    -- Task #52: sample dmem rdata when the core is at the andi
-    -- AFTER the LW (PC=0x801ec468). The bus-side DEBUG_DMEM_RDATA
-    -- shows the SoC body's combinational mux output, which can be
-    -- a stale dataRdataLastS from an earlier LW. The bridge-side
-    -- DEBUG_BRIDGE_DMEM_RDATA shows what the bridge captured for
-    -- the most recent transaction (= what the core consumes). Two
-    -- histograms let us distinguish "bridge corrupts" from
-    -- "bus-side tap is misleading".
-    when (pc == 0x801ec468) $
+    -- Task #52: 5-stage pipeline F/D/X/M/W. The LW at 0x801ec464
+    -- enters X-stage 3 cycles after PC_F first sees it. PC_F gets
+    -- held at 0x801ec46c during the SDRAM stall (the bnez is in F
+    -- while the LW stalls X). So sample DEBUG_BRIDGE_DMEM_RDATA
+    -- EVERY CYCLE PC=0x801ec46c — this captures mReply during the
+    -- entire stall window. The stall-release cycle is exactly when
+    -- mReply.cbrDmemRdata = the LW's actual result (= what the core
+    -- retires the LW with). The histogram will show the value the
+    -- LW from *(tp) actually returns, mixed with 0 from MBusy
+    -- cycles.
+    when (pc == 0x801ec46c) $
       liftIO $ do
         modifyIORef' rdataRef (Map.insertWith (+) (sDebugDmemRdata s) 1)
         modifyIORef' bridgeRdataRef (Map.insertWith (+) (sDebugBridgeDmemRdata s) 1)
+    -- Avoid -Wunused-binding warning on prevPc when no edge sampling
+    -- is in use this build.
+    let _ = prevPc
     if sUartTxValid s /= 0
       then do
         let b = sUartTxByte s
@@ -479,8 +484,8 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
           modifyIORef' bufRef (b :)
           BS.hPutStr stdout (BS.singleton b)
           hFlush stdout
-        go (k - 1) (cycs + 1)
-      else go (k - 1) (cycs + 1)
+        go (k - 1) (cycs + 1) pc
+      else go (k - 1) (cycs + 1) pc
 
 -- * Entry point ------------------------------------------------------
 
@@ -602,11 +607,11 @@ runHwsim kPath dPath maxSteps = do
     )
     (reverse snaps)
   hPutStrLn stderr ""
-  hPutStrLn stderr "--- BUS-side DMEM rdata histogram at PC=0x801ec468 (task #52) ---"
+  hPutStrLn stderr "--- BUS-side DMEM rdata histogram at PC=0x801ec46c (LW in X-stage) ---"
   printRdataHistogram rdataMap
   bridgeRdataMap <- readIORef bridgeRdataRef
   hPutStrLn stderr ""
-  hPutStrLn stderr "--- BRIDGE-captured DMEM rdata histogram at PC=0x801ec468 (task #52 debug 2) ---"
+  hPutStrLn stderr "--- BRIDGE-captured DMEM rdata histogram at PC=0x801ec46c (LW in X-stage) ---"
   printRdataHistogram bridgeRdataMap
   where
     pad8 :: String -> String
