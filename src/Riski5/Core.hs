@@ -744,34 +744,39 @@ core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   -- 'fValidTrackS' counts it so the first real instruction
   -- captures @ifValid = True@.
 
-  -- 'fValidTrackS' was originally @register False@ to mark the
-  -- first post-reset cycle as not-yet-valid (the imem read for
-  -- @pcFetch=0@ hasn't completed yet). The 1-cycle deferral
-  -- handled the BRAM read latency cleanly in single-domain.
+  -- 'fValidTrackS' counts the IF stage's "imem first ready" event so
+  -- the first IF/ID capture happens with @ifValid=True@. False at
+  -- reset; the mux flips it True the cycle after EITHER of:
   --
-  -- Under the multi-domain CoreCdcBridge, the FIRST @stall=False@
-  -- cycle (= first MDone of the bridge) carries genuinely-valid
-  -- imem data — the bridge waited the full round-trip and only
-  -- pulses stall=False once the reply has the BRAM[reset_pc] read
-  -- properly captured. Init=False would mean the bridge's first
-  -- transaction's instruction (typically the @LUI@ that sets up
-  -- the stack pointer or peripheral base) gets captured into
-  -- IF/ID with @ifValid=False@, propagates as a bubble through
-  -- the pipeline, never writes its rd back to the regfile, and
-  -- the next dependent instruction (typically a @SW@ that uses
-  -- the just-loaded base address) reads @x_rd@ as 0 from the
-  -- regfile because forwarding can't pick up an emValid=False
-  -- entry. The silicon symptom is "every SW commits to address 0"
-  -- — caught by 'CdcSocIntegrationSpec.case_core_dAddr'.
+  --   * @stall=False@ (single-domain BRAM: stall first deasserts at
+  --     cycle 1 once @blockRam@'s 1-cycle read latency has elapsed),
+  --   * @stall=True && imemReady=True@ (bridge mode: the bridge
+  --     announces "imem reply is ready, but I'm still asserting stall
+  --     for one cycle so 'fValidTrackS' has time to flip" — see
+  --     'Riski5.CoreCdcBridge.replyOutC's MBusy-doneEdge branch).
   --
-  -- Init=True is safe in single-domain too because the first
-  -- @blockRam@ read returns @progInit !! 0@ (= the reset_pc
-  -- instruction) at cycle 0, not undefined garbage — so capturing
-  -- it with @ifValid=True@ is correct.
+  -- Single-domain: stall=False from cycle 0 (since 'imemReadyS=pure
+  -- True' for the BRAM-only fetch), so cycle-0 mux input is True,
+  -- fValidTrackS_1=True. Cycle-0 capture has @ifValid=False@ (mask
+  -- cycle-0 @blockRam@ output garbage); cycle-1 capture is the first
+  -- real instruction with @ifValid=True@. Behaviour identical to the
+  -- previous one-input-mux form.
+  --
+  -- Bridge mode: 'CoreCdcBridge' presents @cbrImemReady=True@ on the
+  -- MBusy cycle that 'doneEdge' fires (one cycle BEFORE the MDone
+  -- that releases stall). The two-input mux sees stall=True &&
+  -- imemReady=True and flips fValidTrackS to True for the next
+  -- cycle (= the MDone cycle); the IF/ID capture on that MDone
+  -- cycle then sees @ifValid=True@ and the LUI / first instruction
+  -- enters the pipeline correctly. Caught by
+  -- 'CdcSocIntegrationSpec.case_core_dAddr'.
   fValidTrackS :: Signal dom Bool
   fValidTrackS =
-    register True $
-      mux stallInternalS fValidTrackS (pure True)
+    register False $
+      mux
+        stallInternalS
+        (mux imemReadyS (pure True) fValidTrackS)
+        (pure True)
 
   ifIdS :: Signal dom IfId
   ifIdS = register defaultIfId ifIdNextS

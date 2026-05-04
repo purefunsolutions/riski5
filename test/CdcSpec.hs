@@ -201,6 +201,7 @@ tests =
     , testCase "held SW request fires bridge ONCE not on every cycle" case_held_sw_fires_once
     , testCase "held SW: master FSM does NOT spuriously re-fire" case_held_sw_no_master_refire
     , testCase "slave drives empty req when not actively serving" case_slave_drives_empty_in_idle
+    , testCase "imemReady=True is asserted one cycle BEFORE stall=False" case_imemready_announced_early
     ]
 
 -- ** 1. Tied passthrough ----------------------------------------
@@ -436,3 +437,36 @@ case_slave_drives_empty_in_idle = do
     )
     []
     bad
+
+-- ** 9. imemReady announced one cycle before stall releases ----
+
+-- | The bridge MUST present @cbrImemReady = True@ for at least one
+-- cycle WHILE @cbrStall = True@ before the cycle it releases stall.
+-- This "early-announce" lets the core's 'fValidTrackS' counter flip
+-- to True before the IF/ID capture cycle, so the FIRST instruction
+-- of every bridge round-trip enters the pipeline as a real retire
+-- (not a bubble). Without it, the LUI at PC=0 is forever a bubble,
+-- x11 stays at 0, and every subsequent SW commits to address 0
+-- instead of the UART base — silicon symptom "every SW commits
+-- to address 0" and the integration test
+-- 'CdcSocIntegrationSpec.case_core_dAddr' fails.
+case_imemready_announced_early :: Assertion
+case_imemready_announced_early = do
+  let n = 80
+      reqs = P.replicate n (emptyReq{cbrPcFetch = 0})
+      (replyTrace, _) = runBridge n reqs busReply
+      -- Find the first cycle where stall=False is presented.
+      firstStallFalse =
+        P.head [i | (i, r) <- P.zip [0 :: Int ..] replyTrace, P.not (cbrStall r)]
+      prevReply = replyTrace P.!! (firstStallFalse P.- 1)
+  assertBool
+    ( "expected imemReady=True on the cycle BEFORE first stall=False "
+        ++ "(cycle "
+        ++ show (firstStallFalse P.- 1)
+        ++ ", got cbrStall="
+        ++ show (cbrStall prevReply)
+        ++ " cbrImemReady="
+        ++ show (cbrImemReady prevReply)
+        ++ ")"
+    )
+    (cbrStall prevReply P.&& cbrImemReady prevReply)

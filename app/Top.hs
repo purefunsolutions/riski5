@@ -46,7 +46,7 @@ import FetchPolicy (enableSdramFetch, enableSramFetch)
 import Riski5.AvalonMm (AvalonMmBus (..))
 import Riski5.Core.Assembly (coreWith)
 import Riski5.Core.Presets (tiny32M)
-import Riski5.CoreCdcBridge (CoreBusReply (..), CoreBusReq (..), coreCdcBridgeWithDebug)
+import Riski5.CoreCdcBridge (CoreBusReply (..), CoreBusReq (..), coreCdcBridgeWithDebugWide)
 import Riski5.Domains (DomBus, DomCore, DomSdram)
 import Riski5.SdramCdcBridge (sdramCdcBridge)
 import Riski5.Lcd (LcdPins (..))
@@ -392,6 +392,23 @@ topEntity ::
           -- [4] reqEdgeB, [5] cbrStall, [6] cbrDataStall, [7] sLatReq.pcFetch[0].
           -- Sampled by altsource_probe @BDGS@ in the wrapper.
           "DEBUG_BRIDGE_SLAVE" ::: Signal DomBus (BitVector 8)
+        , -- Task #46 diagnostic: 32-bit master @mLastSentPc@ — the PC
+          -- the bridge most recently fired for. Sampled by altsource_probe
+          -- @BPCM@ in the wrapper. Tells us whether the master is firing
+          -- for the same PC repeatedly (core stuck) or advancing.
+          "DEBUG_BRIDGE_MASTER_PC" ::: Signal DomCore (BitVector 32)
+        , -- Task #46 diagnostic: 32-bit slave @sLatReq.cbrPcFetch@ —
+          -- the PC the slave most recently latched from the bridge.
+          -- Sampled by altsource_probe @BPCS@ in the wrapper. If
+          -- @BPCM@ != @BPCS@, the bridge's bus-side syncBitVector is
+          -- not delivering the master's payload correctly (CDC
+          -- bit-skew or metastability).
+          "DEBUG_BRIDGE_SLAVE_PC" ::: Signal DomBus (BitVector 32)
+        , -- Task #46 diagnostic: 32-bit core-side @cbrPcFetch@ —
+          -- the live PC the core is asserting. Sampled by altsource_probe
+          -- @BPCC@ in the wrapper. If @BPCC@ never advances past 0,
+          -- the core itself is stuck before the bridge ever fires.
+          "DEBUG_CORE_PC" ::: Signal DomCore (BitVector 32)
         )
 topEntity
   clkBus
@@ -446,8 +463,8 @@ topEntity
       <*> dRenInCoreS
 
   -- ----- Core ⇄ Bus CDC bridge with debug taps -------------------
-  (coreReplyInCoreS, coreReqInBusS, dbgBridgeMasterS, dbgBridgeSlaveS) =
-    coreCdcBridgeWithDebug
+  (coreReplyInCoreS, coreReqInBusS, dbgBridgeMasterS, dbgBridgeSlaveS, dbgBridgeMasterPcS, dbgBridgeSlavePcS) =
+    coreCdcBridgeWithDebugWide
       clkCore rstCore enableGen
       clkBus rstBus enableGen
       coreReqInCoreS
@@ -631,6 +648,9 @@ topEntity
             , jtagLoadBusyS
             , dbgBridgeMasterS
             , dbgBridgeSlaveS
+            , dbgBridgeMasterPcS
+            , dbgBridgeSlavePcS
+            , pcFetchInCoreS
             )
           , coreReplyInBusInner
           )

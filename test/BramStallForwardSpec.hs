@@ -62,7 +62,7 @@ import Clash.Sized.Vector qualified as V
 import Control.Monad (replicateM_)
 import Riski5.Asm
 import Riski5.ISA
-import Riski5.Soc (SocInSim (..), SocOutSim (..), socSimAlteraUart)
+import Riski5.Soc (SocOutSim (..), defaultSocInSim, socSimAlteraUart)
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
 import Prelude (Either (..), Int, Maybe (..), error, ($), (++))
@@ -225,8 +225,7 @@ runSoc :: [BitVector 32] -> Int -> [CP.BitVector 8]
 runSoc codeWords nCycles =
   let dataVec :: Vec 64 (BitVector 32)
       dataVec = CP.repeat 0
-      inputSig =
-        fromList (P.repeat SocInSim {sisSwitches = 0, sisKeys = 0xF, sisSramDqIn = 0, sisUartIrq = P.False})
+      inputSig = fromList (P.repeat defaultSocInSim)
       go ::
         (HiddenClockResetEnable System) =>
         Signal System SocOutSim

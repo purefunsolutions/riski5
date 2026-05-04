@@ -1538,6 +1538,14 @@ in
         // 'Riski5.CoreCdcBridge.coreCdcBridgeWithDebug' haddock.
         wire [7:0]   debug_bridge_master; // DomCore-clocked
         wire [7:0]   debug_bridge_slave;  // DomBus-clocked
+        // Task #46 wide PC probes: 32-bit master mLastSentPc, 32-bit
+        // slave sLatReq.cbrPcFetch, 32-bit core-side live pcFetch.
+        // Sampled by altsource_probes BPCM, BPCS, BPCC below. Catch
+        // bridge-side payload bugs (master fires for X, slave latches
+        // Y) and core-stuck bugs (BPCC stays at 0 forever).
+        wire [31:0]  debug_bridge_master_pc; // DomCore-clocked
+        wire [31:0]  debug_bridge_slave_pc;  // DomBus-clocked
+        wire [31:0]  debug_core_pc;          // DomCore-clocked
 
         // ----- L-3 JTAG-load wires ----------------------------------
         // Sources (JTAG → fabric): drive the SDRAM IP slave-side mux
@@ -1665,7 +1673,10 @@ in
             .JTAG_LOAD_RDATA    (jtag_load_rdata),
             .JTAG_LOAD_BUSY     (jtag_load_busy),
             .DEBUG_BRIDGE_MASTER (debug_bridge_master),
-            .DEBUG_BRIDGE_SLAVE  (debug_bridge_slave)
+            .DEBUG_BRIDGE_SLAVE  (debug_bridge_slave),
+            .DEBUG_BRIDGE_MASTER_PC (debug_bridge_master_pc),
+            .DEBUG_BRIDGE_SLAVE_PC  (debug_bridge_slave_pc),
+            .DEBUG_CORE_PC          (debug_core_pc)
         );
 
         // ----- altsource_probe — read pcFetchS via JTAG --------------
@@ -1758,6 +1769,77 @@ in
             .enable_metastability     ("NO")
         ) u_bridge_slave_probe (
             .probe        (debug_bridge_slave),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — bridge master mLastSentPc (task #46) -
+        // 32-bit DomCore-side probe. The most recent PC the master
+        // FSM fired a transaction for. Combined with BPCC (core's live
+        // pcFetch), this distinguishes "core PC stuck" (BPCC ==
+        // BPCM == 0) from "core PC moves but bridge can't keep up"
+        // (BPCC > BPCM).
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("BPCM"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (17),
+            .enable_metastability     ("NO")
+        ) u_bridge_master_pc_probe (
+            .probe        (debug_bridge_master_pc),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — bridge slave sLatReq.pcFetch (task #46)
+        // 32-bit DomBus-side probe. The PC the slave most recently
+        // latched from the master's payload. If BPCS != BPCM steadily
+        // (not just for the few cycles each takes to register), the
+        // bridge's bus-side syncBitVector has a CDC bug.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("BPCS"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (18),
+            .enable_metastability     ("NO")
+        ) u_bridge_slave_pc_probe (
+            .probe        (debug_bridge_slave_pc),
+            .source       (),
+            .source_clk   (1'b0),
+            .source_ena   (1'b0)
+        );
+
+        // ----- altsource_probe — core-side live pcFetch (task #46) ---
+        // 32-bit DomCore-side probe. The actual PC the core is asserting
+        // *right now* on its imem fetch port. If BPCC stays at 0 forever
+        // the core itself never advances past reset_pc — bridge would
+        // never fire either, and silicon hang is upstream of the bridge.
+        // If BPCC advances but BPCM lags, the bridge is the bottleneck.
+        altsource_probe #(
+            .lpm_type                 ("altsource_probe"),
+            .lpm_hint                 ("CBX_AUTO_BLACKBOX=ALL"),
+            .source_width             (0),
+            .probe_width              (32),
+            .instance_id              ("BPCC"),
+            .sld_ir_width             (3),
+            .source_initial_value     ("0"),
+            .sld_auto_instance_index  ("YES"),
+            .sld_instance_index       (19),
+            .enable_metastability     ("NO")
+        ) u_core_pc_probe (
+            .probe        (debug_core_pc),
             .source       (),
             .source_clk   (1'b0),
             .source_ena   (1'b0)

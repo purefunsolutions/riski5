@@ -36,6 +36,7 @@ module Riski5.CoreCdcBridge (
   CoreBusReply (..),
   coreCdcBridge,
   coreCdcBridgeWithDebug,
+  coreCdcBridgeWithDebugWide,
   coreCdcBridgeTied,
 ) where
 
@@ -176,8 +177,8 @@ coreCdcBridge ::
   , Signal busDom CoreBusReq
   )
 coreCdcBridge clkC rstC enC clkB rstB enB reqInC replyInB =
-  let (replyOutC, reqOutB, _, _) =
-        coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB
+  let (replyOutC, reqOutB, _, _, _, _) =
+        coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB
    in (replyOutC, reqOutB)
 
 {- | Diagnostic variant of 'coreCdcBridge' that also returns 8-bit
@@ -225,7 +226,40 @@ coreCdcBridgeWithDebug ::
   , Signal busDom (BitVector 8)
   )
 coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB =
-  (replyOutC, reqOutB, dbgMasterC, dbgSlaveB)
+  let (replyOutC, reqOutB, dbgM, dbgS, _, _) =
+        coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB
+   in (replyOutC, reqOutB, dbgM, dbgS)
+
+{- | Diagnostic variant that ALSO returns 32-bit @mLastSentPc@ (master,
+DomCore) and 32-bit @sLatReq.cbrPcFetch@ (slave, DomBus) so silicon
+can sample which PCs the bridge is actually firing for, not just the
+phase / toggle bits in 'coreCdcBridgeWithDebug'. The 8-bit packed
+debug bytes only carry 2 bits of pcFetch each — enough to verify
+"PC is moving" but not "PC is moving to the right addresses". The
+wide PC probes pinpoint master-vs-slave divergence (master fires
+for PC=0x40 but slave latches PC=0x10 — bit-skew bug; both agree but
+neither advances — core stuck before bridge).
+-}
+coreCdcBridgeWithDebugWide ::
+  forall coreDom busDom.
+  (KnownDomain coreDom, KnownDomain busDom) =>
+  Clock coreDom ->
+  Reset coreDom ->
+  Enable coreDom ->
+  Clock busDom ->
+  Reset busDom ->
+  Enable busDom ->
+  Signal coreDom CoreBusReq ->
+  Signal busDom CoreBusReply ->
+  ( Signal coreDom CoreBusReply
+  , Signal busDom CoreBusReq
+  , Signal coreDom (BitVector 8)
+  , Signal busDom (BitVector 8)
+  , Signal coreDom (BitVector 32)
+  , Signal busDom (BitVector 32)
+  )
+coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
+  (replyOutC, reqOutB, dbgMasterC, dbgSlaveB, dbgMasterLastPcC, dbgSlaveLatPcB)
  where
   reqToggleC = mReqToggle <$> masterStateC
   reqToggleB = syncBit clkC clkB rstB enB reqToggleC
@@ -257,10 +291,9 @@ coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB =
       slaveStep <$> slaveStateB <*> reqEdgeB <*> latReqB <*> replyInB
 
   -- The reply we present to the core is computed combinationally
-  -- from the master state + the current core request. We can't just
-  -- expose 'mReply' (the latched capR) directly: that field is the
-  -- last bridge round-trip's response. Two scenarios force the
-  -- per-cycle decision:
+  -- from the master state + the current core request + the
+  -- in-flight reply payload. Three scenarios force the per-cycle
+  -- decision:
   --
   --   (1) After 'MDone → MIdle' the core advances PC by 4 (because
   --       it saw stall=False during MDone). In MIdle it's now
@@ -280,36 +313,64 @@ coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB =
   --       as it likes. Without this, every self-loop deadlocks the
   --       bridge: the core stalls forever in MIdle, mLastSentPc never
   --       changes, no new request fires.
+  --
+  --   (3) On the MBusy cycle that 'doneEdgeC' fires (= the cycle
+  --       'capReplyC' first reflects the synced bus reply with
+  --       imemReady=True), present @capReplyC@ with @cbrStall=True@
+  --       and @cbrDataStall=True@. This "imem ready, but I'm still
+  --       stalling" signal lets the core's 'fValidTrackS' flip to
+  --       True for the NEXT cycle (= MDone, where stall=False),
+  --       so the FIRST IF/ID capture of every bridge round-trip
+  --       sees @ifValid=True@ and the instruction enters the
+  --       pipeline as a real retire rather than a bubble. Without
+  --       this, the LUI at PC=0 would forever be a bubble, x11
+  --       would never get its 0x10000000, and every subsequent
+  --       SW would commit to address 0 instead of the UART base.
+  --       Caught by 'CdcSocIntegrationSpec.case_core_dAddr'.
   replyOutC =
-    ( \st req -> case mPhase st of
+    ( \st req capR doneE -> case mPhase st of
         MDone -> mReply st
-        MBusy -> defaultReply
+        MBusy
+          | doneE -> capR{cbrStall = True, cbrDataStall = True}
+          | otherwise -> defaultReply
         MIdle
           | reqIsLive req (mLastSentPc st) -> defaultReply
           | otherwise -> mReply st
     )
       <$> masterStateC
       <*> reqInC
+      <*> capReplyC
+      <*> doneEdgeC
 
-  -- Drive the latched request to the bus only during the active
-  -- 'SDrive' / 'SServe' phases. Outside those phases drive an
-  -- empty request (cbrDBe = 0, cbrDRen = False, etc.) so that
-  -- side-effecting downstream slaves (notably the JTAG-UART IP,
-  -- where every cycle of @uartChipselect && uartBe != 0 &&
-  -- uartReady && !uartAcceptedS@ commits a write) don't see
-  -- lingering dBe assertions between bridge round-trips. Without
-  -- this, a single core-side SW writes the character ~5× because
-  -- 'uartAcceptedS' clears each cycle the bus's stall goes False
-  -- (= the cycle the slave captures), and any subsequent cycle
-  -- while sLatReq still holds dBe != 0 re-arms a fresh chipselect
-  -- pulse. The SDRAM bridge ('Riski5.SdramCdcBridge.slaveBus')
-  -- avoids the same class of bug by driving sibCs=False outside
-  -- its SReq phase. Caught by 'case_slave_drives_empty_in_idle'
-  -- in test/CdcSpec.hs.
+  -- Drive the latched request to the bus differently per phase:
+  --
+  --   * 'SDrive' (1 cycle): full request including @cbrDBe@ /
+  --     @cbrDRen@. This is the SOLE cycle the bus sees a write
+  --     strobe (@cbrDBe != 0@) for the data-port transaction — the
+  --     JTAG-UART IP commits exactly one write here.
+  --   * 'SServe' (waiting for bus stall to release): keep
+  --     @cbrPcFetch@ + @cbrDAddr@ + @cbrDWdata@ + @cbrDRen@
+  --     asserted (so the bus's BRAM keeps reading the right
+  --     address, SDRAM/SRAM keep the read in flight, and the slave
+  --     captures the correct reply when stall releases), but drop
+  --     @cbrDBe@ to 0. This way the UART IP doesn't re-fire on
+  --     every SServe cycle while the bridge is still waiting —
+  --     silicon symptom "each character printed 2-5×" caught by
+  --     'CdcSocIntegrationSpec.case_hello_through_bridge'. Reads
+  --     still work because @cbrDRen@ stays asserted (the bus's
+  --     'dataAccessS' = @cbrDBe != 0 || cbrDRen@ stays True for
+  --     reads, so 'dataStallS' correctly tracks slave readiness).
+  --   * 'SIdle' / 'SDone': drive everything zero so no data-port
+  --     activity leaks through between transactions.
+  --
+  -- The SDRAM bridge ('Riski5.SdramCdcBridge.slaveBus') avoids the
+  -- same class of bug by driving sibCs=False outside its SReq
+  -- phase. Caught by 'case_slave_drives_empty_in_idle' in
+  -- test/CdcSpec.hs.
   reqOutB =
     ( \st -> case sPhase st of
         SDrive -> sLatReq st
-        SServe -> sLatReq st
+        SServe -> (sLatReq st){cbrDBe = 0}
         _      -> emptyReq
     )
       <$> slaveStateB
@@ -358,6 +419,13 @@ coreCdcBridgeWithDebug clkC rstC enC clkB rstB enB reqInC replyInB =
       <*> reqToggleB
       <*> reqEdgeB
       <*> replyInB
+
+  -- Wide PC probes for silicon visibility (task #46).
+  dbgMasterLastPcC :: Signal coreDom (BitVector 32)
+  dbgMasterLastPcC = mLastSentPc <$> masterStateC
+
+  dbgSlaveLatPcB :: Signal busDom (BitVector 32)
+  dbgSlaveLatPcB = (cbrPcFetch . sLatReq) <$> slaveStateB
 
 masterStep ::
   MasterState ->
