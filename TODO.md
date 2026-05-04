@@ -373,10 +373,23 @@ rules around maintaining it.
       each early printk + WARN_ON cascade consumes stack. With
       enough recursive calls, sp underflows.
     - Confirmed: kernel config has CONFIG_THREAD_SIZE_ORDER=1 (= 8KB
-      stack — quite small). Bumping to ORDER=2 (= 16KB) or ORDER=3
-      (= 32KB) might fix the overflow without other code changes.
-      Quick experiment: change in pkgs/linux-rv32-nommu/riski5-overlay.config
-      and rebuild.
+      stack). Bumping to ORDER=3 attempted but `make olddefconfig`
+      reverted the override (likely Kconfig constraint). Reverted
+      that change in commit d95bf94 — user feedback noted the
+      kernel printed "Linux version" before, so 8 KB was sufficient.
+      The vscnprintf reset is therefore most likely a HW issue
+      (bridge/SDRAM path) introduced by the multi-PLL split, NOT
+      a stack-overflow.
+    - Likely culprits to bisect when investigating task #55:
+      * SdramCdcBridge has documented race conditions
+        (commit 727a5a9 added back-to-back transaction handling)
+      * CoreCdcBridge phase D-3a per-port done tracking might miss
+        cases
+      * Specific stack-LW pattern that hits a corner-case race
+      Suggested approach: tap SDRAM cells in the init_stack range
+      (chip cells 0x4E000-0x4E3FF at bank 0..3) — log every
+      write+read with PC and verify each LW returns the most-recent
+      SW value. Any mismatch points to the corruption cycle.
     - Less likely: a HW LW glitch returning 0 for a specific
       stack address. The bridge isn't corrupting reads (we proved
       that earlier in this task), so the SDRAM cell at sp+12 must
