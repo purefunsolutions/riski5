@@ -497,6 +497,21 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
       liftIO $ hPutStrLn stderr
         ("[CALLED-SWUS] cycle=" ++ show cycs
           ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Detect when PC drops from kernel (0x8xxxxxxx) back to firmware
+    -- (low BRAM addresses). That's a CPU-reset event — the kernel
+    -- triggered a reset somehow.
+    when (prevPc >= 0x80000000 && pc < 0x10000 && cycs > 1000000) $
+      liftIO $ hPutStrLn stderr
+        ("[CPU-RESET] cycle=" ++ show cycs
+          ++ " from kernel pc=0x" ++ showHex prevPc ""
+          ++ " to firmware pc=0x" ++ showHex pc "")
+    -- Also detect ANY major PC region change (kernel ↔ firmware)
+    -- to catch jumps/redirects.
+    when (prevPc >= 0x80000000 && pc < 0x80000000 && pc /= prevPc && cycs > 1000000) $
+      liftIO $ hPutStrLn stderr
+        ("[PC-DROP] cycle=" ++ show cycs
+          ++ " kernel pc=0x" ++ showHex prevPc ""
+          ++ " → low pc=0x" ++ showHex pc "")
     -- Detect entry to __send_signal_locked (the trigger one level
     -- up the call chain).
     when (pc == 0x8001c400 && prevPc /= 0x8001c400) $
