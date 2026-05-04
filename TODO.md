@@ -324,14 +324,30 @@ rules around maintaining it.
       is_valid_bugaddr). 280 SDRAM-WRITE-BLOCKED events recorded:
       kernel kept trying to set 0x0002. So the kernel REPEATEDLY
       sets TIF_SIGPENDING in response to SOMETHING our hardware does.
-    - **Real next step**: find WHAT trap or exception triggers the
-      kernel to call set_thread_flag(TIF_SIGPENDING). Suspects:
-      (a) misaligned access exception (kernel does misaligned stores
-      that our hardware traps); (b) store access fault (writing to
-      unmapped or read-only address); (c) illegal instruction
-      (kernel uses an instruction we don't decode, e.g., WFI, FENCE
-      variants, or RV32A AMOs we mis-handle). Add tap to log
-      do_trap entry and capture the cause/PC at the trap site.
+    - **🎯 ROOT CAUSE FIXED** (commit fa22903) — `mstatus.MPP` was
+      left at 0 (= U-mode) by both `initCsrs` and `applyTrap` in
+      `Riski5.CSR`. Per RISC-V priv-spec §3.1.7, when a trap is
+      taken into M-mode, MPP is set to the privilege of the
+      interrupted hart — for our M-only core that's always 0b11
+      (M-mode). Linux's `handle_break` reads MPP to route EBREAKs:
+      kernel-mode EBREAKs go through `report_bug` (WARN/BUG handler,
+      recover & continue), user-mode EBREAKs go to
+      `force_sig_fault(SIGTRAP)` (signal delivery). With MPP=0,
+      every kernel WARN_ON's EBREAK was being treated as a
+      user-mode trap and queuing a SIGTRAP for init_task → idle
+      task hangs in exit_to_user_mode_loop forever.
+    - **Specific WARN that triggered it**: `early_init_dt_scan_root`
+      at PC 0x8020e6f0 emits "No '#address-cells' in root node"
+      then ebreaks. This is a SECONDARY bug (our DTB does have
+      that property — possibly the kernel mis-parses the DTB or
+      we corrupt a DTB read somewhere). With MPP fix, the WARN
+      is recovered correctly and boot proceeds; investigating the
+      DTB parse issue is a separate task.
+    - Verification: 30M-cycle `linux-hwsim` after fix shows kernel
+      executing setup_vm → arch_mm_preinit → various init code,
+      no longer stuck in irqentry_exit_to_user_mode. No `printk`
+      output yet by 30M cycles — likely SDRAM-bound init being
+      slow, or downstream printk/UART driver bring-up issue.
 
     --- (Below: original ROOT CAUSE writeup; KEEP for context but it
     is REFUTED — the bridge captures correctly.) ---
