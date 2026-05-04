@@ -48,8 +48,32 @@
 // against the riski5 core under the same kernel image that runs
 // on silicon.
 module riski5_sim_top (
+    // ---- Three-domain clock + reset inputs (Phase E-b) ---------
+    //
+    // The wrapper exposes one clock + active-low reset per Clash
+    // domain (DomBus / DomCore / DomSdram). The harness in
+    // tools/linux-hwsim/Main.hs drives these three pairs
+    // independently so we can simulate the multi-PLL silicon
+    // topology faithfully — bus 40 MHz, core potentially 60-80 MHz,
+    // sdram at 100 MHz to chip-spec 133 MHz. The pre-Phase-E
+    // wrapper had only `clk`/`rst_n` and the Top.hs CLOCK_CORE /
+    // CLOCK_SDRAM ports were missing entirely (Verilator silently
+    // ties them to 0, which broke the sim build the moment Phase
+    // D-1 added CLOCK_CORE — see commit history of this file).
+    //
+    // For the simplest single-clock harness, drive all three
+    // clk_* inputs with the same waveform; the bridges' tied
+    // semantics still work (the bridge runs a synchroniser even
+    // when source and dest are physically the same clock, just at
+    // single-cycle latency rather than 2). For a true multi-rate
+    // run, drive each at its own period — the harness then exercises
+    // the toggle-handshake CDC FSMs the same way silicon does.
     input  wire        clk,
     input  wire        rst_n,
+    input  wire        clk_core,
+    input  wire        rst_core_n,
+    input  wire        clk_sdram,
+    input  wire        rst_sdram_n,
     input  wire [3:0]  KEY,
     input  wire [17:0] SW,
     // SRAM data-in driven by the harness (SRAM chip simulated host-side)
@@ -178,6 +202,18 @@ module riski5_sim_top (
   wire [31:0]  jtag_load_rdata_w;
   wire         jtag_load_busy_w;
 
+  // ---- Phase D bridge debug ports left dangling ---------------
+  // The Top.hs topEntity exposes these so silicon-side
+  // altsource_probes can sample bridge FSM phases + PCs (task #46
+  // diagnostics). The sim wrapper doesn't surface them at the C
+  // ABI; if a future test wants to assert against them, expose
+  // matching outputs here and add them to clash-manifest.json.
+  wire [7:0]   dbg_bridge_master_w;
+  wire [7:0]   dbg_bridge_slave_w;
+  wire [31:0]  dbg_bridge_master_pc_w;
+  wire [31:0]  dbg_bridge_slave_pc_w;
+  wire [31:0]  dbg_core_pc_w;
+
   // ----- Clash riski5 core --------------------------------------
   //
   // Tie off everything we don't want the harness to drive:
@@ -190,16 +226,17 @@ module riski5_sim_top (
   riski5 u_riski5 (
       .CLOCK_BUS              (clk),
       .RESET_BUS_N            (rst_n),
-      // Phase C: hwsim ties the SDRAM domain to the bus clock so
-      // the existing single-clock harness still works. The Top.hs
-      // sdramCdcBridge instantiation just becomes a same-clock
-      // toggle handshake (more cycles than direct wire but
-      // functionally correct). When the hwsim wrapper grows real
-      // multi-domain support (Phase E), CLOCK_SDRAM gets its own
-      // clk_sdram input port and the harness drives it at the
-      // chip's rated 133 MHz.
-      .CLOCK_SDRAM            (clk),
-      .RESET_SDRAM_N          (rst_n),
+      // Phase E-b: each domain has its own clock + reset input on
+      // the wrapper. The harness in tools/linux-hwsim/Main.hs
+      // drives them — same waveform for single-clock runs, distinct
+      // periods for multi-PLL bring-up. The SDRAM chip model below
+      // is also clocked from clk_sdram so its CL=2 read pipeline
+      // stays in lockstep with whatever rate the SDRAM controller
+      // is running at.
+      .CLOCK_CORE             (clk_core),
+      .RESET_CORE_N           (rst_core_n),
+      .CLOCK_SDRAM            (clk_sdram),
+      .RESET_SDRAM_N          (rst_sdram_n),
       .KEY                    (KEY),
       .SW                     (SW),
       .SRAM_DQ_I              (SRAM_DQ_I),
@@ -250,13 +287,25 @@ module riski5_sim_top (
       .DEBUG_FLAGS            (dbg_flags_w),
       .DEBUG_FROZEN_PC        (dbg_frozen_pc_w),
       .DEBUG_FROZEN_FLAGS     (dbg_frozen_flags_w),
+      .DEBUG_BRIDGE_MASTER    (dbg_bridge_master_w),
+      .DEBUG_BRIDGE_SLAVE     (dbg_bridge_slave_w),
+      .DEBUG_BRIDGE_MASTER_PC (dbg_bridge_master_pc_w),
+      .DEBUG_BRIDGE_SLAVE_PC  (dbg_bridge_slave_pc_w),
+      .DEBUG_CORE_PC          (dbg_core_pc_w),
       .JTAG_LOAD_RDATA        (jtag_load_rdata_w),
       .JTAG_LOAD_BUSY         (jtag_load_busy_w)
   );
 
   // ----- SDRAM chip model ---------------------------------------
+  // Clocked from clk_sdram (Phase E-b): the chip model's CL=2 read
+  // pipeline + ACTIVATE/READ/WRITE timing are JEDEC-defined in
+  // controller-clock cycles, so the model must run at the same
+  // rate as Riski5.SdrController. With the harness driving
+  // clk_sdram at 100 MHz (10_000 ps period) and clk at 25_000 ps,
+  // the chip model now executes 2.5 commands per bus cycle —
+  // matching what the multi-PLL silicon does.
   sim_sdram_chip u_sdram (
-      .clk        (clk),
+      .clk        (clk_sdram),
       .cke        (sdram_cke_w),
       .cs_n       (sdram_cs_n_w),
       .ras_n      (sdram_ras_n_w),

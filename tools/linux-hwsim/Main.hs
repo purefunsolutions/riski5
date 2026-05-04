@@ -102,9 +102,15 @@ data Riski5SimTopState = Riski5SimTopState
   , sSramDqIn :: !Word16
   , sLedg :: !Word16 -- 9 used
   , sSramDqOut :: !Word16
-  , -- 8-bit ports (offsets 24..41)
-    sClk :: !Word8
-  , sRstN :: !Word8
+  , -- 8-bit ports (offsets 24..45). Phase E-b adds clk_core /
+    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 26..29 so the
+    -- harness can drive each Clash domain's clock independently.
+    sClk :: !Word8 -- bus-domain clock (clk in Verilog)
+  , sRstN :: !Word8 -- bus-domain reset (active low)
+  , sClkCore :: !Word8
+  , sRstCoreN :: !Word8
+  , sClkSdram :: !Word8
+  , sRstSdramN :: !Word8
   , sKey :: !Word8 -- 4 used
   , sMemInitWrite :: !Word8
   , sLcdData :: !Word8
@@ -125,7 +131,7 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 44 -- 42 bytes of fields, padded to multiple of alignment 4
+  sizeOf _ = 48 -- 46 bytes of fields, padded to multiple of alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
@@ -138,22 +144,26 @@ instance Storable Riski5SimTopState where
     sramDqOut <- peekByteOff p 22
     clk <- peekByteOff p 24
     rstN <- peekByteOff p 25
-    key <- peekByteOff p 26
-    memInitWrite <- peekByteOff p 27
-    lcdData <- peekByteOff p 28
-    lcdRs <- peekByteOff p 29
-    lcdRw <- peekByteOff p 30
-    lcdEn <- peekByteOff p 31
-    lcdOn <- peekByteOff p 32
-    lcdBlon <- peekByteOff p 33
-    sramDqOe <- peekByteOff p 34
-    sramCeN <- peekByteOff p 35
-    sramOeN <- peekByteOff p 36
-    sramWeN <- peekByteOff p 37
-    sramUbN <- peekByteOff p 38
-    sramLbN <- peekByteOff p 39
-    uartTxValid <- peekByteOff p 40
-    uartTxByte <- peekByteOff p 41
+    clkCore <- peekByteOff p 26
+    rstCoreN <- peekByteOff p 27
+    clkSdram <- peekByteOff p 28
+    rstSdramN <- peekByteOff p 29
+    key <- peekByteOff p 30
+    memInitWrite <- peekByteOff p 31
+    lcdData <- peekByteOff p 32
+    lcdRs <- peekByteOff p 33
+    lcdRw <- peekByteOff p 34
+    lcdEn <- peekByteOff p 35
+    lcdOn <- peekByteOff p 36
+    lcdBlon <- peekByteOff p 37
+    sramDqOe <- peekByteOff p 38
+    sramCeN <- peekByteOff p 39
+    sramOeN <- peekByteOff p 40
+    sramWeN <- peekByteOff p 41
+    sramUbN <- peekByteOff p 42
+    sramLbN <- peekByteOff p 43
+    uartTxValid <- peekByteOff p 44
+    uartTxByte <- peekByteOff p 45
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
@@ -166,6 +176,10 @@ instance Storable Riski5SimTopState where
         , sSramDqOut = sramDqOut
         , sClk = clk
         , sRstN = rstN
+        , sClkCore = clkCore
+        , sRstCoreN = rstCoreN
+        , sClkSdram = clkSdram
+        , sRstSdramN = rstSdramN
         , sKey = key
         , sMemInitWrite = memInitWrite
         , sLcdData = lcdData
@@ -194,22 +208,26 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 22 sSramDqOut
     pokeByteOff p 24 sClk
     pokeByteOff p 25 sRstN
-    pokeByteOff p 26 sKey
-    pokeByteOff p 27 sMemInitWrite
-    pokeByteOff p 28 sLcdData
-    pokeByteOff p 29 sLcdRs
-    pokeByteOff p 30 sLcdRw
-    pokeByteOff p 31 sLcdEn
-    pokeByteOff p 32 sLcdOn
-    pokeByteOff p 33 sLcdBlon
-    pokeByteOff p 34 sSramDqOe
-    pokeByteOff p 35 sSramCeN
-    pokeByteOff p 36 sSramOeN
-    pokeByteOff p 37 sSramWeN
-    pokeByteOff p 38 sSramUbN
-    pokeByteOff p 39 sSramLbN
-    pokeByteOff p 40 sUartTxValid
-    pokeByteOff p 41 sUartTxByte
+    pokeByteOff p 26 sClkCore
+    pokeByteOff p 27 sRstCoreN
+    pokeByteOff p 28 sClkSdram
+    pokeByteOff p 29 sRstSdramN
+    pokeByteOff p 30 sKey
+    pokeByteOff p 31 sMemInitWrite
+    pokeByteOff p 32 sLcdData
+    pokeByteOff p 33 sLcdRs
+    pokeByteOff p 34 sLcdRw
+    pokeByteOff p 35 sLcdEn
+    pokeByteOff p 36 sLcdOn
+    pokeByteOff p 37 sLcdBlon
+    pokeByteOff p 38 sSramDqOe
+    pokeByteOff p 39 sSramCeN
+    pokeByteOff p 40 sSramOeN
+    pokeByteOff p 41 sSramWeN
+    pokeByteOff p 42 sSramUbN
+    pokeByteOff p 43 sSramLbN
+    pokeByteOff p 44 sUartTxValid
+    pokeByteOff p 45 sUartTxByte
 
 initialState :: Riski5SimTopState
 initialState =
@@ -224,6 +242,10 @@ initialState =
     , sSramDqOut = 0
     , sClk = 0
     , sRstN = 0
+    , sClkCore = 0
+    , sRstCoreN = 0
+    , sClkSdram = 0
+    , sRstSdramN = 0
     , sKey = 0xF
     , sMemInitWrite = 0
     , sLcdData = 0
@@ -257,12 +279,65 @@ riski5Backend =
 
 -- * Driver helpers ---------------------------------------------------
 
--- | One full clock cycle: low edge then high edge.
+-- | One full clock cycle of ALL THREE domains in lockstep — the
+-- single-clock simplification. All three @clk_*@ inputs to the
+-- wrapper toggle on the same simulation tick. Functionally the
+-- bridges still run their CDC FSMs (they're synchronizers
+-- regardless of source/dest clock equality), they just do it at
+-- minimum latency.
+--
+-- For genuine multi-rate runs use 'multiClockTick' below, which
+-- ticks each clock at its own period.
 clockCycle :: SimM Riski5SimTopPorts Riski5SimTopState ()
 clockCycle = do
-  modifyState $ \s -> s {sClk = 0}
+  modifyState $ \s -> s {sClk = 0, sClkCore = 0, sClkSdram = 0}
   tick
-  modifyState $ \s -> s {sClk = 1}
+  modifyState $ \s -> s {sClk = 1, sClkCore = 1, sClkSdram = 1}
+  tick
+
+-- | Multi-rate clock driver. Takes per-domain period counts (in
+-- "fine" simulation steps) and runs the simulation for one bus
+-- cycle's worth of fine ticks, toggling each clock at its own
+-- period. Common useful ratios:
+--
+--   * @multiClockTick 2 1 0@: bus once per 2 fine ticks (= 0.5x),
+--     core once per 1 (= 1x), sdram every fine tick (= 2x).
+--     Models bus 40 MHz / core 80 MHz / sdram 80 MHz.
+--   * @multiClockTick 5 4 2@: bus 1 / core 1.25 / sdram 2.5 ratio
+--     — models bus 40 MHz / core 50 MHz / sdram 100 MHz.
+--   * @multiClockTick 1 1 1@: degenerates to 'clockCycle' (all
+--     three clocks tick together every simulation step).
+--
+-- The "fine tick" period itself is opaque — what matters is the
+-- ratio between the three numbers. For a given simulation pass,
+-- the sim time per fine tick is constant; the wrapper's clk_*
+-- inputs just toggle when their tick-counter passes their period.
+--
+-- NOTE this is the building-block API; consumers will typically
+-- wrap it in a per-bus-cycle helper that runs the right number of
+-- fine ticks. Currently unused — added so the harness has an
+-- escape hatch for the silicon-debug runs Phase D-3b /
+-- Linux-mid-init-hang need.
+_multiClockTick ::
+  -- | bus period (fine ticks per bus half-cycle). 1 = always toggle.
+  Int ->
+  -- | core period (fine ticks per core half-cycle).
+  Int ->
+  -- | sdram period (fine ticks per sdram half-cycle).
+  Int ->
+  -- | current global fine-tick counter.
+  Int ->
+  SimM Riski5SimTopPorts Riski5SimTopState ()
+_multiClockTick busP coreP sdramP t = do
+  let busLevel = if (t `div` busP) `mod` 2 == 0 then 0 else 1
+      coreLevel = if (t `div` coreP) `mod` 2 == 0 then 0 else 1
+      sdramLevel = if (t `div` sdramP) `mod` 2 == 0 then 0 else 1
+  modifyState $ \s ->
+    s
+      { sClk = busLevel
+      , sClkCore = coreLevel
+      , sClkSdram = sdramLevel
+      }
   tick
 
 -- | Translate a controller-side 22-bit half-word bus index into
@@ -383,8 +458,20 @@ runHwsim kPath dPath maxSteps = do
       ++ "-byte DTB @ 0x80400000 ..."
   bufRef <- newIORef []
   cycles <- runSim riski5Backend $ do
-    -- Hold reset asserted while we pre-load SDRAM.
-    pokeState initialState {sClk = 0, sRstN = 0, sKey = 0xF}
+    -- Hold ALL THREE domain resets asserted while we pre-load SDRAM
+    -- (all rst_*_n=0). Each reset gates the corresponding domain's
+    -- registers; deasserting them in lockstep avoids any of the
+    -- three domains running while the other two are still held.
+    pokeState
+      initialState
+        { sClk = 0
+        , sClkCore = 0
+        , sClkSdram = 0
+        , sRstN = 0
+        , sRstCoreN = 0
+        , sRstSdramN = 0
+        , sKey = 0xF
+        }
     clockCycle
     clockCycle
     loadWords 0x8000_0000 kernel
@@ -393,8 +480,8 @@ runHwsim kPath dPath maxSteps = do
     -- settle before reset releases.
     clockCycle
     clockCycle
-    -- Release reset.
-    modifyState $ \s -> s {sRstN = 1}
+    -- Release all three resets in lockstep.
+    modifyState $ \s -> s {sRstN = 1, sRstCoreN = 1, sRstSdramN = 1}
     runUartStream maxSteps bufRef
   collected <- readIORef bufRef
   let bytes = reverse collected

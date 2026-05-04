@@ -96,18 +96,27 @@ data Riski5SimTopPorts (f :: Type -> Type) = Riski5SimTopPorts
 -- field at offset 34 from the @sizeOf = 36@ multiple-of-alignment.
 
 data Riski5SimTopState = Riski5SimTopState
-  { -- 32-bit ports
-    sSw :: !Word32
+  { -- 32-bit ports (offsets 0..15)
+    sMemInitAddr :: !Word32
+  , sSw :: !Word32
   , sLedr :: !Word32
   , sSramAddr :: !Word32
-  , -- 16-bit ports
-    sSramDqIn :: !Word16
+  , -- 16-bit ports (offsets 16..23)
+    sMemInitData :: !Word16
+  , sSramDqIn :: !Word16
   , sLedg :: !Word16
   , sSramDqOut :: !Word16
-  , -- 8-bit ports
-    sClk :: !Word8
-  , sRstN :: !Word8
+  , -- 8-bit ports (offsets 24..45). Phase E-b adds clk_core /
+    -- rst_core_n / clk_sdram / rst_sdram_n at offsets 26..29 so the
+    -- harness can drive each Clash domain's clock independently.
+    sClk :: !Word8 -- bus-domain clock
+  , sRstN :: !Word8 -- bus-domain reset (active low)
+  , sClkCore :: !Word8
+  , sRstCoreN :: !Word8
+  , sClkSdram :: !Word8
+  , sRstSdramN :: !Word8
   , sKey :: !Word8
+  , sMemInitWrite :: !Word8
   , sLcdData :: !Word8
   , sLcdRs :: !Word8
   , sLcdRw :: !Word8
@@ -126,43 +135,57 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 36
+  sizeOf _ = 48 -- 46 bytes of fields, padded to alignment 4
   alignment _ = 4
   peek p = do
-    sw <- peekByteOff p 0
-    ledr <- peekByteOff p 4
-    sramAddr <- peekByteOff p 8
-    sramDqIn <- peekByteOff p 12
-    ledg <- peekByteOff p 14
-    sramDqOut <- peekByteOff p 16
-    clk <- peekByteOff p 18
-    rstN <- peekByteOff p 19
-    key <- peekByteOff p 20
-    lcdData <- peekByteOff p 21
-    lcdRs <- peekByteOff p 22
-    lcdRw <- peekByteOff p 23
-    lcdEn <- peekByteOff p 24
-    lcdOn <- peekByteOff p 25
-    lcdBlon <- peekByteOff p 26
-    sramDqOe <- peekByteOff p 27
-    sramCeN <- peekByteOff p 28
-    sramOeN <- peekByteOff p 29
-    sramWeN <- peekByteOff p 30
-    sramUbN <- peekByteOff p 31
-    sramLbN <- peekByteOff p 32
-    txValid <- peekByteOff p 33
-    txByte <- peekByteOff p 34
+    memInitAddr <- peekByteOff p 0
+    sw <- peekByteOff p 4
+    ledr <- peekByteOff p 8
+    sramAddr <- peekByteOff p 12
+    memInitData <- peekByteOff p 16
+    sramDqIn <- peekByteOff p 18
+    ledg <- peekByteOff p 20
+    sramDqOut <- peekByteOff p 22
+    clk <- peekByteOff p 24
+    rstN <- peekByteOff p 25
+    clkCore <- peekByteOff p 26
+    rstCoreN <- peekByteOff p 27
+    clkSdram <- peekByteOff p 28
+    rstSdramN <- peekByteOff p 29
+    key <- peekByteOff p 30
+    memInitWrite <- peekByteOff p 31
+    lcdData <- peekByteOff p 32
+    lcdRs <- peekByteOff p 33
+    lcdRw <- peekByteOff p 34
+    lcdEn <- peekByteOff p 35
+    lcdOn <- peekByteOff p 36
+    lcdBlon <- peekByteOff p 37
+    sramDqOe <- peekByteOff p 38
+    sramCeN <- peekByteOff p 39
+    sramOeN <- peekByteOff p 40
+    sramWeN <- peekByteOff p 41
+    sramUbN <- peekByteOff p 42
+    sramLbN <- peekByteOff p 43
+    txValid <- peekByteOff p 44
+    txByte <- peekByteOff p 45
     pure
       Riski5SimTopState
-        { sSw = sw
+        { sMemInitAddr = memInitAddr
+        , sSw = sw
         , sLedr = ledr
         , sSramAddr = sramAddr
+        , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
         , sSramDqOut = sramDqOut
         , sClk = clk
         , sRstN = rstN
+        , sClkCore = clkCore
+        , sRstCoreN = rstCoreN
+        , sClkSdram = clkSdram
+        , sRstSdramN = rstSdramN
         , sKey = key
+        , sMemInitWrite = memInitWrite
         , sLcdData = lcdData
         , sLcdRs = lcdRs
         , sLcdRw = lcdRw
@@ -179,44 +202,58 @@ instance Storable Riski5SimTopState where
         , sUartTxByte = txByte
         }
   poke p Riski5SimTopState {..} = do
-    pokeByteOff p 0 sSw
-    pokeByteOff p 4 sLedr
-    pokeByteOff p 8 sSramAddr
-    pokeByteOff p 12 sSramDqIn
-    pokeByteOff p 14 sLedg
-    pokeByteOff p 16 sSramDqOut
-    pokeByteOff p 18 sClk
-    pokeByteOff p 19 sRstN
-    pokeByteOff p 20 sKey
-    pokeByteOff p 21 sLcdData
-    pokeByteOff p 22 sLcdRs
-    pokeByteOff p 23 sLcdRw
-    pokeByteOff p 24 sLcdEn
-    pokeByteOff p 25 sLcdOn
-    pokeByteOff p 26 sLcdBlon
-    pokeByteOff p 27 sSramDqOe
-    pokeByteOff p 28 sSramCeN
-    pokeByteOff p 29 sSramOeN
-    pokeByteOff p 30 sSramWeN
-    pokeByteOff p 31 sSramUbN
-    pokeByteOff p 32 sSramLbN
-    pokeByteOff p 33 sUartTxValid
-    pokeByteOff p 34 sUartTxByte
+    pokeByteOff p 0 sMemInitAddr
+    pokeByteOff p 4 sSw
+    pokeByteOff p 8 sLedr
+    pokeByteOff p 12 sSramAddr
+    pokeByteOff p 16 sMemInitData
+    pokeByteOff p 18 sSramDqIn
+    pokeByteOff p 20 sLedg
+    pokeByteOff p 22 sSramDqOut
+    pokeByteOff p 24 sClk
+    pokeByteOff p 25 sRstN
+    pokeByteOff p 26 sClkCore
+    pokeByteOff p 27 sRstCoreN
+    pokeByteOff p 28 sClkSdram
+    pokeByteOff p 29 sRstSdramN
+    pokeByteOff p 30 sKey
+    pokeByteOff p 31 sMemInitWrite
+    pokeByteOff p 32 sLcdData
+    pokeByteOff p 33 sLcdRs
+    pokeByteOff p 34 sLcdRw
+    pokeByteOff p 35 sLcdEn
+    pokeByteOff p 36 sLcdOn
+    pokeByteOff p 37 sLcdBlon
+    pokeByteOff p 38 sSramDqOe
+    pokeByteOff p 39 sSramCeN
+    pokeByteOff p 40 sSramOeN
+    pokeByteOff p 41 sSramWeN
+    pokeByteOff p 42 sSramUbN
+    pokeByteOff p 43 sSramLbN
+    pokeByteOff p 44 sUartTxValid
+    pokeByteOff p 45 sUartTxByte
 
 -- * Backend wiring
 
 initialState :: Riski5SimTopState
 initialState =
   Riski5SimTopState
-    { sSw = 0
+    { sMemInitAddr = 0
+    , sSw = 0
     , sLedr = 0
     , sSramAddr = 0
+    , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0
     , sSramDqOut = 0
     , sClk = 0
     , sRstN = 0
+    , sClkCore = 0
+    , sRstCoreN = 0
+    , sClkSdram = 0
+    , sRstSdramN = 0
     , sKey = 0
+    , sMemInitWrite = 0
     , sLcdData = 0
     , sLcdRs = 0
     , sLcdRw = 0
@@ -248,15 +285,19 @@ riski5Backend =
 
 -- * Clock / testbench primitives
 
-{- | Advance one full simulation period: drive @clk@ low, eval, drive
-@clk@ high, eval. The rising edge on the second eval is what
-triggers all synchronous logic (core, IP, TX-tap register).
+{- | Advance one full simulation period for ALL THREE Clash domains
+in lockstep — single-clock simplification. Drive @clk@ /
+@clk_core@ / @clk_sdram@ low, eval, drive them high, eval. The
+rising edge on the second eval triggers all synchronous logic
+(core, IP, TX-tap register). The bridges still run their CDC FSMs
+at minimum latency since they're synchronizers regardless of
+source/dest clock equality.
 -}
 clockCycle :: SimM Riski5SimTopPorts Riski5SimTopState ()
 clockCycle = do
-  modifyState $ \s -> s {sClk = 0}
+  modifyState $ \s -> s {sClk = 0, sClkCore = 0, sClkSdram = 0}
   tick
-  modifyState $ \s -> s {sClk = 1}
+  modifyState $ \s -> s {sClk = 1, sClkCore = 1, sClkSdram = 1}
   tick
 
 {- | Simulate for up to @n@ clock periods while collecting every
@@ -316,12 +357,22 @@ tests =
           -- DUT's async-reset polarity (ActiveLow) triggers the
           -- reset path, then release. Keys default to all-released
           -- (active-low on the DE2, so 0xF). Switches left at 0.
-          pokeState initialState {sClk = 0, sRstN = 0, sKey = 0xF}
+          pokeState
+            initialState
+              { sClk = 0
+              , sClkCore = 0
+              , sClkSdram = 0
+              , sRstN = 0
+              , sRstCoreN = 0
+              , sRstSdramN = 0
+              , sKey = 0xF
+              }
           clockCycle
           clockCycle
           clockCycle
           clockCycle
-          modifyState $ \s -> s {sRstN = 1}
+          modifyState $ \s ->
+            s {sRstN = 1, sRstCoreN = 1, sRstSdramN = 1}
           runUartCollect testCycleBudget (length expectedHello)
         let prefix = take (length expectedHello) bytes
             rendered = fmap (toEnum . fromIntegral) bytes :: String

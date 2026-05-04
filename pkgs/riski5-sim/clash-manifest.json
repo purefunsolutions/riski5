@@ -38,6 +38,10 @@
 
             { "direction": "in",  "domain": "Dom30", "is_clock": true,  "name": "clk",            "type_name": "",       "width": 1  },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "rst_n",          "type_name": "",       "width": 1  },
+            { "direction": "in",  "domain": "Dom30", "is_clock": true,  "name": "clk_core",       "type_name": "",       "width": 1  },
+            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "rst_core_n",     "type_name": "",       "width": 1  },
+            { "direction": "in",  "domain": "Dom30", "is_clock": true,  "name": "clk_sdram",      "type_name": "",       "width": 1  },
+            { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "rst_sdram_n",    "type_name": "",       "width": 1  },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "KEY",            "type_name": "[3:0]",  "width": 4  },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "MEM_INIT_WRITE", "type_name": "",       "width": 1  },
             { "direction": "out",                    "is_clock": false, "name": "LCD_DATA",       "type_name": "[7:0]",  "width": 8  },
