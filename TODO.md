@@ -300,8 +300,36 @@ rules around maintaining it.
       independent of it.
     - **Tested: not IRQ-driven**. Forcing BOTH `mtipS=False`
       AND `meipS=False` has zero observable effect.
-    - **🎯 ROOT CAUSE FOUND** — hardware data-read corruption
-      through CoreCdcBridge. SDRAM-write tap proves: kernel writes
+    - **❌ "ROOT CAUSE FOUND" REFUTED** (commit a606cbc) — the
+      bridge IS NOT corrupting reads. The 0x10000537 in the original
+      DEBUG_DMEM_RDATA tap was the BUS's combinational
+      `dataRdataLastS` (latched from earlier kernel LWs that read
+      instruction bytes off the stack), NOT what the bridge delivered.
+    - **🎯 NEW ROOT CAUSE** — kernel-level: TIF_SIGPENDING bit 1 is
+      set on init_task and never gets cleared. Sample of bridge's
+      mReply.cbrDmemRdata (via new DEBUG_BRIDGE_DMEM_RDATA port)
+      at PC=0x801ec46c (LW in X-stage during stall) shows:
+      `mReply = 0x00000002` (17898 samples) — the actual SDRAM value.
+      Kernel correctly reads s1 = 0x2 = TIF_SIGPENDING and calls
+      `arch_do_signal_or_restart`. That function DOESN'T clear the
+      bit for the boot CPU's idle task (no actual signal pending),
+      so *(tp) stays 0x2 forever and the exit_to_user_mode_loop
+      spins.
+    - **Why pure-Haskell sim boots past this**: pure sim doesn't
+      simulate interrupts/exceptions, so the kernel never enters
+      irqentry_exit_to_user_mode in the first place. Verilator hwsim
+      DOES exercise the IRQ exit path because something during init
+      sets TIF_SIGPENDING.
+    - **Real next step**: find WHY TIF_SIGPENDING is set on init_task
+      during boot. Suspects: (a) PLIC/CLINT raising a phantom IRQ
+      that the kernel translates into a signal; (b) a kernel
+      sanity-check that erroneously sets the bit; (c) some sysctl
+      value the kernel reads from MMIO returning unexpected data.
+
+    --- (Below: original ROOT CAUSE writeup; KEEP for context but it
+    is REFUTED — the bridge captures correctly.) ---
+    - **❌ Hardware data-read corruption** through CoreCdcBridge.
+      SDRAM-write tap proves: kernel writes
       `0x00000002` to *(0x80273380), but LW returns `0x10000537`
       (= byte encoding of an instruction at kernel offset 0x72afc).
       So the bridge corrupts the read.
