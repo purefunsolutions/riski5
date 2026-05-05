@@ -673,6 +673,28 @@ rules around maintaining it.
       `riski5-test` (all existing tests pass) + a new
       `cdc_flush_same_pc_refire` test in CdcSpec that
       reproduces the seq_buf_printf .L36 race.
+    - **STATUS as of session end (2026-05-04 ~07:10 UTC)**:
+      * Hypothesis pinned but not validated by code change.
+      * Diagnostic infrastructure in place (DEBUG_SP/S0/RA
+        shadows, ring buffer dump on STACK-CHK-FAIL).
+      * Existing 33 CdcSpec tests pass — none catch the
+        flush-vs-same-PC race.
+      * Decision pending from user: implement proposed fix
+        directly, OR write a focused unit test first to
+        confirm the hypothesis (recommended given the bug's
+        narrow conditions: F-stage exactly 2 PCs ahead of
+        X at the cycle of branch-takes-to-target-PC).
+      * Workaround for booting Linux while the fix is
+        designed: none currently — disabling stack
+        protector hides the symptom but the underlying bug
+        (lw not committing after some branches) would still
+        cause silent data corruption.
+      * Risk-mitigation: the bug ONLY triggers when F is
+        exactly 2 PCs ahead of X-stage at the cycle the
+        branch takes. With heavy SDRAM stalls, F's lead
+        over X varies, so the bug surfaces probabilistically.
+        Most branches don't trigger it (= why kernel boots
+        as far as it does).
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
