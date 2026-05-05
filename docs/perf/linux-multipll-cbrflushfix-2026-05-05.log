@@ -1,0 +1,14 @@
+M0oÀ1Sð234W¾ºþÊJ[    0.000000] Linux version 6.18.22 (nixbld@localhost) (riscv64-unknown-linux-gnu-gcc (GCC) 14.3.0, GNU ld (NU Binutils) 2.44) #1-riski5 Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Machine model: riski5-de2
+[    0.000000] earlycon: juart0 at MMIO 0x10000000 (options '')
+[    0.000000] printk: legacyootconsole [juart0] enabled
+[    0.000000] printk: debug: s\xp boot console de-registration.
+[    0.00000] printk: debug: ignoring loglevel setting.
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] OF: reserved mem: Reserved memy: No reserved-memory node in the DT
+[    0.000000] Zone ranges:
+[    0.000000]   Normal   [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[
