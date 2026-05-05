@@ -371,6 +371,10 @@ mulDivFU ::
   )
 #ifdef FORMAL_FAST_MULDIV
 mulDivFU = mulDivFUCombinational
+#elif defined(SILICON_FAST_MULDIV)
+mulDivFU = mulDivFURealComb
+#elif defined(SILICON_MULCOMB_ONLY)
+mulDivFU = mulDivFUMulComb
 #else
 mulDivFU = mulDivFUIterative
 #endif
@@ -418,6 +422,78 @@ mulDivFUCombinational ::
   , Signal dom (BitVector 32)
   )
 mulDivFUCombinational _activeS opS aS bS = (pure False, combMd <$> opS <*> aS <*> bS)
+
+{- | True single-cycle combinational MUL/DIV using Haskell's native
+@*@, @\`quot\`@, @\`rem\`@ — selected via the @SILICON_FAST_MULDIV@
+build flag (task #58 silicon-debug variant `combinationalMuldiv=true`
+on `pkgs/riski5-core/package.nix`).
+
+Unlike 'mulDivFUCombinational' (which uses 'combMd' = the
+@RISCV_FORMAL_ALTOPS@ stub: @(a+b) xor const@, returning garbage),
+this variant produces architecturally-correct results so the
+silicon can actually execute Linux. Used to test whether the
+default iterative FSM ('mulDivFUIterative') is rooted in the
+post-BogoMIPS Linux silicon hang (TODO #58): if a build with
+@SILICON_FAST_MULDIV@ boots past BogoMIPS, the iterative FU is
+confirmed at fault.
+
+On Cyclone II, Quartus should infer the @*@ on @Unsigned@ /
+@Signed@ widths into the embedded 18×18 multiplier blocks
+(35 available on EP2C35). 32-bit MUL needs ~4 of them with a
+small adder tree. @\`quot\`@ / @\`rem\`@ have no embedded divider
+and synthesise into a wide combinational divider in LEs — that's
+expensive and almost certainly won't close timing at 40 MHz.
+This variant is therefore a diagnostic build, not a long-term
+silicon path.
+-}
+mulDivFURealComb ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom Bool ->
+  Signal dom MdOp ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 32) ->
+  ( Signal dom Bool
+  , Signal dom (BitVector 32)
+  )
+mulDivFURealComb _activeS opS aS bS = (pure False, realCombMd <$> opS <*> aS <*> bS)
+
+{- | Hybrid FU — selected via the @SILICON_MULCOMB_ONLY@ build flag.
+
+Combinational 1-cycle MUL/MULH/MULHSU/MULHU (using 'realCombMd',
+inferred to Cyclone II's 35 embedded 18×18 DSP blocks via Haskell
+native @*@), but the DIV/REM ops fall back to the iterative
+'mulDivFUIterative' FSM. Avoids the >1-hour Quartus place-and-route
+time the SILICON_FAST_MULDIV variant hits when synthesising a 32-bit
+combinational divider in LEs (no embedded divider on Cyclone II).
+
+Used to test the task #58 hypothesis (iterative MUL FSM is the
+post-BogoMIPS hang source) without paying the impossible-to-fit
+combinational-divider cost. The hung Linux at PC=0x801E2F10 is in
+'put_dec_trunc8' which uses MUL/MULHU only, not DIV/REM, so a
+combinational MUL alone is sufficient to validate the hypothesis.
+-}
+mulDivFUMulComb ::
+  forall dom.
+  (HiddenClockResetEnable dom) =>
+  Signal dom Bool ->
+  Signal dom MdOp ->
+  Signal dom (BitVector 32) ->
+  Signal dom (BitVector 32) ->
+  ( Signal dom Bool
+  , Signal dom (BitVector 32)
+  )
+mulDivFUMulComb activeS opS aS bS = (busyS, resultS)
+ where
+  isDivS = isDivForm <$> opS
+  -- Only treat DIV/REM as "active" for the iterative FSM — for MUL
+  -- ops the iterative FSM stays idle (busy=False) because activeForIter
+  -- is False, and the combinational mul drives the result instead.
+  activeForIterS = (\a d -> a && d) <$> activeS <*> isDivS
+  (iterBusyS, iterResultS) = mulDivFUIterative activeForIterS opS aS bS
+  combMulS = realCombMd <$> opS <*> aS <*> bS
+  busyS = mux isDivS iterBusyS (pure False)
+  resultS = mux isDivS iterResultS combMulS
 
 -- * Mealy step ----------------------------------------------------
 
@@ -628,3 +704,51 @@ combMd op a b = case op of
   MdDivU -> (a - b) `xor` 0x10e8fd70
   MdRem -> (a - b) `xor` 0x8da68fa5
   MdRemU -> (a - b) `xor` 0x3138d0e1
+
+{- | True architecturally-correct combinational MUL/DIV — counterpart
+to the formal-stub 'combMd', used by 'mulDivFURealComb' under the
+@SILICON_FAST_MULDIV@ build (task #58 silicon-debug variant).
+
+Computes the real RV32M result via Haskell's native @*@ on
+@Unsigned 64@ / @Signed 64@ widths and @\`quot\`@ / @\`rem\`@ on
+@Signed 32@ / @Unsigned 32@. Clash lowers @*@ to the Verilog @*@
+operator which Quartus on Cyclone II infers into the 35 embedded
+18×18 multiplier blocks (~4 blocks per 32×32→64 product). Divides
+fall back to LE-based combinational dividers (no embedded divider
+on Cyclone II) — slow and area-hungry, hence diagnostic-only.
+
+Spec corner cases:
+  * DIV/DIVU by 0  : Q = -1 (all ones)
+  * REM/REMU by 0  : R = rs1 (raw, unchanged)
+  * DIV signed overflow (rs1 = INT_MIN, rs2 = -1): Q = INT_MIN, R = 0
+    — Haskell's @\`quot\`@ matches RV32M (truncates toward zero,
+    INT_MIN /quot/ -1 = INT_MIN due to two's-complement wrap).
+-}
+realCombMd :: MdOp -> BitVector 32 -> BitVector 32 -> BitVector 32
+realCombMd op a b =
+  let aS :: Signed 32
+      aS = unpack a
+      bS :: Signed 32
+      bS = unpack b
+      aU :: Unsigned 32
+      aU = unpack a
+      bU :: Unsigned 32
+      bU = unpack b
+      prodSS :: Signed 64
+      prodSS = resize aS * resize bS
+      prodUU :: Unsigned 64
+      prodUU = resize aU * resize bU
+      -- MULHSU: rs1 signed, rs2 unsigned. Compute as a 64-bit signed
+      -- product where rs2 is zero-extended into a positive 64-bit
+      -- signed value.
+      prodSU :: Signed 64
+      prodSU = resize aS * unpack (zeroExtend b)
+   in case op of
+        MdMul -> slice d31 d0 (pack prodSS)
+        MdMulH -> slice d63 d32 (pack prodSS)
+        MdMulHsu -> slice d63 d32 (pack prodSU)
+        MdMulHu -> slice d63 d32 (pack prodUU)
+        MdDiv -> if b == 0 then maxBound else pack (aS `quot` bS)
+        MdDivU -> if b == 0 then maxBound else pack (aU `quot` bU)
+        MdRem -> if b == 0 then a else pack (aS `rem` bS)
+        MdRemU -> if b == 0 then a else pack (aU `rem` bU)

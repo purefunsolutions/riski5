@@ -1052,7 +1052,7 @@ in
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
               ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
-              ${lib.optionalString combinationalMuldiv "-DFORMAL_FAST_MULDIV"} \
+              ${lib.optionalString combinationalMuldiv "-DSILICON_MULCOMB_ONLY"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \
               -isrc -iapp -ifirmware/phase1 \
