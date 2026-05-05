@@ -108,7 +108,8 @@ data Riski5SimTopState = Riski5SimTopState
   , sDebugBridgeDmemRdata :: !Word32 -- bridge-captured dmem rdata (task #52 debug 2)
   , sDebugSp :: !Word32 -- regfile x2 shadow tracked via writeback (task #55)
   , sDebugS0 :: !Word32 -- regfile x8 shadow tracked via writeback (task #55)
-  , -- 16-bit ports (offsets 36..43)
+  , sDebugRa :: !Word32 -- regfile x1 shadow tracked via writeback (task #55)
+  , -- 16-bit ports (offsets 40..47)
     sMemInitData :: !Word16
   , sSramDqIn :: !Word16
   , sLedg :: !Word16 -- 9 used
@@ -142,7 +143,7 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 68 -- 66 bytes of fields, padded to multiple of alignment 4
+  sizeOf _ = 72 -- 70 bytes of fields, padded to multiple of alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
@@ -154,32 +155,33 @@ instance Storable Riski5SimTopState where
     debugBridgeDmemRdata <- peekByteOff p 24
     debugSp <- peekByteOff p 28
     debugS0 <- peekByteOff p 32
-    memInitData <- peekByteOff p 36
-    sramDqIn <- peekByteOff p 38
-    ledg <- peekByteOff p 40
-    sramDqOut <- peekByteOff p 42
-    clk <- peekByteOff p 44
-    rstN <- peekByteOff p 45
-    clkCore <- peekByteOff p 46
-    rstCoreN <- peekByteOff p 47
-    clkSdram <- peekByteOff p 48
-    rstSdramN <- peekByteOff p 49
-    key <- peekByteOff p 50
-    memInitWrite <- peekByteOff p 51
-    lcdData <- peekByteOff p 52
-    lcdRs <- peekByteOff p 53
-    lcdRw <- peekByteOff p 54
-    lcdEn <- peekByteOff p 55
-    lcdOn <- peekByteOff p 56
-    lcdBlon <- peekByteOff p 57
-    sramDqOe <- peekByteOff p 58
-    sramCeN <- peekByteOff p 59
-    sramOeN <- peekByteOff p 60
-    sramWeN <- peekByteOff p 61
-    sramUbN <- peekByteOff p 62
-    sramLbN <- peekByteOff p 63
-    uartTxValid <- peekByteOff p 64
-    uartTxByte <- peekByteOff p 65
+    debugRa <- peekByteOff p 36
+    memInitData <- peekByteOff p 40
+    sramDqIn <- peekByteOff p 42
+    ledg <- peekByteOff p 44
+    sramDqOut <- peekByteOff p 46
+    clk <- peekByteOff p 48
+    rstN <- peekByteOff p 49
+    clkCore <- peekByteOff p 50
+    rstCoreN <- peekByteOff p 51
+    clkSdram <- peekByteOff p 52
+    rstSdramN <- peekByteOff p 53
+    key <- peekByteOff p 54
+    memInitWrite <- peekByteOff p 55
+    lcdData <- peekByteOff p 56
+    lcdRs <- peekByteOff p 57
+    lcdRw <- peekByteOff p 58
+    lcdEn <- peekByteOff p 59
+    lcdOn <- peekByteOff p 60
+    lcdBlon <- peekByteOff p 61
+    sramDqOe <- peekByteOff p 62
+    sramCeN <- peekByteOff p 63
+    sramOeN <- peekByteOff p 64
+    sramWeN <- peekByteOff p 65
+    sramUbN <- peekByteOff p 66
+    sramLbN <- peekByteOff p 67
+    uartTxValid <- peekByteOff p 68
+    uartTxByte <- peekByteOff p 69
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
@@ -191,6 +193,7 @@ instance Storable Riski5SimTopState where
         , sDebugBridgeDmemRdata = debugBridgeDmemRdata
         , sDebugSp = debugSp
         , sDebugS0 = debugS0
+        , sDebugRa = debugRa
         , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
@@ -228,32 +231,33 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 24 sDebugBridgeDmemRdata
     pokeByteOff p 28 sDebugSp
     pokeByteOff p 32 sDebugS0
-    pokeByteOff p 36 sMemInitData
-    pokeByteOff p 38 sSramDqIn
-    pokeByteOff p 40 sLedg
-    pokeByteOff p 42 sSramDqOut
-    pokeByteOff p 44 sClk
-    pokeByteOff p 45 sRstN
-    pokeByteOff p 46 sClkCore
-    pokeByteOff p 47 sRstCoreN
-    pokeByteOff p 48 sClkSdram
-    pokeByteOff p 49 sRstSdramN
-    pokeByteOff p 50 sKey
-    pokeByteOff p 51 sMemInitWrite
-    pokeByteOff p 52 sLcdData
-    pokeByteOff p 53 sLcdRs
-    pokeByteOff p 54 sLcdRw
-    pokeByteOff p 55 sLcdEn
-    pokeByteOff p 56 sLcdOn
-    pokeByteOff p 57 sLcdBlon
-    pokeByteOff p 58 sSramDqOe
-    pokeByteOff p 59 sSramCeN
-    pokeByteOff p 60 sSramOeN
-    pokeByteOff p 61 sSramWeN
-    pokeByteOff p 62 sSramUbN
-    pokeByteOff p 63 sSramLbN
-    pokeByteOff p 64 sUartTxValid
-    pokeByteOff p 65 sUartTxByte
+    pokeByteOff p 36 sDebugRa
+    pokeByteOff p 40 sMemInitData
+    pokeByteOff p 42 sSramDqIn
+    pokeByteOff p 44 sLedg
+    pokeByteOff p 46 sSramDqOut
+    pokeByteOff p 48 sClk
+    pokeByteOff p 49 sRstN
+    pokeByteOff p 50 sClkCore
+    pokeByteOff p 51 sRstCoreN
+    pokeByteOff p 52 sClkSdram
+    pokeByteOff p 53 sRstSdramN
+    pokeByteOff p 54 sKey
+    pokeByteOff p 55 sMemInitWrite
+    pokeByteOff p 56 sLcdData
+    pokeByteOff p 57 sLcdRs
+    pokeByteOff p 58 sLcdRw
+    pokeByteOff p 59 sLcdEn
+    pokeByteOff p 60 sLcdOn
+    pokeByteOff p 61 sLcdBlon
+    pokeByteOff p 62 sSramDqOe
+    pokeByteOff p 63 sSramCeN
+    pokeByteOff p 64 sSramOeN
+    pokeByteOff p 65 sSramWeN
+    pokeByteOff p 66 sSramUbN
+    pokeByteOff p 67 sSramLbN
+    pokeByteOff p 68 sUartTxValid
+    pokeByteOff p 69 sUartTxByte
 
 initialState :: Riski5SimTopState
 initialState =
@@ -267,6 +271,7 @@ initialState =
     , sDebugBridgeDmemRdata = 0
     , sDebugSp = 0
     , sDebugS0 = 0
+    , sDebugRa = 0
     , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0
@@ -459,14 +464,15 @@ runUartStream ::
   SimM Riski5SimTopPorts Riski5SimTopState Int
 runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
   prevSpRef <- liftIO $ newIORef (0 :: Word32)
+  prevRaRef <- liftIO $ newIORef (0 :: Word32)
   -- Task #55: rolling buffer of (cycle, pc, dmem_rdata, bridge_rdata, sp,
-  -- s0). Holds the last 5000 cycles. Dumped on the CPU-RESET event so we
+  -- s0, ra). Holds the last 5000 cycles. Dumped on the CPU-RESET event so we
   -- can see exactly which dmem load returned 0 → wound up in ra → ret to 0.
-  ringRef <- liftIO $ newIORef ([] :: [(Int, Word32, Word32, Word32, Word32, Word32)])
-  go maxCycles 0 0 prevSpRef ringRef
+  ringRef <- liftIO $ newIORef ([] :: [(Int, Word32, Word32, Word32, Word32, Word32, Word32)])
+  go maxCycles 0 0 prevSpRef prevRaRef ringRef
  where
-  go 0 cycs _prevPc _ _ = pure cycs
-  go k cycs prevPc prevSpRef ringRef = do
+  go 0 cycs _prevPc _ _ _ = pure cycs
+  go k cycs prevPc prevSpRef prevRaRef ringRef = do
     clockCycle
     s <- peekState
     let pc = sDebugPcfetch s
@@ -475,8 +481,36 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
     -- Keep only last 5000 entries (~5000 cycle window covering the
     -- full 6-iteration unwind that ends in CPU-RESET).
     liftIO $ modifyIORef' ringRef $ \xs ->
-      let entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s)
+      let entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s, sDebugRa s)
        in entry : take 4999 xs
+    -- Task #55: log every ra change, especially when ra becomes a
+    -- value outside the kernel text region. The ROOT bug is "ra
+    -- becomes a stack address" → ret to stack → bad code → eventual
+    -- panic. Catching the EXACT cycle ra became wrong pinpoints
+    -- the lw ra (or jal) that wrote the bad value.
+    do
+      prevRa <- liftIO $ readIORef prevRaRef
+      when (sDebugRa s /= prevRa) $ do
+        liftIO $ writeIORef prevRaRef (sDebugRa s)
+        let newRa = sDebugRa s
+            -- init_stack at 0x80270000-0x80272000 (per riski5-overlay
+            -- config: THREAD_SIZE_ORDER=1 = 8KB stack, anchored where
+            -- our boot stub sets sp = 0x20080000... wait that's SRAM.
+            -- The kernel's init_stack is mapped to the RAM region;
+            -- per our SP-CHANGE traces sp lives at 0x80271xxx in
+            -- normal operation). Anything in the SDRAM data range
+            -- (0x80200000-0x80300000 minus init.text 0x801f25c0-
+            -- 0x80211940) that's NOT a valid kernel code address is
+            -- suspicious.
+            inText r = r >= 0x80000000 && r < 0x80211940
+            inStack r = r >= 0x80270000 && r < 0x80272000
+            isBadCode r = r > 0 && not (inText r)
+        when (inStack newRa || isBadCode newRa) $
+          liftIO $ hPutStrLn stderr
+            ("[RA-SUSPECT] cycle=" ++ show cycs
+              ++ " new_ra=0x" ++ showHex newRa ""
+              ++ " (prev=0x" ++ showHex prevRa ")"
+              ++ " pc=0x" ++ showHex pc "")
     -- Task #55: log every change to sp shadow. Limit to a window
     -- around the canary fail (cycle ~50.9M) to keep the log small.
     when (cycs > 50000000 && cycs < 51100000) $ do
@@ -545,15 +579,15 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
       -- when the core stalls for hundreds of cycles on one PC.
       ring <- liftIO $ readIORef ringRef
       liftIO $ hPutStrLn stderr "  --- last 5000 cycles before CPU-RESET (RLE-compressed) ---"
-      liftIO $ hPutStrLn stderr "  cycleStart..cycleEnd  pc  dmem  bridge  sp  s0"
+      liftIO $ hPutStrLn stderr "  cycleStart..cycleEnd  pc  dmem  bridge  sp  s0  ra"
       let dumpRle [] = pure ()
-          dumpRle ((c0, p0, dr0, br0, sp0, s00) : rest) =
-            let key = (p0, dr0, br0, sp0, s00)
-                sameKey (_, p, dr, br, sp, s0) = (p, dr, br, sp, s0) == key
+          dumpRle ((c0, p0, dr0, br0, sp0, s00, ra0) : rest) =
+            let key = (p0, dr0, br0, sp0, s00, ra0)
+                sameKey (_, p, dr, br, sp, s0, ra) = (p, dr, br, sp, s0, ra) == key
                 (group, after) = span sameKey rest
                 cEnd = case group of
                   [] -> c0
-                  _ -> case last group of (c, _, _, _, _, _) -> c
+                  _ -> case last group of (c, _, _, _, _, _, _) -> c
              in do
                   liftIO $ hPutStrLn stderr
                     ("  " ++ show c0 ++ ".." ++ show cEnd
@@ -561,7 +595,8 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
                       ++ " dmem=0x" ++ showHex dr0 ""
                       ++ " bridge=0x" ++ showHex br0 ""
                       ++ " sp=0x" ++ showHex sp0 ""
-                      ++ " s0=0x" ++ showHex s00 "")
+                      ++ " s0=0x" ++ showHex s00 ""
+                      ++ " ra=0x" ++ showHex ra0 "")
                   dumpRle after
       dumpRle (reverse ring)
     -- Detect entries to earlycon-related kernel functions to find
@@ -698,8 +733,8 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
           modifyIORef' bufRef (b :)
           BS.hPutStr stdout (BS.singleton b)
           hFlush stdout
-        go (k - 1) (cycs + 1) pc prevSpRef ringRef
-      else go (k - 1) (cycs + 1) pc prevSpRef ringRef
+        go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
+      else go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
 
 -- * Entry point ------------------------------------------------------
 

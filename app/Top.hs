@@ -433,6 +433,13 @@ topEntity ::
           -- canary check LW uses s0 to compute its address, so this
           -- is the actually-relevant register for the failure mode.
           "DEBUG_S0" ::: Signal DomCore (BitVector 32)
+        , -- Task #55 diagnostic 3: shadow of regfile x1 (ra). The
+          -- ROOT-CAUSE search is "when did some lw ra return a
+          -- stack address instead of a kernel code address". This
+          -- shadow tracks every wb to ra so the hwsim can dump
+          -- ra-change events with cycle + PC, pinpointing the
+          -- exact instruction that wrote a bad ra.
+          "DEBUG_RA" ::: Signal DomCore (BitVector 32)
         )
 topEntity
   clkBus
@@ -502,6 +509,18 @@ topEntity
             Just (rd, v) | rd == 8 -> v
             _ -> cur
        in register 0 (nextS0 <$> wbInCoreS <*> debugS0S)
+
+  -- Task #55 debug 3: shadow x1 (ra). The bug-chain we're hunting
+  -- is "code executes from stack" — meaning some `lw ra, X(sp)`
+  -- earlier returned a stack address. Tracing every wb to ra
+  -- pinpoints the instruction that wrote the bad value.
+  debugRaS :: Signal DomCore (BitVector 32)
+  debugRaS =
+    withClockResetEnable clkCore rstCore enableGen $
+      let nextRa wb cur = case wb of
+            Just (rd, v) | rd == 1 -> v
+            _ -> cur
+       in register 0 (nextRa <$> wbInCoreS <*> debugRaS)
 
   coreReqInCoreS :: Signal DomCore CoreBusReq
   coreReqInCoreS =
@@ -707,6 +726,7 @@ topEntity
             , dbgBridgeDmemRdataS
             , debugSpS
             , debugS0S
+            , debugRaS
             )
           , coreReplyInBusInner
           )

@@ -35,6 +35,7 @@
             { "direction": "out",                    "is_clock": false, "name": "DEBUG_BRIDGE_DMEM_RDATA", "type_name": "[31:0]", "width": 32 },
             { "direction": "out",                    "is_clock": false, "name": "DEBUG_SP", "type_name": "[31:0]", "width": 32 },
             { "direction": "out",                    "is_clock": false, "name": "DEBUG_S0", "type_name": "[31:0]", "width": 32 },
+            { "direction": "out",                    "is_clock": false, "name": "DEBUG_RA", "type_name": "[31:0]", "width": 32 },
 
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "MEM_INIT_DATA", "type_name": "[15:0]", "width": 16 },
             { "direction": "in",  "domain": "Dom30", "is_clock": false, "name": "SRAM_DQ_I",     "type_name": "[15:0]", "width": 16 },
