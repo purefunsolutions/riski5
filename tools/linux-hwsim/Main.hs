@@ -107,7 +107,8 @@ data Riski5SimTopState = Riski5SimTopState
   , sDebugDmemRdata :: !Word32 -- bus-side dmem rdata (task #52)
   , sDebugBridgeDmemRdata :: !Word32 -- bridge-captured dmem rdata (task #52 debug 2)
   , sDebugSp :: !Word32 -- regfile x2 shadow tracked via writeback (task #55)
-  , -- 16-bit ports (offsets 32..39)
+  , sDebugS0 :: !Word32 -- regfile x8 shadow tracked via writeback (task #55)
+  , -- 16-bit ports (offsets 36..43)
     sMemInitData :: !Word16
   , sSramDqIn :: !Word16
   , sLedg :: !Word16 -- 9 used
@@ -141,7 +142,7 @@ data Riski5SimTopState = Riski5SimTopState
   deriving stock (Show, Eq)
 
 instance Storable Riski5SimTopState where
-  sizeOf _ = 64 -- 62 bytes of fields, padded to multiple of alignment 4
+  sizeOf _ = 68 -- 66 bytes of fields, padded to multiple of alignment 4
   alignment _ = 4
   peek p = do
     memInitAddr <- peekByteOff p 0
@@ -152,32 +153,33 @@ instance Storable Riski5SimTopState where
     debugDmemRdata <- peekByteOff p 20
     debugBridgeDmemRdata <- peekByteOff p 24
     debugSp <- peekByteOff p 28
-    memInitData <- peekByteOff p 32
-    sramDqIn <- peekByteOff p 34
-    ledg <- peekByteOff p 36
-    sramDqOut <- peekByteOff p 38
-    clk <- peekByteOff p 40
-    rstN <- peekByteOff p 41
-    clkCore <- peekByteOff p 42
-    rstCoreN <- peekByteOff p 43
-    clkSdram <- peekByteOff p 44
-    rstSdramN <- peekByteOff p 45
-    key <- peekByteOff p 46
-    memInitWrite <- peekByteOff p 47
-    lcdData <- peekByteOff p 48
-    lcdRs <- peekByteOff p 49
-    lcdRw <- peekByteOff p 50
-    lcdEn <- peekByteOff p 51
-    lcdOn <- peekByteOff p 52
-    lcdBlon <- peekByteOff p 53
-    sramDqOe <- peekByteOff p 54
-    sramCeN <- peekByteOff p 55
-    sramOeN <- peekByteOff p 56
-    sramWeN <- peekByteOff p 57
-    sramUbN <- peekByteOff p 58
-    sramLbN <- peekByteOff p 59
-    uartTxValid <- peekByteOff p 60
-    uartTxByte <- peekByteOff p 61
+    debugS0 <- peekByteOff p 32
+    memInitData <- peekByteOff p 36
+    sramDqIn <- peekByteOff p 38
+    ledg <- peekByteOff p 40
+    sramDqOut <- peekByteOff p 42
+    clk <- peekByteOff p 44
+    rstN <- peekByteOff p 45
+    clkCore <- peekByteOff p 46
+    rstCoreN <- peekByteOff p 47
+    clkSdram <- peekByteOff p 48
+    rstSdramN <- peekByteOff p 49
+    key <- peekByteOff p 50
+    memInitWrite <- peekByteOff p 51
+    lcdData <- peekByteOff p 52
+    lcdRs <- peekByteOff p 53
+    lcdRw <- peekByteOff p 54
+    lcdEn <- peekByteOff p 55
+    lcdOn <- peekByteOff p 56
+    lcdBlon <- peekByteOff p 57
+    sramDqOe <- peekByteOff p 58
+    sramCeN <- peekByteOff p 59
+    sramOeN <- peekByteOff p 60
+    sramWeN <- peekByteOff p 61
+    sramUbN <- peekByteOff p 62
+    sramLbN <- peekByteOff p 63
+    uartTxValid <- peekByteOff p 64
+    uartTxByte <- peekByteOff p 65
     pure
       Riski5SimTopState
         { sMemInitAddr = memInitAddr
@@ -188,6 +190,7 @@ instance Storable Riski5SimTopState where
         , sDebugDmemRdata = debugDmemRdata
         , sDebugBridgeDmemRdata = debugBridgeDmemRdata
         , sDebugSp = debugSp
+        , sDebugS0 = debugS0
         , sMemInitData = memInitData
         , sSramDqIn = sramDqIn
         , sLedg = ledg
@@ -224,32 +227,33 @@ instance Storable Riski5SimTopState where
     pokeByteOff p 20 sDebugDmemRdata
     pokeByteOff p 24 sDebugBridgeDmemRdata
     pokeByteOff p 28 sDebugSp
-    pokeByteOff p 32 sMemInitData
-    pokeByteOff p 34 sSramDqIn
-    pokeByteOff p 36 sLedg
-    pokeByteOff p 38 sSramDqOut
-    pokeByteOff p 40 sClk
-    pokeByteOff p 41 sRstN
-    pokeByteOff p 42 sClkCore
-    pokeByteOff p 43 sRstCoreN
-    pokeByteOff p 44 sClkSdram
-    pokeByteOff p 45 sRstSdramN
-    pokeByteOff p 46 sKey
-    pokeByteOff p 47 sMemInitWrite
-    pokeByteOff p 48 sLcdData
-    pokeByteOff p 49 sLcdRs
-    pokeByteOff p 50 sLcdRw
-    pokeByteOff p 51 sLcdEn
-    pokeByteOff p 52 sLcdOn
-    pokeByteOff p 53 sLcdBlon
-    pokeByteOff p 54 sSramDqOe
-    pokeByteOff p 55 sSramCeN
-    pokeByteOff p 56 sSramOeN
-    pokeByteOff p 57 sSramWeN
-    pokeByteOff p 58 sSramUbN
-    pokeByteOff p 59 sSramLbN
-    pokeByteOff p 60 sUartTxValid
-    pokeByteOff p 61 sUartTxByte
+    pokeByteOff p 32 sDebugS0
+    pokeByteOff p 36 sMemInitData
+    pokeByteOff p 38 sSramDqIn
+    pokeByteOff p 40 sLedg
+    pokeByteOff p 42 sSramDqOut
+    pokeByteOff p 44 sClk
+    pokeByteOff p 45 sRstN
+    pokeByteOff p 46 sClkCore
+    pokeByteOff p 47 sRstCoreN
+    pokeByteOff p 48 sClkSdram
+    pokeByteOff p 49 sRstSdramN
+    pokeByteOff p 50 sKey
+    pokeByteOff p 51 sMemInitWrite
+    pokeByteOff p 52 sLcdData
+    pokeByteOff p 53 sLcdRs
+    pokeByteOff p 54 sLcdRw
+    pokeByteOff p 55 sLcdEn
+    pokeByteOff p 56 sLcdOn
+    pokeByteOff p 57 sLcdBlon
+    pokeByteOff p 58 sSramDqOe
+    pokeByteOff p 59 sSramCeN
+    pokeByteOff p 60 sSramOeN
+    pokeByteOff p 61 sSramWeN
+    pokeByteOff p 62 sSramUbN
+    pokeByteOff p 63 sSramLbN
+    pokeByteOff p 64 sUartTxValid
+    pokeByteOff p 65 sUartTxByte
 
 initialState :: Riski5SimTopState
 initialState =
@@ -262,6 +266,7 @@ initialState =
     , sDebugDmemRdata = 0
     , sDebugBridgeDmemRdata = 0
     , sDebugSp = 0
+    , sDebugS0 = 0
     , sMemInitData = 0
     , sSramDqIn = 0
     , sLedg = 0
@@ -564,12 +569,14 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
       liftIO $ hPutStrLn stderr
         ("[SP-SAVE] cycle=" ++ show cycs
           ++ " pc=0x" ++ showHex pc ""
-          ++ " sp=0x" ++ showHex (sDebugSp s) "")
+          ++ " sp=0x" ++ showHex (sDebugSp s) ""
+          ++ " s0=0x" ++ showHex (sDebugS0 s) "")
     when (inCheck && not prevInCheck) $
       liftIO $ hPutStrLn stderr
         ("[SP-CHECK] cycle=" ++ show cycs
           ++ " pc=0x" ++ showHex pc ""
-          ++ " sp=0x" ++ showHex (sDebugSp s) "")
+          ++ " sp=0x" ++ showHex (sDebugSp s) ""
+          ++ " s0=0x" ++ showHex (sDebugS0 s) "")
     -- Also detect ANY major PC region change (kernel ↔ firmware)
     -- to catch jumps/redirects.
     when (prevPc >= 0x80000000 && pc < 0x80000000 && pc /= prevPc && cycs > 1000000) $

@@ -429,6 +429,10 @@ topEntity ::
           -- the same but the LW reads a wrong cell (= forwarding
           -- or address-compute bug).
           "DEBUG_SP" ::: Signal DomCore (BitVector 32)
+        , -- Task #55 diagnostic 2: shadow of regfile x8 (s0). The
+          -- canary check LW uses s0 to compute its address, so this
+          -- is the actually-relevant register for the failure mode.
+          "DEBUG_S0" ::: Signal DomCore (BitVector 32)
         )
 topEntity
   clkBus
@@ -485,6 +489,19 @@ topEntity
             Just (rd, v) | rd == 2 -> v
             _ -> cur
        in register 0 (nextSp <$> wbInCoreS <*> debugSpS)
+
+  -- Task #55 debug 2: shadow x8 (s0). The canary check LW uses s0
+  -- (not sp) to compute its address, so s0 is the actually-relevant
+  -- register. If s0 gets corrupted on return from seq_buf_vprintf
+  -- (= LW restoring s0 returns wrong data), the canary check reads
+  -- a wrong byte address.
+  debugS0S :: Signal DomCore (BitVector 32)
+  debugS0S =
+    withClockResetEnable clkCore rstCore enableGen $
+      let nextS0 wb cur = case wb of
+            Just (rd, v) | rd == 8 -> v
+            _ -> cur
+       in register 0 (nextS0 <$> wbInCoreS <*> debugS0S)
 
   coreReqInCoreS :: Signal DomCore CoreBusReq
   coreReqInCoreS =
@@ -689,6 +706,7 @@ topEntity
             , dbgDmemRdataS
             , dbgBridgeDmemRdataS
             , debugSpS
+            , debugS0S
             )
           , coreReplyInBusInner
           )
