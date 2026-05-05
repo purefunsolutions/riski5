@@ -461,21 +461,51 @@ rules around maintaining it.
       RA-SUSPECT events fired** in the entire boot. Yet
       __stack_chk_fail's prologue `sw ra, 12(sp)` at PC
       `0x801ec254` stores **0x80271d00** to byte 0x80271CB8.
-    - This is INCONSISTENT — ra would have to be 0x80271d00
-      at the sw cycle, but the shadow saw no such write.
-      Possible explanations:
-      * The shadow doesn't observe writebacks during the
-        cycle they happen (a 1-cycle race we missed).
-      * The pipeline lag analysis is wrong — actual sw isn't
-        `sw ra,12(sp)` at PC 0x801ec254.
-      * Another instruction writes 0x80271d00 to byte
-        0x80271CB8 from a different source register.
-      * `wbInCoreS` is gated on `stallInternalS`; if the
-        writeback is suppressed but the regfile still picks
-        it up via some other path, the shadow misses.
-    - Open: re-examine wbInCoreS path vs regfile commit; tap
-      ALL writebacks (any rd) within the suspicious cycle
-      window to verify shadow correctness.
+    - **Likely resolution**: pipeline lag isn't 1 instruction
+      consistently — under heavy SDRAM stalls it can be 2.
+      With lag=2 the actual sw is `sw s0, 8(sp)` at PC
+      0x801ec250, and the saved value is s0 (caller's frame
+      pointer = a legitimate stack address like 0x80271d00).
+      So ra is fine; my earlier interpretation was wrong.
+    - **2026-05-04 deep dive on canary check**: confirmed via
+      the existing STACK-READ tap (in `pkgs/riski5-sim/verilog/
+      riski5_sim_top.v`) that:
+      * `seq_buf_printf` canary slot at byte 0x80271c8c
+        (cell 0x24E346/47) was last read returning 0
+        at PC 0x801dc398.
+      * `_print_tainted` canary slot at byte 0x80271cdc
+        (cell 0x24E36E/F) was last read returning 0
+        at PC 0x8000fb40 (= the xor in its canary check).
+      * Current canary at tp+744 reads 0 throughout boot.
+      * Both lw inputs to the xor are 0, so xor=0, beqz
+        SHOULD take, NO __stack_chk_fail jump.
+      Yet __stack_chk_fail WAS entered at cycle 50943736
+      (single invocation).
+    - This is the puzzle: SDRAM cells correctly hold 0 for
+      both canary slots, but the kernel still triggers
+      __stack_chk_fail. Two angles:
+      (i) **Bridge / pipeline corruption between the SDRAM
+          chip and the core**: chip returns 0, but the core
+          sees a non-zero value via the bridge. CoreCdcBridge
+          or SdramCdcBridge captures wrong rdata in a corner
+          case.
+      (ii) **Wrong-callee jump** that lands inside
+           __stack_chk_fail without going through any
+           function's real canary check. E.g., a jalr with
+           wrong rs1 jumps into 0x801ec24c.
+    - **History note**: pre-multi-PLL, Linux booted past
+      this point cleanly (per commit `053ca5c`). So the
+      bug is in code added by the multi-PLL split (CDC
+      bridges, refresh-interval rescaling, or SoC-side
+      domain rewiring).
+    - **Concrete next step**: tap the BRIDGE-side
+      `cbrDmemRdata` value at every cycle PC_F is in the
+      canary check region (already done via DEBUG_BRIDGE_DMEM_
+      RDATA + ring buffer). Cross-reference with chip-side
+      STACK-READ for the same cycle range to find any
+      mismatch. If found → CoreCdcBridge is the culprit; if
+      not found → look upstream at SdramCdcBridge or the
+      SdrController.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
