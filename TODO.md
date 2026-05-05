@@ -651,6 +651,28 @@ rules around maintaining it.
       even when it equals mLastSentPc. Equivalently: track
       "the captured instruction was bubbled" and re-issue
       the fetch.
+    - **Concrete fix proposal** (2026-05-04, end of session):
+      1. Add `cbrFlush :: Bool` field to `CoreBusReq` (in
+         `src/Riski5/CoreCdcBridge.hs`).
+      2. Update `packReq`/`unpackReq` to handle the new
+         field (CoreBusReq grows from 101 to 102 bits).
+      3. In `masterStep` MIdle case, refire if
+         `reqIsLive ... || cbrFlush req`.
+      4. In `Core.hs`, expose `flushS` as a new output of
+         `coreWith` (signature grows from 8 to 9 outputs).
+      5. In `Top.hs`, plumb the new flushS into the
+         `coreReqInCoreS` construction.
+      6. Update `Soc.hs` `socWith` family to thread the
+         new field through.
+      7. Update CdcSpec / CdcSocIntegrationSpec / CoreCdcSpec
+         tests for the new field.
+      Estimated change: ~20 lines across 4-5 files. Risk:
+      bridge fires on every branch-taken, slightly more
+      transactions per second (no functional change for
+      correctness, just throughput). Validate via
+      `riski5-test` (all existing tests pass) + a new
+      `cdc_flush_same_pc_refire` test in CdcSpec that
+      reproduces the seq_buf_printf .L36 race.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
