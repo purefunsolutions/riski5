@@ -453,6 +453,29 @@ rules around maintaining it.
       pinpoints which earlier function's `lw ra` returned bad
       data. Until we add that tap, the ROOT CAUSE remains
       unidentified.
+    - **2026-05-04 follow-up: DEBUG_RA shadow added** (commit
+      `2d5e637`). Ran 53M-cycle hwsim with `[RA-SUSPECT]` tap
+      that fires whenever ra is written with a value outside
+      kernel text (`0x80000000-0x80211940`) or in the init_stack
+      region (`0x80270000-0x80272000`). Result: **ZERO
+      RA-SUSPECT events fired** in the entire boot. Yet
+      __stack_chk_fail's prologue `sw ra, 12(sp)` at PC
+      `0x801ec254` stores **0x80271d00** to byte 0x80271CB8.
+    - This is INCONSISTENT — ra would have to be 0x80271d00
+      at the sw cycle, but the shadow saw no such write.
+      Possible explanations:
+      * The shadow doesn't observe writebacks during the
+        cycle they happen (a 1-cycle race we missed).
+      * The pipeline lag analysis is wrong — actual sw isn't
+        `sw ra,12(sp)` at PC 0x801ec254.
+      * Another instruction writes 0x80271d00 to byte
+        0x80271CB8 from a different source register.
+      * `wbInCoreS` is gated on `stallInternalS`; if the
+        writeback is suppressed but the regfile still picks
+        it up via some other path, the shadow misses.
+    - Open: re-examine wbInCoreS path vs regfile commit; tap
+      ALL writebacks (any rd) within the suspicious cycle
+      window to verify shadow correctness.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
