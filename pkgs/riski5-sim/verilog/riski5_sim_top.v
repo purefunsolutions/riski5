@@ -196,6 +196,7 @@ module riski5_sim_top (
   // "kernel tries but waitrequest blocks" (events but UART_TX_VALID
   // never fires). Limit to data-register writes (uart_addr[2]==0)
   // to skip control-register writes during driver init.
+`ifdef HWSIM_VERBOSE_TAPS
   always @(posedge clk) begin
     if (uart_sel & jtag_uart_wr & (uart_addr[2] == 1'b0)) begin
       $display("[UART-WRITE-ATTEMPT] addr=0x%h data=0x%h be=%b waitreq=%b accepted=%b pc=0x%h",
@@ -203,6 +204,7 @@ module riski5_sim_top (
                (jtag_uart_waitrequest), dbg_core_pc_w);
     end
   end
+`endif
 
   // UART-TX tap. The Altera IP commits av_writedata[7:0] to the TX
   // FIFO on the cycle AFTER the master first presented
@@ -538,39 +540,33 @@ module sim_sdram_chip (
         end else if (is_read) begin
           if (active[ba]) begin
             read_d1 <= mem[linear_addr];
-            // Task #52 debug: log reads of chip cells around
-            // bus addr 0x80273380 (init_task.flags). Chip cells
-            // 0x14E6C0 (low half) and 0x14E6C1 (high half).
+`ifdef HWSIM_VERBOSE_TAPS
+            // The four $display blocks below were added during the
+            // task #52 / #55 silicon-debug push (init_task.flags +
+            // init_stack canary tracking). They fire on every SDRAM
+            // access in the relevant address ranges, which during a
+            // long Linux boot generates GBs of stdio output and was
+            // observed pushing hwsim past 50 GB RSS at cycle ~150 M.
+            // Enable only when actively debugging those scenarios:
+            //   pkgs/riski5-sim builds with -DHWSIM_VERBOSE_TAPS to
+            //   re-enable. Default OFF so long Linux runs are bounded.
             if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
               $display("[SDRAM-READ-TP] cell=0x%h returning=0x%h",
                        linear_addr, mem[linear_addr]);
             end
-            // Task #55 debug: log ALL reads from cells in the
-            // init_stack region (bytes 0x80270000..0x80272000 =
-            // chip cells with row 0x4E0..0x4E3 across all banks).
-            // Compare to writes (below) to find any read that
-            // returns wrong data — that pinpoints a HW corruption.
             if (active_row[ba] >= 12'h4E0 && active_row[ba] <= 12'h4E3) begin
               $display("[STACK-READ] cell=0x%h returning=0x%h pc=0x%h",
                        linear_addr, mem[linear_addr], dbg_pc);
             end
-            // Task #55 debug 2: log reads of the canary cell at
-            // tp+744 = byte 0x80273668 = chip cells 0x34E634/35.
             if (linear_addr == 22'h34E634 || linear_addr == 22'h34E635) begin
               $display("[CANARY-READ] cell=0x%h returning=0x%h pc=0x%h",
                        linear_addr, mem[linear_addr], dbg_pc);
             end
-            // Task #55 debug 3: log ALL chip reads when the F-stage
-            // PC is in the seq_buf_printf canary-check region
-            // (PCs 0x801dc380-0x801dc3a8 +/- pipeline depth = roughly
-            // 0x801dc370-0x801dc3c0). These are the actual reads the
-            // canary check LW issues — should see one for sp+12 of
-            // seq_buf_printf. If the cell != 0x24E35E/F (where canary
-            // was saved), that confirms sp/s0 register corruption.
             if (dbg_pc >= 32'h801dc370 && dbg_pc <= 32'h801dc3c0) begin
               $display("[CHECK-READ] cell=0x%h returning=0x%h pc=0x%h",
                        linear_addr, mem[linear_addr], dbg_pc);
             end
+`endif
           end else begin
             // Read of an inactive bank — undefined chip behaviour,
             // model as zeros (matches a typical un-written cell).
@@ -584,29 +580,22 @@ module sim_sdram_chip (
             // DQM=1 masks the byte (data ignored). DQM=0 commits.
             if (~dqm[0]) mem[linear_addr][7:0]  <= dq_in[7:0];
             if (~dqm[1]) mem[linear_addr][15:8] <= dq_in[15:8];
-            // Task #52 debug: log writes to chip cells around
-            // bus addr 0x80273380 (init_task.flags). Chip cells
-            // 0x14E6C0 (low half) and 0x14E6C1 (high half). Include
-            // the kernel PC at the time of the write so we can
-            // identify which kernel function is setting TIF_SIGPENDING.
-            // Also include $time so Haskell can correlate with its
-            // own cycle counter.
+`ifdef HWSIM_VERBOSE_TAPS
+            // Same task #52/#55 debug taps as the read side; gated
+            // for memory bounds during long Linux runs.
             if (linear_addr == 22'h14E6C0 || linear_addr == 22'h14E6C1) begin
               $display("[SDRAM-WRITE] time=%t cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
                        $time, linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
             end
-            // Task #55 debug: log ALL writes to cells in the init_stack
-            // region (rows 0x4E0..0x4E3 across all banks).
             if (active_row[ba] >= 12'h4E0 && active_row[ba] <= 12'h4E3) begin
               $display("[STACK-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
                        linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
             end
-            // Task #55 debug 2: log writes of the canary cell at
-            // tp+744 = byte 0x80273668 = chip cells 0x34E634/35.
             if (linear_addr == 22'h34E634 || linear_addr == 22'h34E635) begin
               $display("[CANARY-WRITE] cell=0x%h dq_in=0x%h dqm=%b old=0x%h pc=0x%h",
                        linear_addr, dq_in, dqm, mem[linear_addr], dbg_pc);
             end
+`endif
           end
           if (addr[10]) active[ba] <= 1'b0; // auto-precharge
         end else if (is_pcharge) begin

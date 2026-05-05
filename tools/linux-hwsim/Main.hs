@@ -481,17 +481,31 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
   go k cycs prevPc prevSpRef prevRaRef ringRef = do
     clockCycle
     s <- peekState
-    let pc = sDebugPcfetch s
-    liftIO $ modifyIORef' pcRef (Map.insertWith (+) pc 1)
+    let !pc = sDebugPcfetch s
+    -- Use a strict update closure so the (+) thunk doesn't pile up
+    -- as `1+(1+(1+(...)))` deep — earlier `Map.insertWith (+) pc 1`
+    -- was the dominant heap leak (1 GB residency at cycle ~22M).
+    -- The strict-Map insertWith only forces the spine; the value
+    -- thunk it stores still chains with each cycle's identical-PC
+    -- update.
+    liftIO $ modifyIORef' pcRef $ \m ->
+      Map.insertWith (\_new old -> let !o' = old + 1 in o') pc 1 m
     -- Task #55: append this cycle's snapshot to the rolling buffer.
     -- Keep only last 5000 entries (~5000 cycle window covering the
     -- full 6-iteration unwind that ends in CPU-RESET).
+    -- Force every tuple element to WHNF before going into the Seq;
+    -- the lazy field selectors (sDebugDmemRdata s etc.) would
+    -- otherwise hold references to the entire `s` record alive
+    -- in each entry, retaining ~200 bytes of state per cycle ×
+    -- 5000-deep ring × thunk overhead = hundreds of MB after
+    -- millions of cycles.
+    let !d = sDebugDmemRdata s
+        !br = sDebugBridgeDmemRdata s
+        !sp = sDebugSp s
+        !s0 = sDebugS0 s
+        !ra = sDebugRa s
     liftIO $ modifyIORef' ringRef $ \xs ->
-      -- Use Data.Sequence (strict-spine finger tree, O(1) cons,
-      -- O(log n) take) so the rolling 5000-cycle window doesn't
-      -- pile up `take 4999 (take 4999 (...))` lazy-list thunks.
-      -- The list version observed at >50 GB RSS by cycle ~150M.
-      let !entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s, sDebugRa s)
+      let !entry = (cycs, pc, d, br, sp, s0, ra)
        in Seq.take 5000 (entry Seq.<| xs)
     -- Task #55: log every ra change, especially when ra becomes a
     -- value outside the kernel text region. The ROOT bug is "ra
