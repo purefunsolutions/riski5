@@ -597,6 +597,28 @@ rules around maintaining it.
       in the speculative pre-flush window) was in X with
       cbrDRen=True somehow, so reqIsLive's "rising edge of
       dRen" check returns False for the actual lw ra.
+    - **2026-05-04 follow-up — pipeline lw ra is gone**:
+      Examined dump cycles around the failing lw ra. Bus
+      dmem signal stays at 0x10000537 (default) for the
+      ENTIRE 144-cycle window where lw ra should be in
+      X-stage (pcF=0x801dc3a8, 0x801dc3ac, 0x801dc3b0).
+      Only when pcF=0x801dc3b4 starts does the bus dmem
+      change (= lw s0's LW transaction). So the bridge
+      didn't fire any data-port LW for lw ra at PC
+      0x801dc3a8.
+    - This means lw ra either (a) never reached X-stage
+      with cbrDRen=True, or (b) reached X but the bridge
+      didn't see cbrDRen=True. Most likely (a) — the
+      beqz-takes flush at PC 0x801dc3a0→.L36 might have
+      converted lw ra into a bubble.
+    - **Concrete next debug**: Write a CoreCdcSpec test
+      that simulates this sequence (beqz takes → flush →
+      sequential LWs in fall-through). Compare expected vs
+      actual writeback behavior. If pure-Clash sim
+      reproduces the bug, fix is at the Core / CDC bridge
+      boundary; if not, look at how the multi-PLL adapter
+      (Riski5.Sdram, Riski5.SdrController) interacts with
+      the pipeline in this corner case.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
