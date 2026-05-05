@@ -156,6 +156,18 @@
         amoStress = true;
       };
 
+      # Task #58 follow-up: M-extension MUL/DIV silicon stress test.
+      # Bakes firmware/phase1/HelloMdStress.hs into imem. BRAM-only
+      # tight loop hammering MUL / MULHU / MULH / DIVU / DIV / REMU
+      # with known operands → known answers; expected silicon stream
+      # is `BMUHDSR.MUHDSR.…`. If silicon hangs (no '.' bytes after
+      # the 'B' boot byte), the iterative MUL/DIV FSM is at fault —
+      # closes the silicon-coverage gap CLAUDE.md calls out.
+      riski5-core-mdstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        mdStress = true;
+      };
+
       # Task #32: LR/SC-stress silicon test (follow-up to #29 after
       # amostress came back clean — silicon AMO is solid). Bakes
       # firmware/phase1/HelloLrScStress.hs into imem. Same shape
@@ -341,6 +353,13 @@
       flash-riski5-amostress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-amostress;
+      };
+
+      # Flasher for the M-extension stress silicon test bitstream
+      # (task #58 follow-up).
+      flash-riski5-mdstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-mdstress;
       };
 
       # Flasher for the LR/SC-stress silicon test bitstream (task #32).

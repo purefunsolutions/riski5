@@ -93,6 +93,20 @@
   # the AMO inner loop fetches from SDRAM under contention with
   # the AMO Read/Write data-port phases.
   amoStress ? false,
+  # Build the M-extension (MUL/DIV) silicon-stress variant
+  # (task #58 follow-up). Overlay
+  # @HelloMdStress.helloMdStressFirmwareWords@ into the imem.
+  # BRAM-resident tight loop hammering MUL / MULHU / MULH /
+  # DIVU / DIV / REMU with known operands → known answers,
+  # printing @BMUHDSR.MUHDSR.…@ per clean iteration and
+  # @F<op>FFF…@ on first failure. Closes the silicon coverage
+  # gap CLAUDE.md calls out — there was no silicon stress
+  # firmware for the M-extension before today, and the
+  # post-BogoMIPS Linux silicon hang surfaced through Linux
+  # instead. Fully BRAM-only (no SDRAM/SRAM dependency) so a
+  # hang here is unambiguously the iterative MUL/DIV FSM,
+  # not a bridge / external-memory issue.
+  mdStress ? false,
   # Build the LR/SC-stress silicon-test variant (task #32 follow-
   # up to #29). Overlay
   # @HelloLrScStress.helloLrScStressFirmwareWords@ into the imem.
@@ -226,6 +240,7 @@
   isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest;
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad;
   isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isMdStress = mdStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -335,6 +350,7 @@ in
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
       else if isLinuxBootMaster then "riski5-core-linux-master"
+      else if isMdStress then "riski5-core-mdstress"
       else "riski5-core") + slowSuffix + combMdSuffix;
     version = "0.1.0";
 
@@ -1035,6 +1051,40 @@ in
               cat firmware/phase1/FetchPolicy.hs
             ''}
 
+            ${lib.optionalString isMdStress ''
+              # Task #58 follow-up: M-extension MUL/DIV silicon stress
+              # test. Same overlay mechanism as amoStress / lrScStress —
+              # re-export HelloMdStress's firmware under the CoreMark
+              # name so the unchanged -DFIRMWARE_COREMARK path in
+              # app/Top.hs bakes the M-FU stress probe into imem. No
+              # FetchPolicy overlay needed: this firmware is BRAM-only.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the mdStress Nix build: re-exports
+              -- HelloMdStress's firmware under the CoreMark name so the
+              -- unchanged -DFIRMWARE_COREMARK path in app/Top.hs bakes
+              -- the M-extension stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloMdStress (helloMdStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloMdStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### mdStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -1051,7 +1101,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster || isMdStress) "-DFIRMWARE_COREMARK"} \
               ${lib.optionalString combinationalMuldiv "-DSILICON_MULCOMB_ONLY"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \

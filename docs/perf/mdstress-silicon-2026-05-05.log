@@ -1,0 +1,61 @@
+# riski5-core-mdstress silicon test results — 2026-05-05
+# Bitstream: /nix/store/2cp60xkmnq89yv35vx2q8gwdxlhwi6gr-riski5-core-mdstress-0.1.0
+# STA timing: u_altpll_sdram|pll|clk[2] Fmax 32.35 MHz at 40 MHz constraint
+#             (slack -3.7 ns, normal over-constraint for this design)
+#
+# Firmware: BRAM-only HelloMdStress, tight loop hammering
+#   M U H D S R . M U H D S R . ...
+# (mul / mulhu / mulh / divu / div / remu, all with known operands).
+# Expected stream on success: B M U H D S R . M U H D S R . ...
+# On any wrong value: F + op-letter, then F-spin loop forever.
+
+== Probe results (multiple flash cycles, all give the SAME state) ==
+
+UART commit counter (CMTC) frozen at 65 across 30 s × 10 samples:
+  Sample 0:  CMTC=65  ITRC=1 ('B' bytes)
+  Sample 1:  CMTC=65  ITRC=1
+  ... (repeats)
+
+Core PC frozen at 0x000000F0 across 30 s × 10 samples:
+  Sample 0:  CMTC=65   core_pc=0x000000F0   bus_pcFetch=0x000000F0
+  Sample 1:  CMTC=65   core_pc=0x000000F0   bus_pcFetch=0x000000F0
+  ... (repeats)
+
+== Decoded ==
+
+PC 0x000000F0 = label `mulFailL` in HelloMdStress.hs (the M-block
+`bne x3 x5 mulFailL` target — entered when MUL produced a value
+that didn't match the expected 0x45678000).
+
+CMTC 65 = 1 ('B' boot byte) + 9 × 7 (nine successful MUHDSR.
+iterations = 63 bytes) + 1 (one 'F' byte from emitFailL before
+the FIFO filled and the master stalled) = 65 bytes.
+
+== Result ==
+
+After 9 consecutive iterations of correct MUL/MULHU/MULH/DIVU/
+DIV/REMU results with known operands, the 10th iteration's
+`mul x3, x1, x2` (with x1 = 0x12345678 reloaded, x2 = 0x100
+reloaded — same operands every time) produced a value that didn't
+match the expected 0x45678000.
+
+== Significance ==
+
+Confirms task #58's hypothesis at the byte level instead of
+through Linux's noise: the iterative `mulDivFUIterative` FSM
+(`src/Riski5/Core/FU/MulDiv.hs`) IS broken on Cyclone II silicon
+despite passing every cabal / Spike / triple-diff sim test.
+
+The transient nature of the failure (9 correct, 10th wrong)
+suggests a TIMING violation rather than a deterministic logic
+bug — this build has -3.7 ns slack on the bus/core clock
+(over-constrained at 40 MHz vs Fmax 32.35 MHz), and the FU's
+64-bit prodReg accumulator + 32-deep counter creates many timing
+paths through the iterative shift-add. At negative slack, some
+paths may occasionally violate setup/hold and capture wrong bits.
+
+The hybrid `mulDivFUMulComb` (combinational MUL via DSP, iterative
+DIV) workaround validated yesterday remains the practical silicon
+path. Long-term fix per task #59: replace the iterative DIV with
+a Newton-Raphson DSP-backed divider too, so the iterative FSM
+disappears entirely.
