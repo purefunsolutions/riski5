@@ -553,6 +553,50 @@ rules around maintaining it.
       whenever F-stage hits seq_buf_printf entry PC
       (0x801dc350) and logs the s0 value on the next several
       cycles to see if/when s0 changes.
+    - **2026-05-04 follow-up — REFINED root cause**:
+      Looking at the dump more carefully, I had the call
+      flow wrong. What actually happens:
+      * FIRST canary check in seq_buf_printf passes
+        (a5=a4=0, beqz takes to .L36).
+      * .L36 epilogue: lw ra,28(sp) at PC 0x801dc3a8 →
+        SHOULD restore ra to caller's PC+4 (= 0x8000fb6c
+        per saved value at byte 0x80271c9c).
+      * lw s0,24(sp) at PC 0x801dc3ac → restores s0 to
+        caller's s0 (= 0x80271d00). ✓ confirmed in shadow
+        at cycle 50942658.
+      * addi sp,sp,64 at 0x801dc3b0 → sp commits to
+        0x80271cc0 at cycle 50942706. ✓
+      * BUT the ra shadow does NOT update around the same
+        time. ra stays at 0x801dc390 (= the value left
+        from `jal seq_buf_vprintf` earlier).
+      * The ret at 0x801dc3d0 then jumps to ra=0x801dc390
+        (= back into seq_buf_printf, mid-canary-check
+        region). PC re-enters lw a4, lw a5, xor.
+      * In this re-entry, sp=0x80271cc0 and s0=0x80271d00.
+        lw a4, -20(s0) reads byte 0x80271cec which contains
+        0x80273380 (init_task addr written earlier by
+        _print_tainted's sw s3,44(sp)). a4 = 0x80273380.
+      * xor 0x80273380 with 0 = 0x80273380 ≠ 0. beqz NOT
+        taken. jal __stack_chk_fail. → panic chain.
+    - **The actual HW bug**: `lw ra, 28(sp)` at PC 0x801dc3a8
+      did not write back to x1. The lw s0 right after it
+      (PC 0x801dc3ac) DID write back. So the bug is specific
+      to this particular instruction's writeback being lost.
+    - **Bridge transactions count**: only ONE bridge value
+      capture (0x80271d00 = caller's s0, captured at cycle
+      50942560) appears in the cycle window where lw ra and
+      lw s0 should both fire bridge transactions. Suggests
+      lw ra's bridge transaction got SKIPPED — its data
+      never reached the core, hence no writeback.
+    - **Next step**: tap reqIsLive's components in the
+      CoreCdcBridge master FSM (PC change, dBe edge, dRen
+      edge) and log when each fires. If reqIsLive returns
+      False at the cycle lw ra is in X-stage with cbrDRen=
+      True, that's the bug. Likely cause: the prior
+      instruction (= jal __stack_chk_fail at PC 0x801dc3a4
+      in the speculative pre-flush window) was in X with
+      cbrDRen=True somehow, so reqIsLive's "rising edge of
+      dRen" check returns False for the actual lw ra.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
