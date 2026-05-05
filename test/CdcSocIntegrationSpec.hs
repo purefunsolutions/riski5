@@ -212,7 +212,7 @@ runProgThroughBridge_inner progWords n =
           clkA
           rstA
           enA
-      (pcFetchA, _, dAddrA, dWdataA, dBeA, dRenA, _, _) = coreOutsA
+      (pcFetchA, _, dAddrA, dWdataA, dBeA, dRenA, _, _, flushA) = coreOutsA
       coreReqInCoreA :: Signal DomCore CoreBusReq
       coreReqInCoreA =
         CoreBusReq
@@ -221,7 +221,7 @@ runProgThroughBridge_inner progWords n =
           <*> dWdataA
           <*> dBeA
           <*> dRenA
-          <*> pure False
+          <*> flushA
 
       -- The bridge.
       (coreReplyInCoreA, coreReqInBusB) =

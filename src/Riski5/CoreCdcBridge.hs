@@ -506,7 +506,14 @@ masterStep ::
 masterStep st@MasterState{..} req doneEdge capR =
   case mPhase of
     MIdle
-      | reqIsLive req mLastSentPc mLastDBe mLastDRen ->
+      | reqIsLive req mLastSentPc mLastDBe mLastDRen P.|| cbrFlush req ->
+          -- cbrFlush forces a refire even when reqIsLive returns False
+          -- (= when post-flush PC equals the previous mLastSentPc, which
+          -- happens when F-stage was speculatively fetching the branch
+          -- target before the redirect). Without this, the in-flight
+          -- bridge transaction's data gets bubbled by flushIfIdS and
+          -- the bridge never refires, losing the instruction. See
+          -- TODO #55 for the seq_buf_printf .L36 race.
           st
             { mPhase = MBusy
             , mLastSentPc = cbrPcFetch req

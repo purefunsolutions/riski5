@@ -1558,7 +1558,7 @@ soc enableSramFetch enableSdramFetch progInit dataInit inS = outS
   -- coreReplyS) and coreReplyS (depends on coreReqS via the bus
   -- body) is broken by registers inside the core and inside each
   -- bus slave; Clash's lazy let resolves it.
-  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS) =
+  (pcFetchS, _pcExecS, dAddrS, dWdataS, dBeS, dRenS, _wbS, _rvfiS, flushS) =
     coreWith
       tiny32M
       (cbrImemData <$> coreReplyS)
@@ -1569,7 +1569,7 @@ soc enableSramFetch enableSdramFetch progInit dataInit inS = outS
       (cbrMtip <$> coreReplyS)
       (cbrMeip <$> coreReplyS)
   coreReqS =
-    CoreBusReq <$> pcFetchS <*> dAddrS <*> dWdataS <*> dBeS <*> dRenS <*> pure False
+    CoreBusReq <$> pcFetchS <*> dAddrS <*> dWdataS <*> dBeS <*> dRenS <*> flushS
   (outS, coreReplyS) =
     socWithExternalCore enableSramFetch enableSdramFetch progInit dataInit inS coreReqS
 

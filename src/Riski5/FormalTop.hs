@@ -149,7 +149,7 @@ formalTopEntity ::
         )
 formalTopEntity clk rst imemRdataS dmemRdataS =
   withClockResetEnable clk rst enableGen $
-    let (pcFetchS, _pcExecS, dmemAddrS, dmemWdataS, dmemWmaskS, dmemRenS, _wbS, rvfiS) =
+    let (pcFetchS, _pcExecS, dmemAddrS, dmemWdataS, dmemWmaskS, dmemRenS, _wbS, rvfiS, _flushS) =
           coreWith tiny32M imemRdataS (pure True) dmemRdataS (pure False) (pure False) (pure False) (pure False)
      in ( pcFetchS -- imem_addr
         , dmemAddrS

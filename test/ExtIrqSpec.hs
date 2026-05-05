@@ -175,6 +175,6 @@ runHarness program meips =
       imem = CP.register 0x0000_0013 (P.fmap (\pc -> progVec !! pcToIdx pc) pcFetchS)
       dmem = CP.pure 0
       meipS = fromList (meips P.++ P.repeat P.False)
-      (pcFetchS, pcExecS, _dAddrS, _dWdataS, _dBeS, _dRenS, wbS, _rvfiS) =
+      (pcFetchS, pcExecS, _dAddrS, _dWdataS, _dBeS, _dRenS, wbS, _rvfiS, _flushS) =
         core imem (CP.pure P.True) dmem (CP.pure P.False) (CP.pure P.False) (CP.pure P.False) meipS
    in bundle (pcExecS, wbS)

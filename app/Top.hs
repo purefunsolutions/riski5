@@ -472,7 +472,7 @@ topEntity
   -- 'coreWith''s pipeline regs).
 
   -- ----- Core in DomCore -----------------------------------------
-  (pcFetchInCoreS, _pcExecInCoreS, dAddrInCoreS, dWdataInCoreS, dBeInCoreS, dRenInCoreS, wbInCoreS, _rvfiInCoreS) =
+  (pcFetchInCoreS, _pcExecInCoreS, dAddrInCoreS, dWdataInCoreS, dBeInCoreS, dRenInCoreS, wbInCoreS, _rvfiInCoreS, flushInCoreS) =
     withClockResetEnable clkCore rstCore enableGen $
       coreWith
         tiny32M
@@ -530,7 +530,7 @@ topEntity
       <*> dWdataInCoreS
       <*> dBeInCoreS
       <*> dRenInCoreS
-      <*> pure False -- cbrFlush: TODO #55, route flushS from coreWith
+      <*> flushInCoreS -- TODO #55: cbrFlush forces bridge refire on branch-takes-to-same-PC
 
   -- ----- Core ⇄ Bus CDC bridge with debug taps -------------------
   (coreReplyInCoreS, coreReqInBusS, dbgBridgeMasterS, dbgBridgeSlaveS, dbgBridgeMasterPcS, dbgBridgeSlavePcS) =

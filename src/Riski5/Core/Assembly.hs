@@ -97,6 +97,7 @@ coreWith ::
   , Signal dom Bool
   , Signal dom (Maybe (BitVector 5, BitVector 32))
   , Signal dom Rvfi
+  , Signal dom Bool -- flushS — exposed for CoreCdcBridge cbrFlush refire (TODO #55)
   )
 coreWith cfg imemData imemReadyS dmemRData stallS dataStallS mtipS meipS
   -- Phase 2A/2B: the current 'Riski5.Core.core' kernel covers both

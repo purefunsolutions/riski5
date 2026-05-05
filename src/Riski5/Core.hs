@@ -512,6 +512,9 @@ core ::
   , Signal dom Bool -- read enable
   , Signal dom (Maybe (BitVector 5, BitVector 32)) -- regfile write
   , Signal dom Rvfi -- RVFI observability bundle
+  , Signal dom Bool -- flushS — branch / jump / trap redirect pulse;
+                    -- drives the bridge's flush-forces-refire path
+                    -- (TODO #55: post-beqz-take-to-same-PC race).
   )
 core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   ( pcFetchS
@@ -522,6 +525,7 @@ core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   , dmemRenOutS
   , writeBackOutS
   , rvfiS
+  , flushS
   )
  where
   -- ====================================================================
