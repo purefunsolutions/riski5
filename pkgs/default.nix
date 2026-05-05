@@ -168,6 +168,20 @@
         mdStress = true;
       };
 
+      # Task #60 follow-up: same M-extension stress firmware but at
+      # 30 MHz uniform clock (slowClock=true → +8 ns/cycle headroom).
+      # If silicon passes here but fails at 40 MHz, the iterative
+      # MUL/DIV FSM bug is a TIMING violation rather than a logic bug.
+      riski5-core-mdstress-slow = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        mdStress = true;
+        slowClock = true;
+      };
+      flash-riski5-mdstress-slow = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-mdstress-slow;
+      };
+
       # Task #32: LR/SC-stress silicon test (follow-up to #29 after
       # amostress came back clean — silicon AMO is solid). Bakes
       # firmware/phase1/HelloLrScStress.hs into imem. Same shape

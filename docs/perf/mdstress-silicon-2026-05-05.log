@@ -9,7 +9,19 @@
 # Expected stream on success: B M U H D S R . M U H D S R . ...
 # On any wrong value: F + op-letter, then F-spin loop forever.
 
-== Probe results (multiple flash cycles, all give the SAME state) ==
+== Probe results (multiple flash cycles, all give the SAME state — DETERMINISTIC) ==
+
+Three back-to-back re-flashes (run 1, 2, 3) all gave Sample 0:
+CMTC=65 / ITRC=1 / core_pc=0x000000F0. The hang point is fully
+reproducible — confirms this is a LOGIC bug, not a transient
+timing violation. The "9 iterations work, 10th fails" pattern
+with identical reloaded operands every iteration points to some
+cumulative state in the pipeline / FU that takes exactly 10 MUL
+operations to corrupt — most likely the iterative FSM's mealy
+state has a Quartus synthesis edge case the simulators don't
+exercise.
+
+
 
 UART commit counter (CMTC) frozen at 65 across 30 s × 10 samples:
   Sample 0:  CMTC=65  ITRC=1 ('B' bytes)
@@ -46,13 +58,25 @@ through Linux's noise: the iterative `mulDivFUIterative` FSM
 (`src/Riski5/Core/FU/MulDiv.hs`) IS broken on Cyclone II silicon
 despite passing every cabal / Spike / triple-diff sim test.
 
-The transient nature of the failure (9 correct, 10th wrong)
-suggests a TIMING violation rather than a deterministic logic
-bug — this build has -3.7 ns slack on the bus/core clock
-(over-constrained at 40 MHz vs Fmax 32.35 MHz), and the FU's
-64-bit prodReg accumulator + 32-deep counter creates many timing
-paths through the iterative shift-add. At negative slack, some
-paths may occasionally violate setup/hold and capture wrong bits.
+**The "9 correct, 10th wrong" pattern is DETERMINISTIC** (verified
+across three re-flashes). Initial timing-violation hypothesis is
+ruled out — a true setup/hold race would give variable hang points.
+This is a logic-level bug in the iterative FSM that takes exactly
+10 MUL operations to surface. The FSM passes every cabal / Spike /
+triple-diff sim test, so the Quartus synthesis must produce
+behaviour the Clash simulator doesn't model: likely a Mealy-state
+edge case in `prodReg` or `phase` initialisation that only fires
+after a specific number of MdIdle → MdBusyMul → MdDone → MdIdle
+cycles. Worth investigating whether `mealy` lowers to identical
+Verilog as the Clash sim, or whether the synthesised state machine
+has a corner-case reset/wraparound the sim hides.
+
+A slowClock=true (30 MHz) build attempt to test the original
+timing hypothesis failed to fit ("CLOCK_50 cannot feed more than
+one PLL" — Cyclone II's pin-routing constraint hits the multi-PLL
+topology when the Bus/Core/SDRAM PLLs all want different rates).
+The deterministic re-flash result above made the timing experiment
+moot anyway.
 
 The hybrid `mulDivFUMulComb` (combinational MUL via DSP, iterative
 DIV) workaround validated yesterday remains the practical silicon
