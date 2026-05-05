@@ -122,6 +122,14 @@ data MasterState = MasterState
     mLastDRen :: Bool
   , mReqToggle :: Bool
   , mReply :: CoreBusReply
+  , -- | Latched cbrFlush pulse, held until the master enters MIdle
+    -- and refires. Required because cbrFlush is a 1-cycle pulse from
+    -- the core's X-stage; if the bridge is in MBusy/MDone when the
+    -- pulse arrives, the master would otherwise miss it (TODO #55).
+    -- Cleared at MIdle→MBusy. Distinguished from cbrFlush req in
+    -- masterStep: this latch carries the flush across multi-cycle
+    -- bridge transactions.
+    mFlushPending :: Bool
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -134,7 +142,7 @@ masterInit :: MasterState
 -- treated as a fresh request and crosses the bridge. Without this,
 -- both PC and mLastSentPc start at 0 → reqIsLive returns False →
 -- bridge never fires → core deadlocks waiting for fetch reply.
-masterInit = MasterState MIdle 0xFFFF_FFFF 0 False False defaultReply
+masterInit = MasterState MIdle 0xFFFF_FFFF 0 False False defaultReply False
 
 -- * Slave FSM (DomBus side)
 
@@ -397,7 +405,11 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
           | doneE -> capR{cbrStall = True, cbrDataStall = True}
           | otherwise -> defaultReply
         MIdle
-          | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st) ->
+          | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st)
+              P.|| mFlushPending st P.|| cbrFlush req ->
+              -- Stall in MIdle when a flush is pending OR is firing
+              -- this cycle — the master is about to refire and the
+              -- core mustn't commit the stale mReply. See TODO #55.
               defaultReply
           | otherwise -> mReply st
     )
@@ -504,32 +516,37 @@ masterStep ::
   CoreBusReply ->
   MasterState
 masterStep st@MasterState{..} req doneEdge capR =
-  case mPhase of
-    MIdle
-      | reqIsLive req mLastSentPc mLastDBe mLastDRen P.|| cbrFlush req ->
-          -- cbrFlush forces a refire even when reqIsLive returns False
-          -- (= when post-flush PC equals the previous mLastSentPc, which
-          -- happens when F-stage was speculatively fetching the branch
-          -- target before the redirect). Without this, the in-flight
-          -- bridge transaction's data gets bubbled by flushIfIdS and
-          -- the bridge never refires, losing the instruction. See
-          -- TODO #55 for the seq_buf_printf .L36 race.
-          st
-            { mPhase = MBusy
-            , mLastSentPc = cbrPcFetch req
-            , mLastDBe = cbrDBe req
-            , mLastDRen = cbrDRen req
-            , mReqToggle = not mReqToggle
-            }
-      | otherwise -> st
-    MBusy
-      | doneEdge -> st{mPhase = MDone, mReply = capR}
-      | otherwise -> st
-    -- 'mReply' is preserved across MDone → MIdle on purpose: the
-    -- combinational 'replyOutC' decides per-cycle whether to expose
-    -- it (no new request live) or stall (new request live). Keeping
-    -- mReply here makes the self-loop case work — see 'replyOutC'.
-    MDone -> st{mPhase = MIdle}
+  -- Latch any incoming flush pulse — it may arrive while master is
+  -- MBusy/MDone, and we need to honour it on the next MIdle.
+  let pendingFlush = mFlushPending P.|| cbrFlush req
+   in case mPhase of
+        MIdle
+          | reqIsLive req mLastSentPc mLastDBe mLastDRen P.|| pendingFlush ->
+              -- pendingFlush forces a refire even when reqIsLive returns
+              -- False (= when post-flush PC equals the previous
+              -- mLastSentPc, which happens when F-stage was speculatively
+              -- fetching the branch target before the redirect). Without
+              -- this, the in-flight bridge transaction's data gets
+              -- bubbled by flushIfIdS and the bridge never refires,
+              -- losing the instruction. See TODO #55 for the
+              -- seq_buf_printf .L36 race.
+              st
+                { mPhase = MBusy
+                , mLastSentPc = cbrPcFetch req
+                , mLastDBe = cbrDBe req
+                , mLastDRen = cbrDRen req
+                , mReqToggle = not mReqToggle
+                , mFlushPending = False -- consumed
+                }
+          | otherwise -> st{mFlushPending = pendingFlush}
+        MBusy
+          | doneEdge -> st{mPhase = MDone, mReply = capR, mFlushPending = pendingFlush}
+          | otherwise -> st{mFlushPending = pendingFlush}
+        -- 'mReply' is preserved across MDone → MIdle on purpose: the
+        -- combinational 'replyOutC' decides per-cycle whether to expose
+        -- it (no new request live) or stall (new request live). Keeping
+        -- mReply here makes the self-loop case work — see 'replyOutC'.
+        MDone -> st{mPhase = MIdle, mFlushPending = pendingFlush}
 
 -- | A request is "new" when ANY of these holds:
 --

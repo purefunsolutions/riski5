@@ -695,6 +695,26 @@ rules around maintaining it.
         over X varies, so the bug surfaces probabilistically.
         Most branches don't trigger it (= why kernel boots
         as far as it does).
+    - **2026-05-04 ~10:40 UTC: FIX VALIDATED IN HWSIM**.
+      Implemented the proposed cbrFlush refire fix in three
+      pieces (commit `492b000` and follow-up):
+        1. Added `cbrFlush :: Bool` field to CoreBusReq;
+           plumbed coreWith's flushS through Top.hs/Soc.hs.
+        2. Added `mFlushPending :: Bool` to MasterState — a
+           latch for the 1-cycle flush pulse, held across
+           multi-cycle bridge transactions until master
+           reaches MIdle.
+        3. Updated `replyOutC` to stall in MIdle when
+           mFlushPending or cbrFlush — otherwise the core
+           would commit stale mReply data while the bridge
+           is about to refire.
+      Result: 53M-cycle hwsim boot completes WITHOUT
+      `[STACK-CHK-FAIL]` and WITHOUT `[CPU-RESET]`. Kernel
+      reaches PC=0x80188ab4 at cycle 52.9M with multiple
+      `[CALLED-PRINTK]` events firing along the way (last
+      one at cycle 52.3M). All 33 existing CdcSpec tests
+      pass unchanged.
+      Next: silicon validation — flash and run on DE2.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
