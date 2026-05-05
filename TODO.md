@@ -396,6 +396,39 @@ rules around maintaining it.
       really hold 0 when the LW happens.
     - Worth separate investigation but not blocking the original
       task #52 fix.
+    - **2026-05-04 deep-dive findings** (5000-cycle ring-buffer
+      dump from `linux-hwsim`, see `tools/linux-hwsim/Main.hs`
+      `runUartStream` SP-CHANGE + post-CPU-RESET dump). 6
+      successive returns from vscnprintf (sp drifts 0x80271c40 →
+      0x80271ca0 in steps of 0x10) right before the crash. Per
+      iteration, the bridge captures TWO non-zero `cbrDmemRdata`
+      pulses (V1, V2) about 87 cycles apart, corresponding to the
+      LW ra,12(sp) / LW s0,8(sp) loads in the .L1017 epilogue.
+      In iters 1-5 the bridge captures both values cleanly; the
+      regfile shadow shows s0 commits to V1 each time (the FIRST
+      bridge value of the iteration). In **iter 6**, the bus
+      `dmem` signal goes to **0x0** for ~78 cycles at PC=0x801e7f94
+      (where V1 normally captures) — i.e. the SDRAM read for sp+8
+      = 0x80271c98 returns 0 instead of the previously-stored
+      0x80271cc0. s0 commits 0; subsequent ret loads ra=0;
+      jumps to 0 → boot stub re-entry → crash.
+    - Hypothesis (not yet confirmed): **SDRAM refresh-vs-request
+      race** in the SdrController. The 6 iterations span ~4K
+      cycles, comfortably across multiple refresh intervals (15.6
+      μs at 30 MHz = ~470 cycles per refresh). One refresh happens
+      to coincide with the lw s0 access in iter 6, returning 0
+      instead of the stored value. Test next: tap the SDRAM-side
+      RAS/CAS commands during the failure window to confirm a
+      refresh fired during the read. Also: try rebuilding with
+      a SHORTER refresh interval (more aggressive) and see if
+      the failure cycle changes correspondingly.
+    - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
+      on `topEntity` shadow x2/x8 via the writeback path;
+      `runUartStream` keeps a 5000-cycle rolling buffer of
+      (cycle, pc, dmem, bridge_dmem, sp, s0) and dumps it RLE-
+      compressed on CPU-RESET. These taps make the failure
+      mode reproducible and observable cycle-accurately under
+      Verilator.
     - **Other downstream bug**: kernel claims "No '#address-cells'
       in root node" in `early_init_dt_scan_root` even though our
       DTB does contain the property (verified via

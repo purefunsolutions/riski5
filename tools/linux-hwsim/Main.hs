@@ -43,7 +43,7 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
 import Data.List (sortBy)
 import qualified Data.Map.Strict as Map
@@ -457,14 +457,37 @@ runUartStream ::
   -- bridge is presenting a different value than the bus mux shows;
   -- if they match, the bus signal IS the LW result the kernel sees.
   SimM Riski5SimTopPorts Riski5SimTopState Int
-runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCycles 0 0
+runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
+  prevSpRef <- liftIO $ newIORef (0 :: Word32)
+  -- Task #55: rolling buffer of (cycle, pc, dmem_rdata, bridge_rdata, sp,
+  -- s0). Holds the last 5000 cycles. Dumped on the CPU-RESET event so we
+  -- can see exactly which dmem load returned 0 → wound up in ra → ret to 0.
+  ringRef <- liftIO $ newIORef ([] :: [(Int, Word32, Word32, Word32, Word32, Word32)])
+  go maxCycles 0 0 prevSpRef ringRef
  where
-  go 0 cycs _prevPc = pure cycs
-  go k cycs prevPc = do
+  go 0 cycs _prevPc _ _ = pure cycs
+  go k cycs prevPc prevSpRef ringRef = do
     clockCycle
     s <- peekState
     let pc = sDebugPcfetch s
     liftIO $ modifyIORef' pcRef (Map.insertWith (+) pc 1)
+    -- Task #55: append this cycle's snapshot to the rolling buffer.
+    -- Keep only last 5000 entries (~5000 cycle window covering the
+    -- full 6-iteration unwind that ends in CPU-RESET).
+    liftIO $ modifyIORef' ringRef $ \xs ->
+      let entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s)
+       in entry : take 4999 xs
+    -- Task #55: log every change to sp shadow. Limit to a window
+    -- around the canary fail (cycle ~50.9M) to keep the log small.
+    when (cycs > 50000000 && cycs < 51100000) $ do
+      prevSp <- liftIO $ readIORef prevSpRef
+      when (sDebugSp s /= prevSp) $ do
+        liftIO $ hPutStrLn stderr
+          ("[SP-CHANGE] cycle=" ++ show cycs
+            ++ " new_sp=0x" ++ showHex (sDebugSp s) ""
+            ++ " (prev=0x" ++ showHex prevSp ")"
+            ++ " pc=0x" ++ showHex pc "")
+        liftIO $ writeIORef prevSpRef (sDebugSp s)
     -- Sample PC every 100k cycles for a "where is the core
     -- right now" timeline. Cheaper than streaming every PC out
     -- and dense enough to localise long stalls.
@@ -510,11 +533,37 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
     -- Detect when PC drops from kernel (0x8xxxxxxx) back to firmware
     -- (low BRAM addresses). That's a CPU-reset event — the kernel
     -- triggered a reset somehow.
-    when (prevPc >= 0x80000000 && pc < 0x10000 && cycs > 1000000) $
+    when (prevPc >= 0x80000000 && pc < 0x10000 && cycs > 1000000) $ do
       liftIO $ hPutStrLn stderr
         ("[CPU-RESET] cycle=" ++ show cycs
           ++ " from kernel pc=0x" ++ showHex prevPc ""
           ++ " to firmware pc=0x" ++ showHex pc "")
+      -- Task #55: dump the rolling buffer so we can see what data the
+      -- core was loading just before ret jumped to 0. Compress
+      -- consecutive identical (pc, dmem, bridge, sp, s0) tuples into
+      -- a single line with a cycle range — keeps the dump readable
+      -- when the core stalls for hundreds of cycles on one PC.
+      ring <- liftIO $ readIORef ringRef
+      liftIO $ hPutStrLn stderr "  --- last 5000 cycles before CPU-RESET (RLE-compressed) ---"
+      liftIO $ hPutStrLn stderr "  cycleStart..cycleEnd  pc  dmem  bridge  sp  s0"
+      let dumpRle [] = pure ()
+          dumpRle ((c0, p0, dr0, br0, sp0, s00) : rest) =
+            let key = (p0, dr0, br0, sp0, s00)
+                sameKey (_, p, dr, br, sp, s0) = (p, dr, br, sp, s0) == key
+                (group, after) = span sameKey rest
+                cEnd = case group of
+                  [] -> c0
+                  _ -> case last group of (c, _, _, _, _, _) -> c
+             in do
+                  liftIO $ hPutStrLn stderr
+                    ("  " ++ show c0 ++ ".." ++ show cEnd
+                      ++ " 0x" ++ showHex p0 ""
+                      ++ " dmem=0x" ++ showHex dr0 ""
+                      ++ " bridge=0x" ++ showHex br0 ""
+                      ++ " sp=0x" ++ showHex sp0 ""
+                      ++ " s0=0x" ++ showHex s00 "")
+                  dumpRle after
+      dumpRle (reverse ring)
     -- Detect entries to earlycon-related kernel functions to find
     -- where the chain breaks.
     when (pc == 0x8020a584 && prevPc /= 0x8020a584) $
@@ -649,8 +698,8 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = go maxCy
           modifyIORef' bufRef (b :)
           BS.hPutStr stdout (BS.singleton b)
           hFlush stdout
-        go (k - 1) (cycs + 1) pc
-      else go (k - 1) (cycs + 1) pc
+        go (k - 1) (cycs + 1) pc prevSpRef ringRef
+      else go (k - 1) (cycs + 1) pc prevSpRef ringRef
 
 -- * Entry point ------------------------------------------------------
 
