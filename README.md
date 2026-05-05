@@ -5,12 +5,14 @@ SPDX-License-Identifier: MIT OR BSD-3-Clause
 
 # riski5
 
-A pipelineless single-cycle **RV32IMA + Zicsr + Zifencei + Zbb** soft
-core in **Clash**, with a multi-PLL three-domain SoC targeting the
-**Altera DE2** (Cyclone II EP2C35F672C6). Aimed at running Linux on a
-2007-vintage development board. The ISA is defined at the Haskell type
-level (`src/Riski5/ISA.hs`) and is the single source of truth for both
-the hardware decoder and the firmware assembler eDSL (`Riski5.Asm`).
+A **5-stage F/D/X/M/W pipelined** **RV32IMA + Zicsr + Zifencei + Zbb**
+soft core in **Clash**, with EX→X / MEM→X forwarding and a multi-PLL
+three-domain SoC targeting the **Altera DE2**
+(Cyclone II EP2C35F672C6). Aimed at running Linux on a 2007-vintage
+development board — and currently does, on real silicon. The ISA is
+defined at the Haskell type level (`src/Riski5/ISA.hs`) and is the
+single source of truth for both the hardware decoder and the firmware
+assembler eDSL (`Riski5.Asm`).
 
 Project conventions live in [CLAUDE.md](./CLAUDE.md); the current
 state lives in [TODO.md](./TODO.md); per-commit silicon performance is
@@ -139,9 +141,31 @@ firmware loader).
 
 These are non-negotiable; the full reasoning is in CLAUDE.md.
 
-- **Pipelineless single-cycle.** No pipeline registers, no
-  forwarding, no stalls. One instruction retires per clock — except
-  the unavoidable one-cycle BRAM read latency.
+- **5-stage pipeline (F / D / X / M / W) with forwarding.** One
+  instruction retires per clock under steady state. Stages:
+    - **F** — `pcFetch` drives imem (synchronous BRAM read,
+      1-cycle latency).
+    - **D** — IF/ID → `decode` + regfile read → ID/EX.
+    - **X** — ID/EX → EX→X and MEM→X forwarding muxes →
+      `handleInstr` (ALU, branch compare, CSR, load-address,
+      trap detect) → EX/MEM.
+    - **M** — passthrough today; async-read dmem already returned
+      the load value during X's cycle → MEM/WB.
+    - **W** — MEM/WB writes `rd` back to the regfile.
+
+  Taken-branch penalty is 2 cycles (squash D + ID/EX on redirect
+  from X). Three stall sources feed a single `stallInternal`:
+  external bus back-pressure (`stallS`), `mdBusyS` (DIV/REM still
+  iterative; MUL is now combinational/DSP via the hybrid
+  `mulDivFUMulComb`), and `amoBusyS`. Full per-stage description
+  is in the `src/Riski5/Core.hs` header.
+- **Regfile.** Async-read register array
+  (`Riski5.Regfile.regfileAsync`, ~1024 FFs + 32:1 read mux on
+  LEs); `Core.hs` aliases `regfile = regfileAsync`. An M4K-friendly
+  `regfileSync` (1-cycle read latency) is also implemented and
+  swapping to it is a follow-up — the ID stage could absorb the
+  synchronous read, but it needs an EX-side bypass for the
+  write-during-D-read case the async variant gets for free.
 - **Type-level ISA in `Riski5.ISA`** is consumed by both the
   hardware decoder and `Riski5.Asm`. Changing the ISA edits one
   file.

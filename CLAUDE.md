@@ -10,9 +10,11 @@ sessions in this repo. Read it before starting work.
 
 ## Project in one paragraph
 
-A minimal **Clash RV32I + SoC** on the Altera DE2 (Cyclone II
-EP2C35F672C6). **Pipelineless single-cycle** core with
-**Zicsr + M-mode + Zifencei**, aiming eventually at Linux. Sibling
+A **Clash RV32IMA + SoC** on the Altera DE2 (Cyclone II
+EP2C35F672C6) — **5-stage F/D/X/M/W pipeline with EX→X / MEM→X
+forwarding**, **Zicsr + M-mode + Zifencei + Zbb**, multi-PLL
+three-domain SoC, booting Linux 6.18 RV32-nommu on real silicon.
+Sibling
 repos `alterade2-flake` (Quartus + flashing) and `verilambda` (our
 Haskell wrapper around Verilator) are consumed as flake inputs — both
 path-based during active development. The ISA is defined at the
@@ -21,10 +23,18 @@ hardware decoder and the firmware assembler eDSL.
 
 ## Design style — load-bearing
 
-- **Pipelineless single-cycle.** No pipeline registers, no forwarding,
-  no stalls. One instruction retires per clock. The only caveat is a
-  one-cycle BRAM read latency (PC at N−1 → instruction at N), which we
-  accept rather than fight.
+- **Five-stage pipeline (F / D / X / M / W) with forwarding.** Classic
+  RISC pipeline: F drives `pcFetch` to imem; D consumes the IF/ID
+  register, runs `decode`, reads the regfile, fills ID/EX; X consumes
+  ID/EX, applies EX→X and MEM→X forwarding muxes, runs `handleInstr`
+  (ALU, branch compare, CSR, load-address compute, trap detect),
+  fills EX/MEM; M is a passthrough today (async-read dmem returns the
+  load value in X's cycle); W writes `rd` back to the regfile.
+  Taken-branch penalty is 2 cycles (squash D + ID/EX). Stalls have
+  three sources fed into a single `stallInternal`: external bus
+  back-pressure (`stallS`), `mdBusyS` (the ~34-cycle iterative M-FU),
+  and `amoBusyS`. See `src/Riski5/Core.hs` (header lines 26–96) for
+  the full per-stage description.
 - **Type-level ISA is the single source of truth.** `src/Riski5/ISA.hs`
   is consumed by the hardware decoder *and* the firmware assembler.
   Changing the ISA means editing one file.
@@ -77,14 +87,17 @@ policy, sim-layer issues are patched in verilambda.
 ## Hardware targeting rules (Cyclone II-specific)
 
 - Map program/data memory + cache tag/data arrays to M4K (via
-  Clash `blockRam`), never LUT-RAM. **Exception: the phase-1
-  regfile is an async-read register array (~1024 FFs + 32:1 read
-  mux on LEs), not M4K.** The pipelineless single-cycle design
-  can absorb at most one cycle of read latency per instruction —
-  that slot goes to the imem fetch. Moving the regfile back onto
-  M4K is on the menu when we pipeline the core (see `Riski5.Regfile`
-  header for the full rationale); a 2+ stage pipeline naturally
-  aligns regfile reads with an ID or EX stage.
+  Clash `blockRam`), never LUT-RAM. **Exception: the regfile is
+  still an async-read register array (~1024 FFs + 32:1 read mux
+  on LEs), not M4K** — `Riski5.Regfile.regfileAsync`. Both
+  `regfileAsync` and `regfileSync` (M4K-friendly, 1-cycle
+  read latency) are implemented; `Core.hs` currently aliases
+  `regfile = regfileAsync`. Swapping to `regfileSync` is a
+  follow-up — the 5-stage pipeline already has an ID stage that
+  could absorb the synchronous read, but it needs an EX-side
+  bypass path for the regfile-write-during-D-read case (the
+  async variant gets that for free). See the `Riski5.Regfile`
+  module header for the full trade-off rationale.
 - Write the ALU adder as plain `+` on `BitVector`/`Signed` so Quartus
   infers Cyclone II carry chains; same for the PC and branch-target
   adders.
