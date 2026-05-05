@@ -1,0 +1,78 @@
+# Silicon hang post-BogoMIPS — diagnostic probes
+# Date: 2026-05-05
+# Bitstream: /nix/store/h9s8jpcihxfj81rcbjy4rwim5kmsbbs6-riski5-core-linux-master-0.1.0
+# (commit 18d8b64 + cbrFlush fix)
+#
+# After Linux prints "Calibrating delay loop... 80.00 BogoMIPS (lpj=160000)",
+# the kernel hangs. Probes taken via scripts/core-bridge-probe.tcl and
+# /tmp/cmtc-poll.tcl on the running silicon.
+
+== UART commit counter (CMTC) — frozen at 2630 across 30 s ==
+$(cat /tmp/cmtc-poll.out | grep -E "^ *[0-9]+: CMTC")
+
+== Core / bridge state — 8 samples × 100 ms ==
+=== Core / bridge state samples (8 x 100ms) ===
+Sample 0:
+  PCs:    bus_pcFetchS=0x00000000 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MIdle reqT=0 doneT=0 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SIdle  doneT=1 reqT=1 reqE=0 stall=0 dStall=0 pc0=0
+Sample 1:
+  PCs:    bus_pcFetchS=0x801E2F10 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MBusy reqT=1 doneT=0 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SIdle  doneT=0 reqT=0 reqE=0 stall=0 dStall=0 pc0=0
+Sample 2:
+  PCs:    bus_pcFetchS=0x00000000 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MBusy reqT=0 doneT=0 doneE=1 live=0 pc1=0 pc0=0
+  Slave:  phase=SIdle  doneT=1 reqT=1 reqE=0 stall=0 dStall=0 pc0=0
+Sample 3:
+  PCs:    bus_pcFetchS=0x801E2F10 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MIdle reqT=1 doneT=1 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SIdle  doneT=1 reqT=1 reqE=0 stall=0 dStall=0 pc0=0
+Sample 4:
+  PCs:    bus_pcFetchS=0x801E2F10 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MIdle reqT=0 doneT=0 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SServe doneT=1 reqT=0 reqE=0 stall=1 dStall=0 pc0=0
+Sample 5:
+  PCs:    bus_pcFetchS=0x801E2F10 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MIdle reqT=1 doneT=1 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SServe doneT=0 reqT=1 reqE=0 stall=1 dStall=0 pc0=0
+Sample 6:
+  PCs:    bus_pcFetchS=0x00000000 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MBusy reqT=0 doneT=1 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SServe doneT=1 reqT=0 reqE=0 stall=1 dStall=0 pc0=0
+Sample 7:
+  PCs:    bus_pcFetchS=0x801E2F10 core_live=0x801E2F10
+  Bridge: master_lastPc=0x801E2F10 slave_latPc=0x801E2F10
+  Master: phase=MBusy reqT=1 doneT=0 doneE=0 live=0 pc1=0 pc0=0
+  Slave:  phase=SIdle  doneT=0 reqT=0 reqE=0 stall=0 dStall=0 pc0=0
+Info (23030): Evaluation of Tcl script scripts/core-bridge-probe.tcl was successful
+
+
+== Symbol resolution ==
+PC 0x801E2F10 → vmlinux offset 0x1E2F10 → put_dec_trunc8 + 0xAC
+                (function symbol at 0x001E2E64)
+Disassembly excerpt:
+  1e2f04: mulhu  a5,a4,a5      <-- multi-cycle iterative MUL/DIV FU
+  1e2f08: mul    a1,a5,a2      <-- multi-cycle (a2=100, a5=mulhu result)
+  1e2f0c: sub    a4,a4,a1
+  1e2f10: slli   a4,a4,0x1     <-- HUNG HERE
+
+== Hypothesis ==
+Core_pc frozen at 0x801E2F10 (slli) means the F-stage's pcFetchS is held
+ahead-of-X. With our 1-cycle BRAM read latency, X must be at PC 0x1E2F0C
+(sub) or earlier. If X is stuck on the `mul a1, a5, a2` at 0x1E2F0C, the
+M-extension iterative FU (`Riski5.Core.FU.MulDiv.mulDivFUIterative`)
+might be stuck in MdBusyMul k phase forever. That would assert
+`mdBusyS=True` permanently, freezing pcFetchS at the next-PC after mul
+(= 0x1E2F10 = slli) and stopping all instruction commits.
+
+The bridge IS firing (master cycles MIdle ↔ MBusy and slave processes),
+but useful work doesn't progress. Bridge is innocent here — the issue
+is upstream in the core's M-extension.
