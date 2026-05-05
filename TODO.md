@@ -619,6 +619,38 @@ rules around maintaining it.
       boundary; if not, look at how the multi-PLL adapter
       (Riski5.Sdram, Riski5.SdrController) interacts with
       the pipeline in this corner case.
+    - **2026-05-04 final iteration finding — fetch race
+      hypothesis**: beqz at PC 0x801dc3a0 takes to .L36
+      (PC 0x801dc3a8). At the moment of flush:
+      * F-stage was speculatively fetching pcFetchS = some
+        value depending on stall history. With sync BRAM +
+        bridge, F could be at 0x801dc3a4 (jal site) or
+        already at 0x801dc3a8 (= same as flush target!).
+      * `pcFetchNextS = if flush then target else pf+4`.
+        target = 0x801dc3a8.
+      * If pcFetchS WAS already 0x801dc3a8, the redirect
+        is a no-op for pcFetchS. Bridge already fired
+        (mLastSentPc=0x801dc3a8). reqIsLive=False on next
+        cycle. Bridge doesn't refire.
+      * Meanwhile, flushIfIdS (which is flushS || flushPrevS)
+        bubbles ifId for 2 cycles. The in-flight fetch's
+        instruction word may be captured into ifId as
+        BUBBLE (= NOP), losing lw ra.
+      * Lw ra never enters the pipeline → never executes
+        → ra never restored.
+    - **Why this is multi-PLL specific**: pre-multi-PLL,
+      the bridge wasn't there. F-stage had direct BRAM
+      access. The pcFetchS-vs-target match wasn't a problem
+      because BRAM reads don't depend on a "fired"
+      transaction history. Multi-PLL added the bridge,
+      which gates fetches behind reqIsLive. Same-PC redirect
+      after flush exposes the missing-refire race.
+    - **Suggested fix direction**: in CoreCdcBridge or
+      the F-stage capture logic, add a "flush-forces-refire"
+      signal so the bridge re-fires for the post-flush PC
+      even when it equals mLastSentPc. Equivalently: track
+      "the captured instruction was bubbled" and re-issue
+      the fetch.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
