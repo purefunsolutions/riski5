@@ -506,6 +506,53 @@ rules around maintaining it.
       mismatch. If found → CoreCdcBridge is the culprit; if
       not found → look upstream at SdramCdcBridge or the
       SdrController.
+    - **2026-05-04 ROOT CAUSE pinned (high confidence)**:
+      Re-triggered the ring-buffer dump on PC entering
+      `__stack_chk_fail` (PC=0x801ec24c) instead of CPU-RESET.
+      Found:
+      * `__stack_chk_fail` entered at cycle 50943456 from
+        `prev_pc=0x801dc3ac` (= F-stage was at .L36's
+        `lw s0, 24(sp)` when the jal __stack_chk_fail at PC
+        0x801dc3a4 redirected). I.e., this IS seq_buf_printf's
+        canary-fail path, the kernel really did jal there.
+      * The bridge captured `0x80273380` at PC=0x801dc398
+        (= xor a5, a4, a5). The bus-side dmem signal showed
+        `0x80273380` for ~40 cycles before the capture, so
+        the SDRAM legitimately returned that value — NOT a
+        bridge corruption.
+      * `0x80273380` is the address of `init_task` (per
+        `nm` on vmlinux). It was last written to byte
+        `0x80271cec` (= cell 0x24E376/77) by
+        `_print_tainted`'s `sw s3, 44(sp)` at PC 0x8000fac8.
+      * For `lw a4, -20(s0)` in seq_buf_printf to READ byte
+        `0x80271cec`, s0 must equal `0x80271d00`. And the
+        shadow confirms: at cycle 50943175, s0=0x80271d00.
+      * BUT seq_buf_printf's prologue does
+        `addi s0, sp, 32` at PC 0x801dc35c. With sp=0x80271c80
+        (= sp_caller=0x80271cc0 minus addi sp,-64), s0 SHOULD
+        be `0x80271ca0`, not `0x80271d00`.
+      * The shadow s0=`0x80271d00` is exactly _print_tainted's
+        s0 (its `addi s0, sp, 64` with sp=0x80271cc0). So
+        seq_buf_printf inherited _print_tainted's s0 instead
+        of computing its own.
+    - **Bug class**: seq_buf_printf's `addi s0, sp, 32` at
+      PC 0x801dc35c did not update s0. The writeback was
+      suppressed or the instruction was squashed. Possible
+      causes:
+      (i) Pipeline forwarding/stall race specific to the
+          add-rd-immediate-frame-pointer pattern after a
+          stalling addi sp,sp,-N that itself stalled.
+      (ii) The bridge's stall semantics caused the addi s0
+           writeback to be permanently dropped.
+      (iii) A flush from somewhere squashed the addi s0
+            instruction.
+    - **Next step**: trace x8 (s0) writebacks and the
+      cycle/pc when seq_buf_printf's `addi s0, sp, 32` is
+      EXPECTED to retire vs whether it actually does.
+      DEBUG_S0 shadow already exists; add a tap that fires
+      whenever F-stage hits seq_buf_printf entry PC
+      (0x801dc350) and logs the s0 value on the next several
+      cycles to see if/when s0 changes.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of

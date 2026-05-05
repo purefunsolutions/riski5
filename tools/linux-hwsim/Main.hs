@@ -564,6 +564,38 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
       liftIO $ hPutStrLn stderr
         ("[CALLED-SWUS] cycle=" ++ show cycs
           ++ " entered_via_prev_pc=0x" ++ showHex prevPc "")
+    -- Task #55: detect entry to __stack_chk_fail (PC = 0x801ec24c).
+    -- This is the canary-fail tripwire — we want to dump the ring
+    -- buffer at this moment because the LWs that decided "canary
+    -- mismatched" happened in the cycles just before. Trigger this
+    -- ONCE (track via prevPc to avoid re-firing on each cycle while
+    -- F-stage holds at 0x801ec24c).
+    when (pc == 0x801ec24c && prevPc /= 0x801ec24c) $ do
+      liftIO $ hPutStrLn stderr
+        ("[STACK-CHK-FAIL] cycle=" ++ show cycs
+          ++ " entered __stack_chk_fail from prev_pc=0x" ++ showHex prevPc "")
+      ring <- liftIO $ readIORef ringRef
+      liftIO $ hPutStrLn stderr "  --- last 5000 cycles before __stack_chk_fail (RLE-compressed) ---"
+      liftIO $ hPutStrLn stderr "  cycleStart..cycleEnd  pc  dmem  bridge  sp  s0  ra"
+      let dumpRle' [] = pure ()
+          dumpRle' ((c0, p0, dr0, br0, sp0, s00, ra0) : rest) =
+            let key = (p0, dr0, br0, sp0, s00, ra0)
+                sameKey (_, p, dr, br, sp, s0, ra) = (p, dr, br, sp, s0, ra) == key
+                (group, after) = span sameKey rest
+                cEnd = case group of
+                  [] -> c0
+                  _ -> case last group of (c, _, _, _, _, _, _) -> c
+             in do
+                  liftIO $ hPutStrLn stderr
+                    ("  " ++ show c0 ++ ".." ++ show cEnd
+                      ++ " 0x" ++ showHex p0 ""
+                      ++ " dmem=0x" ++ showHex dr0 ""
+                      ++ " bridge=0x" ++ showHex br0 ""
+                      ++ " sp=0x" ++ showHex sp0 ""
+                      ++ " s0=0x" ++ showHex s00 ""
+                      ++ " ra=0x" ++ showHex ra0 "")
+                  dumpRle' after
+      dumpRle' (reverse ring)
     -- Detect when PC drops from kernel (0x8xxxxxxx) back to firmware
     -- (low BRAM addresses). That's a CPU-reset event — the kernel
     -- triggered a reset somehow.
