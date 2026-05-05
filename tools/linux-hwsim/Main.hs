@@ -1,5 +1,6 @@
 -- SPDX-FileCopyrightText: 2026 Mika Tammi
 -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+{-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE KindSignatures #-}
@@ -43,6 +44,11 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
+import qualified Data.ByteString.Builder as BSB
+import qualified Data.ByteString.Lazy as BSL
+import Data.Foldable (toList)
+import qualified Data.Sequence as Seq
+import Data.Sequence (Seq, (|>))
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
 import Data.List (sortBy)
@@ -451,9 +457,9 @@ loadWords baseByte bs = do
 -- can post-process the returned map.
 runUartStream ::
   Int ->
-  IORef [Word8] ->
+  IORef BSB.Builder ->
   IORef (Map Word32 Int) ->
-  IORef [(Int, Word32)] ->
+  IORef (Seq (Int, Word32)) ->
   IORef (Map Word32 Int) ->
   -- ^ task #52: histogram of bus-side dmem rdata seen at PC=0x801ec468.
   IORef (Map Word32 Int) ->
@@ -468,7 +474,7 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
   -- Task #55: rolling buffer of (cycle, pc, dmem_rdata, bridge_rdata, sp,
   -- s0, ra). Holds the last 5000 cycles. Dumped on the CPU-RESET event so we
   -- can see exactly which dmem load returned 0 → wound up in ra → ret to 0.
-  ringRef <- liftIO $ newIORef ([] :: [(Int, Word32, Word32, Word32, Word32, Word32, Word32)])
+  ringRef <- liftIO $ newIORef (Seq.empty :: Seq.Seq (Int, Word32, Word32, Word32, Word32, Word32, Word32))
   go maxCycles 0 0 prevSpRef prevRaRef ringRef
  where
   go 0 cycs _prevPc _ _ _ = pure cycs
@@ -481,8 +487,12 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
     -- Keep only last 5000 entries (~5000 cycle window covering the
     -- full 6-iteration unwind that ends in CPU-RESET).
     liftIO $ modifyIORef' ringRef $ \xs ->
-      let entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s, sDebugRa s)
-       in entry : take 4999 xs
+      -- Use Data.Sequence (strict-spine finger tree, O(1) cons,
+      -- O(log n) take) so the rolling 5000-cycle window doesn't
+      -- pile up `take 4999 (take 4999 (...))` lazy-list thunks.
+      -- The list version observed at >50 GB RSS by cycle ~150M.
+      let !entry = (cycs, pc, sDebugDmemRdata s, sDebugBridgeDmemRdata s, sDebugSp s, sDebugS0 s, sDebugRa s)
+       in Seq.take 5000 (entry Seq.<| xs)
     -- Task #55: log every ra change, especially when ra becomes a
     -- value outside the kernel text region. The ROOT bug is "ra
     -- becomes a stack address" → ret to stack → bad code → eventual
@@ -526,7 +536,7 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
     -- right now" timeline. Cheaper than streaming every PC out
     -- and dense enough to localise long stalls.
     when (cycs `mod` 100_000 == 0) $
-      liftIO $ modifyIORef' snapsRef ((cycs, pc) :)
+      liftIO $ modifyIORef' snapsRef (|> (cycs, pc))
     -- Task #52: 5-stage pipeline F/D/X/M/W. The LW at 0x801ec464
     -- enters X-stage 3 cycles after PC_F first sees it. PC_F gets
     -- held at 0x801ec46c during the SDRAM stall (the bnez is in F
@@ -595,7 +605,7 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
                       ++ " s0=0x" ++ showHex s00 ""
                       ++ " ra=0x" ++ showHex ra0 "")
                   dumpRle' after
-      dumpRle' (reverse ring)
+      dumpRle' (reverse (toList ring))
     -- Detect when PC drops from kernel (0x8xxxxxxx) back to firmware
     -- (low BRAM addresses). That's a CPU-reset event — the kernel
     -- triggered a reset somehow.
@@ -630,7 +640,7 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
                       ++ " s0=0x" ++ showHex s00 ""
                       ++ " ra=0x" ++ showHex ra0 "")
                   dumpRle after
-      dumpRle (reverse ring)
+      dumpRle (reverse (toList ring))
     -- Detect entries to earlycon-related kernel functions to find
     -- where the chain breaks.
     when (pc == 0x8020a584 && prevPc /= 0x8020a584) $
@@ -762,7 +772,7 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
       then do
         let b = sUartTxByte s
         liftIO $ do
-          modifyIORef' bufRef (b :)
+          modifyIORef' bufRef (<> BSB.word8 b)
           BS.hPutStr stdout (BS.singleton b)
           hFlush stdout
         go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
@@ -797,9 +807,13 @@ runHwsim kPath dPath maxSteps = do
       ++ "-byte kernel @ 0x80000000 + "
       ++ show (BS.length dtb)
       ++ "-byte DTB @ 0x80400000 ..."
-  bufRef <- newIORef []
+  -- Builder accumulator for UART bytes — O(1) append vs the prior
+  -- `(b :)` list-cons that ends up reversed at consumption.
+  bufRef <- newIORef (mempty :: BSB.Builder)
   pcRef <- newIORef Map.empty
-  snapsRef <- newIORef []
+  -- Strict-spine Seq for cycle/PC snapshots — avoids the lazy-list
+  -- thunk pile-up the rolling-cons pattern produces.
+  snapsRef <- newIORef (Seq.empty :: Seq (Int, Word32))
   rdataRef <- newIORef Map.empty
   bridgeRdataRef <- newIORef Map.empty
   cycles <- runSim riski5Backend $ do
@@ -832,7 +846,9 @@ runHwsim kPath dPath maxSteps = do
   pcMap <- readIORef pcRef
   snaps <- readIORef snapsRef
   rdataMap <- readIORef rdataRef
-  let bytes = reverse collected
+  -- Builder → strict ByteString → [Word8] in one pass (O(N), no
+  -- reverse needed: bytes are already in chronological order).
+  let bytes = BS.unpack (BSL.toStrict (BSB.toLazyByteString collected))
   hPutStrLn stderr ""
   hPutStrLn stderr "--- linux-hwsim done ---"
   hPutStrLn stderr $ "  cycles : " ++ show cycles
@@ -886,7 +902,7 @@ runHwsim kPath dPath maxSteps = do
         hPutStrLn stderr $
           "  cycle " ++ show c ++ ": PC = 0x" ++ pad8 (showHex pc "")
     )
-    (reverse snaps)
+    (toList snaps)
   hPutStrLn stderr ""
   hPutStrLn stderr "--- BUS-side DMEM rdata histogram at PC=0x801ec46c (LW in X-stage) ---"
   printRdataHistogram rdataMap
