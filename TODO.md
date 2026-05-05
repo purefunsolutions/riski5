@@ -402,26 +402,57 @@ rules around maintaining it.
       successive returns from vscnprintf (sp drifts 0x80271c40 →
       0x80271ca0 in steps of 0x10) right before the crash. Per
       iteration, the bridge captures TWO non-zero `cbrDmemRdata`
-      pulses (V1, V2) about 87 cycles apart, corresponding to the
-      LW ra,12(sp) / LW s0,8(sp) loads in the .L1017 epilogue.
-      In iters 1-5 the bridge captures both values cleanly; the
-      regfile shadow shows s0 commits to V1 each time (the FIRST
-      bridge value of the iteration). In **iter 6**, the bus
-      `dmem` signal goes to **0x0** for ~78 cycles at PC=0x801e7f94
-      (where V1 normally captures) — i.e. the SDRAM read for sp+8
-      = 0x80271c98 returns 0 instead of the previously-stored
-      0x80271cc0. s0 commits 0; subsequent ret loads ra=0;
-      jumps to 0 → boot stub re-entry → crash.
-    - Hypothesis (not yet confirmed): **SDRAM refresh-vs-request
-      race** in the SdrController. The 6 iterations span ~4K
-      cycles, comfortably across multiple refresh intervals (15.6
-      μs at 30 MHz = ~470 cycles per refresh). One refresh happens
-      to coincide with the lw s0 access in iter 6, returning 0
-      instead of the stored value. Test next: tap the SDRAM-side
-      RAS/CAS commands during the failure window to confirm a
-      refresh fired during the read. Also: try rebuilding with
-      a SHORTER refresh interval (more aggressive) and see if
-      the failure cycle changes correspondingly.
+      pulses (V1, V2) about 87 cycles apart. NOTE
+      (revised 2026-05-04): the V1/V2 pair is NOT (lw ra, lw s0)
+      — those would be 3 LWs per iter. With pipeline+bridge
+      timing (each F-stage PC takes ~48 cycles for fetch-only
+      transactions and ~87 cycles for fetch+LW), V1 and V2
+      correspond to LW s0 / LW s1 (the lw ra completes earlier,
+      its bridge value is in the buffer's pre-iteration window
+      for the FIRST iteration, and across the iteration boundary
+      for subsequent ones). s0 commits with V1's value, which is
+      the EXPECTED lw s0 value — no bridge bug there.
+    - **What actually happens on the crash path:**
+      * The kernel calls `__stack_chk_fail` (PC=0x801ec24c)
+        ONCE in the run, with caller's saved-ra =
+        0x80271d00 (a STACK address) — meaning code was
+        executing FROM the stack when it called
+        `__stack_chk_fail`. Saved s0 = 0x801dc3a8 (a CODE
+        address — the .L36 label inside seq_buf_printf, just
+        past the canary check's `jal __stack_chk_fail`).
+      * `__stack_chk_fail` calls `panic`. `panic` calls
+        `vpanic`. `vpanic` calls `vscnprintf` 6 times to
+        format the panic message + stack trace. The 6
+        successive vscnprintf returns we see in SP-CHANGE
+        ARE these calls.
+      * panic's prologue zeroed several stack cells via
+        `sw a4, 16(s0)` / `sw a5, 20(s0)` (instructions at
+        PC 0x8000170c / 0x80001710), with a4=a5=0 because
+        the panic message helper was called with no extra
+        args. So when the LATER vscnprintf returns
+        (iter 6 in our trace) `lw s0, 8(sp)` reads byte
+        0x80271c98, it correctly returns 0 — the cell really
+        contains 0, written by panic itself. NOT a HW bug.
+      * `panic` is `[[noreturn]]` in the C source, but in
+        the actual silicon execution something causes a `ret`
+        to return through the panic chain (probably because
+        the early stack-frame ra slot is 0, since panic's
+        prologue zeroed it). Eventually that ret loads ra=0
+        and jumps to PC=0 → boot stub re-entry → crash.
+    - **Real root cause is upstream:** WHY did code execute
+      from the stack (PC=0x80271cfc) and call __stack_chk_fail
+      with that as ra? Most likely: an earlier function's `lw
+      ra, X(sp)` returned a stack address (instead of the
+      legitimately-saved kernel code address). That ret jumped
+      to stack, which contained data interpretable as JAL
+      __stack_chk_fail.
+    - **Key remaining diagnostic gap:** we don't have a
+      shadow of x1 (ra). Adding DEBUG_RA via `topEntity` would
+      let us trace ra writebacks directly and find the exact
+      cycle when ra became wrong (= a stack address). That
+      pinpoints which earlier function's `lw ra` returned bad
+      data. Until we add that tap, the ROOT CAUSE remains
+      unidentified.
     - Diagnostic tools added: `DEBUG_SP` / `DEBUG_S0` ports
       on `topEntity` shadow x2/x8 via the writeback path;
       `runUartStream` keeps a 5000-cycle rolling buffer of
