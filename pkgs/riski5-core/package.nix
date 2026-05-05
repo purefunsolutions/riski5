@@ -155,6 +155,19 @@
   # then jump to 0x80000000 with a0=0, a1=0x80000000+kbytes,
   # sp=0x20080000. Used together with `nix run .#load-sdram-master`.
   linuxBootMaster ? false,
+  # Task #58 silicon-debug: build the M-extension FU as a single-
+  # cycle combinational implementation (Riski5.Core.FU.MulDiv.
+  # mulDivFUCombinational) instead of the iterative 33-cycle
+  # default. Lets us test whether the post-BogoMIPS Linux silicon
+  # hang (PC=0x801E2F10 in put_dec_trunc8 right after `mul a1,a5,a2`)
+  # is rooted in the iterative MUL/DIV FSM. If a build with this
+  # flag set boots past BogoMIPS, the iterative FU is confirmed at
+  # fault. The combinational variant is normally only used by
+  # FORMAL_FAST_MULDIV in the riski5-formal package; on Cyclone II
+  # it instantiates the embedded 18×18 multipliers and a wide
+  # combinational adder tree, which may not close timing at 40 MHz
+  # — this build is for diagnostic purposes only.
+  combinationalMuldiv ? false,
   # B-* (Copilot Boot ROM): the riski5-boot-rom-rv32-nommu
   # derivation. Required iff `linuxBoot = true`. Provides a
   # ready-made CoreMark.hs the linuxBoot variant drops into
@@ -304,6 +317,7 @@
     if verySlowClock then "-veryslow"
     else if slowClock then "-slow"
     else "";
+  combMdSuffix = if combinationalMuldiv then "-combmd" else "";
 in
   stdenv.mkDerivation {
     pname =
@@ -321,7 +335,7 @@ in
       else if isSdramLoad then "riski5-core-sdramload"
       else if isLinuxBoot then "riski5-core-linux"
       else if isLinuxBootMaster then "riski5-core-linux-master"
-      else "riski5-core") + slowSuffix;
+      else "riski5-core") + slowSuffix + combMdSuffix;
     version = "0.1.0";
 
     # Reach up two levels to the repo root so we get src/, app/, and
@@ -1038,6 +1052,7 @@ in
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
               ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString combinationalMuldiv "-DFORMAL_FAST_MULDIV"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \
               -isrc -iapp -ifirmware/phase1 \

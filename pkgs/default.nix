@@ -392,6 +392,25 @@
         riski5-core = self'.packages.riski5-core-linux-master;
       };
 
+      # Task #58 silicon-debug variant: linux-master built with the
+      # combinational MUL/DIV FU instead of the iterative 33-cycle
+      # default. Used to test whether the post-BogoMIPS Linux silicon
+      # hang is rooted in the iterative FSM (see TODO #58).
+      riski5-core-linux-master-combmd = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        linuxBootMaster = true;
+        combinationalMuldiv = true;
+      };
+      flash-riski5-linux-master-combmd = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-linux-master-combmd;
+      };
+      boot-linux-master-combmd = pkgs.callPackage ../apps/boot-linux-master.nix {
+        inherit quartus-ii-13;
+        inherit (self'.packages) linux-rv32-nommu riski5-dtb;
+        riski5-core-linux-master = self'.packages.riski5-core-linux-master-combmd;
+      };
+
       # Task #141 — slow-clock variants of every Linux-bringup
       # bitstream. The package builds at 30 MHz instead of 40 MHz
       # (PLL ratio 50×3/5) with the SDRAM IP regenerated for the
