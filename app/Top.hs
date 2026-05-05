@@ -530,6 +530,7 @@ topEntity
       <*> dWdataInCoreS
       <*> dBeInCoreS
       <*> dRenInCoreS
+      <*> pure False -- cbrFlush: TODO #55, route flushS from coreWith
 
   -- ----- Core ⇄ Bus CDC bridge with debug taps -------------------
   (coreReplyInCoreS, coreReqInBusS, dbgBridgeMasterS, dbgBridgeSlaveS, dbgBridgeMasterPcS, dbgBridgeSlavePcS) =

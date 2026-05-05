@@ -221,6 +221,7 @@ runProgThroughBridge_inner progWords n =
           <*> dWdataA
           <*> dBeA
           <*> dRenA
+          <*> pure False
 
       -- The bridge.
       (coreReplyInCoreA, coreReqInBusB) =

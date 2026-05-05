@@ -1569,7 +1569,7 @@ soc enableSramFetch enableSdramFetch progInit dataInit inS = outS
       (cbrMtip <$> coreReplyS)
       (cbrMeip <$> coreReplyS)
   coreReqS =
-    CoreBusReq <$> pcFetchS <*> dAddrS <*> dWdataS <*> dBeS <*> dRenS
+    CoreBusReq <$> pcFetchS <*> dAddrS <*> dWdataS <*> dBeS <*> dRenS <*> pure False
   (outS, coreReplyS) =
     socWithExternalCore enableSramFetch enableSdramFetch progInit dataInit inS coreReqS
 

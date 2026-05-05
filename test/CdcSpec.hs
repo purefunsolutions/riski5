@@ -110,7 +110,7 @@ createDomain
 -- * Default values ----------------------------------------------
 
 emptyReq :: CoreBusReq
-emptyReq = CoreBusReq 0 0 0 0 False
+emptyReq = CoreBusReq 0 0 0 0 False False
 
 -- | Reply with a deterministic imemData derived from the request.
 -- Lets each test assert "the imemData I see corresponds to the PC
@@ -208,7 +208,7 @@ tests =
 
 case_tied_passthrough :: Assertion
 case_tied_passthrough = do
-  let req1 = CoreBusReq 0x100 0x200 0xDEAD 0xF True
+  let req1 = CoreBusReq 0x100 0x200 0xDEAD 0xF True False
       reply1 = CoreBusReply 0xCAFE True 0xBABE False False True False
       reqIn :: Signal DomTcA CoreBusReq
       reqIn = pure req1

@@ -131,7 +131,7 @@ createDomain
 -- * Default values ----------------------------------------------
 
 emptyReq :: CoreBusReq
-emptyReq = CoreBusReq 0 0 0 0 False
+emptyReq = CoreBusReq 0 0 0 0 False False
 
 -- | Reply with deterministic imemData derived from the request, so
 -- each test asserts "imemData I see corresponds to the PC I asked

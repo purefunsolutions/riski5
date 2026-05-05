@@ -59,6 +59,16 @@ data CoreBusReq = CoreBusReq
   , cbrDWdata :: BitVector 32
   , cbrDBe :: BitVector 4
   , cbrDRen :: Bool
+  , -- | Flush pulse from the core's X-stage. True for the cycle
+    -- when a branch / jump / trap redirects PC. The bridge uses
+    -- this to refire even if @cbrPcFetch@ doesn't change after the
+    -- redirect (= when the F-stage was speculatively fetching the
+    -- same address as the redirect target). Without this signal,
+    -- a beqz-takes-to-same-PC-as-pcFetchS corner case causes the
+    -- bridge to skip the post-flush fetch, losing the instruction
+    -- (e.g. @lw ra, 28(sp)@ in seq_buf_printf's .L36 epilogue —
+    -- see TODO #55). Defaults to False.
+    cbrFlush :: Bool
   }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (NFDataX)
@@ -182,7 +192,7 @@ slaveInit :: SlaveState
 slaveInit =
   SlaveState
     { sPhase = SIdle
-    , sLatReq = CoreBusReq 0 0 0 0 False
+    , sLatReq = CoreBusReq 0 0 0 0 False False
     , sDoneToggle = False
     , sCapReply = defaultReply
     , sDataDone = False
@@ -436,7 +446,7 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
       <$> slaveStateB
 
   emptyReq :: CoreBusReq
-  emptyReq = CoreBusReq 0 0 0 0 False
+  emptyReq = CoreBusReq 0 0 0 0 False False
 
   -- Debug taps (see haddock above for bit layout).
   dbgMasterC =
@@ -627,14 +637,14 @@ slaveStep st@SlaveState{..} reqEdge latReq reply =
 
 -- * Packing helpers
 
-packReq :: CoreBusReq -> BitVector 101
+packReq :: CoreBusReq -> BitVector 102
 packReq CoreBusReq{..} =
-  pack (cbrPcFetch, cbrDAddr, cbrDWdata, cbrDBe, cbrDRen)
+  pack (cbrPcFetch, cbrDAddr, cbrDWdata, cbrDBe, cbrDRen, cbrFlush)
 
-unpackReq :: BitVector 101 -> CoreBusReq
+unpackReq :: BitVector 102 -> CoreBusReq
 unpackReq bv =
-  let (pc, da, dw, be, rd) = unpack bv
-   in CoreBusReq pc da dw be rd
+  let (pc, da, dw, be, rd, fl) = unpack bv
+   in CoreBusReq pc da dw be rd fl
 
 packReply :: CoreBusReply -> BitVector 69
 packReply CoreBusReply{..} =
