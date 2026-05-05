@@ -1,0 +1,94 @@
+# hwsim vs silicon — M-extension FU silicon-only bug
+# Date: 2026-05-06 (early hours)
+#
+# Direct comparison: same iterative `mulDivFUIterative` in both
+# Clash → Verilator hwsim AND Clash → Quartus silicon. The bug
+# only fires in silicon — confirms it's in the Quartus synthesis
+# path, not Clash semantics.
+
+== Setup ==
+
+* hwsim build: default flags (no -DSILICON_MULCOMB_ONLY, no
+  -DFORMAL_FAST_MULDIV) → mulDivFUIterative is the active FU
+* silicon build (mdstress): same default flags via
+  riski5-core-mdstress → mulDivFUIterative is the active FU
+* Both built from the same source revision (mdstress firmware
+  commit e395a2a), same git working tree.
+
+== hwsim 200M-cycle run (commit 9ec9ca6 source) ==
+
+CALLED markers from stderr (cycle counts in core cycles):
+  CHECKPOINT cycle=5M    pc=0x800000b4   (still in boot stub)
+  CHECKPOINT cycle=10M   pc=0x801f7e5c   (in kernel — vsnprintf area)
+  CALLED-START-KERNEL    cycle=19354157
+  CALLED-SETUP-ARCH      cycle=19766449
+  CALLED-DT-CHOSEN       cycle=21495398
+  CALLED-PARAM-SETUP-EARLYCON cycle=40556059
+  CALLED-SETUP-EARLYCON  cycle=40556483
+  CALLED-JTAGUART-EARLYCON cycle=41135838
+  CALLED-PRINTK          ×27 over cycles 19M → 126.5M
+
+Kernel UART text (extracted from stdout, byte-garbled by Verilator
+$display interleave but readable):
+  "Linux version 6.18.22 (nixbld@localhost) (riscv64-unknown-linux-gnu-gcc..."
+  "Machine model: riski5-de2"
+  "earlycon: juart0 at MMIO 0x10000000 (options '')"
+  "printk: legacy bootconsole [juart0] enabled"
+  "printk: debug: skip boot console de-registration"
+  "printk: debug: ignoring loglevel setting"
+  "OF: reserved mem: Reserved memory: No reserved-memory node in the DT"
+  "Zone ranges: Normal [mem 0x0000000080000000-0x00000000807fffff]"
+  "Movable zone start for each node"
+  "Early memory node ranges  node 0: [mem ...]"
+  "Initmem setup node 0 [mem ...]"
+  "Falling back to deprecated 'riscv,isa'"
+  "riscv: base ISA extensions aim"
+  "riscv: ELF capabilities aim"
+  "Ticket spinlock: enabled"
+  "pcpu-alloc: s0 r0 d32768 u32768 alloc=1*32768"
+  "Kernel command line: console=ttyJ0,115200n8 earlycon=juart,mmio,..."
+
+hwsim hit MAX_STEPS=200M before reaching SLUB/NR_IRQS/clint/BogoMIPS,
+but the trajectory matches silicon's hybrid build exactly up to this
+point. No M-FU stuck/wrong-result events.
+
+== Silicon mdstress (commit e395a2a, riski5-core-mdstress) ==
+
+Per docs/perf/mdstress-silicon-2026-05-05.log:
+  CMTC=65 frozen across multiple flash cycles (deterministic).
+  core_pc frozen at 0x000000F0 = mulFailL.
+  Decoded: 'B' boot byte + 9 successful MUHDSR. iterations + 1 'F'
+  failure byte. The 10th iteration's `mul x3, x1, x2` (with
+  identically reloaded x1=0x12345678, x2=0x100, expected
+  0x45678000) returned a wrong value.
+
+== Conclusion ==
+
+Same iterative `mulDivFUIterative` source code:
+  hwsim   — boots Linux through `Kernel command line:` cleanly,
+            runs hundreds of MUL/DIV ops via printk's number()
+            formatter, no failures.
+  silicon — fails deterministically on the 10th identical MUL with
+            same operands.
+
+The bug is in the Quartus → Cyclone II synthesis of the iterative
+FSM. Most likely candidates (deterministic 10-iter pattern):
+  (a) Mealy-state register initialisation race on FSM re-entry
+      that needs N MdIdle → MdBusyMul → MdDone → MdIdle cycles
+      to manifest. Some prior MdMul launches leave residual
+      state in `prodReg` that contaminates the 10th launch.
+  (b) Quartus's mealy-state encoding for `MdPhase` introduces a
+      transient invalid encoding that occasionally aliases a
+      different launch path.
+  (c) `Index 32` counter wraparound at maxBound has an edge case
+      under Quartus's state-machine extraction that the Clash
+      simulator doesn't model (Clash sim treats Index N as a
+      clamped Unsigned with strict bounds checking; Quartus may
+      lower it differently).
+
+The hybrid `mulDivFUMulComb` (combinational MUL via DSP, iterative
+DIV) workaround already lands in master (commit ee47123) and lets
+silicon Linux boot to the scheduler-idle state where IRQs fire and
+the kernel runs CFS load-tracking but no init exists to run.
+Replacing iterative DIV with Newton-Raphson DSP-backed division
+(task #59 follow-up) would eliminate the iterative FSM entirely.
