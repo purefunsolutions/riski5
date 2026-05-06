@@ -232,7 +232,15 @@ in
       #   --O3            : Verilator's own optimisation pass — aggressive
       #                     function inlining + branch combining inside the
       #                     generated C++. Pure throughput win.
-      #   -CFLAGS -O3 -fPIC : C++ compiler optimisation. -fPIC stays for
+      #   -CFLAGS -O3 -fPIC -march=tigerlake -mtune=tigerlake :
+      #                     C++ compiler optimisation pinned to the
+      #                     dev workstation's CPU (Intel Core i5-1135G7,
+      #                     Tiger Lake — family 6 / model 140 = 0x8C —
+      #                     with AVX-512, AVX-VNNI, etc.). Pinning to a
+      #                     concrete -march keeps the build reproducible
+      #                     across machines (vs -march=native, which
+      #                     varies by host) while still letting GCC emit
+      #                     the wider Tiger Lake ISA. -fPIC stays for
       #                     the static lib's relocatability.
       # NOT enabled:
       #   --threads N     : multi-threaded sim. Tested at --threads 8 —
@@ -249,7 +257,7 @@ in
       # dump(), so this is a small price for keeping the shim portable.
       verilator --cc --build --trace --O3 \
         -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
-        -CFLAGS '-O3 -fPIC' \
+        -CFLAGS '-O3 -fPIC -march=tigerlake -mtune=tigerlake' \
         --top-module riski5_sim_top \
         --Mdir obj_dir \
         verilog/riski5_sim_top.v \
