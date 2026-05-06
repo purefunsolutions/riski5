@@ -96,6 +96,7 @@ encode = \case
   Ecall -> 0x0000_0073
   Ebreak -> 0x0010_0073
   Mret -> 0x3020_0073
+  Wfi -> 0x1050_0073
   -- Zicsr: register-source CSR ops (CSRRW/CSRRS/CSRRC).
   Csrrw rd rs1 csr -> csrR rs1 rd 0b001 csr
   Csrrs rd rs1 csr -> csrR rs1 rd 0b010 csr

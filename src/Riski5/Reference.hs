@@ -417,6 +417,7 @@ execute i s = case i of
   Mret ->
     -- Jump to mepc; simplified (no xIE/xPIE dance).
     Right (s {pc = Map.findWithDefault 0 (unCsr csrMepc) (csrs s)})
+  Wfi -> next s -- no-op (legal per priv-spec §3.3.3)
   -- SYSTEM — Zicsr
   Csrrw rd rs1 csr ->
     let old = Map.findWithDefault 0 (unCsr csr) (csrs s)

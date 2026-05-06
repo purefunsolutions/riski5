@@ -398,6 +398,14 @@ data Instr
     Ecall
   | Ebreak
   | Mret
+  | -- | @WFI@ — Wait For Interrupt. Encoded as @0x10500073@ (funct12
+    -- 0x105, rd=0, rs1=0, funct3=0). Implemented as a no-op (just
+    -- retire and advance PC). Per priv-spec §3.3.3 a no-op WFI is a
+    -- legal implementation. The kernel's idle loop relies on it
+    -- existing; trapping it would cause a kernel oops on every idle
+    -- entry. Fixed under #64 after Linux 6.18 hwsim oopsed at WFI
+    -- in arch_cpu_idle.
+    Wfi
   | -- SYSTEM: Zicsr. Register-source forms.
     Csrrw Reg Reg Csr
   | Csrrs Reg Reg Csr

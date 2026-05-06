@@ -272,6 +272,7 @@ decodeSystem w rd rs1 funct3 csr zimm
         0x000 -> Just Ecall
         0x001 -> Just Ebreak
         0x302 -> Just Mret
+        0x105 -> Just Wfi
         _ -> Nothing
   -- Zicsr register-source forms.
   | funct3 == 0b001 = Just (Csrrw rd rs1 csr)

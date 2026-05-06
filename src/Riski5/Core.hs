@@ -390,6 +390,7 @@ instrWritesRd (Just i) = case i of
   Ecall -> False
   Ebreak -> False
   Mret -> False
+  Wfi -> False
 
 -- | rd field of a decoded instruction; 0 for instructions that
 -- don't have an rd (stores, branches, fences, MRET, ECALL, EBREAK)
@@ -1691,6 +1692,12 @@ handleInstr_ pc pcN _ (Just instr) rs1V rs2V memRData cs = case instr of
     -- Restore mstatus.MIE from MPIE and re-arm MPIE := 1; jump to mepc.
     let cs' = applyMret cs
      in (cMepc cs, cs', 0, 0, 0, False, Nothing, False)
+  -- WFI: Wait For Interrupt. Implemented as a no-op (just retire and
+  -- advance PC). Per priv-spec §3.3.3 a no-op WFI is a legal
+  -- implementation; the upcoming timer interrupt will redirect to
+  -- mtvec normally. The kernel's idle loop relies on WFI existing
+  -- (illegal-instruction trap on WFI causes Linux oops at idle entry).
+  Wfi -> nop cs pcN
   Csrrw rd _ csr ->
     let addr = unCsr csr
         old = readCsr cs addr
