@@ -135,6 +135,19 @@ in
       sed -i 's|wake_up_process(worker->task);|wake_up_process(worker->task);\n\t\tpr_emerg("DBG64-CW: post wake_up_process worker_id=%d\\n", worker->id);|' kernel/workqueue.c
       grep -c DBG64-WQ kernel/workqueue.c || true
       grep -c DBG64-CW kernel/workqueue.c || true
+
+      # #64-step4: instrument kthreadd loop to confirm missed-wakeup
+      # hypothesis. After 1st pool worker creates, kthreadd appears
+      # to never wake again. Only modify within kthreadd's body
+      # (set_current_state appears in worker_thread too — sed range
+      # `/int kthreadd/,/^}/` restricts to kthreadd only).
+      sed -i 's|cgroup_init_kthreadd();|cgroup_init_kthreadd();\n\tpr_emerg("DBG64-KD: kthreadd entry, before for(;;)\\n");|' kernel/kthread.c
+      sed -i '/^int kthreadd(void \*unused)/,/^}/ {
+        s|set_current_state(TASK_INTERRUPTIBLE);|pr_emerg("DBG64-KD: top of loop, list_empty=%d, set TASK_INTERRUPTIBLE\\n", list_empty(\&kthread_create_list)); set_current_state(TASK_INTERRUPTIBLE);|
+        s|__set_current_state(TASK_RUNNING);|__set_current_state(TASK_RUNNING); pr_emerg("DBG64-KD: woke up, set TASK_RUNNING\\n");|
+        s|create_kthread(create);|pr_emerg("DBG64-KD: pre create_kthread\\n"); create_kthread(create); pr_emerg("DBG64-KD: post create_kthread\\n");|
+      }' kernel/kthread.c
+      grep -c DBG64-KD kernel/kthread.c || true
     '';
 
     KBUILD_BUILD_VERSION = "1-riski5";
