@@ -280,3 +280,54 @@ This is a much narrower target than "completion path is broken" or
   3. OR: stress LR/SC on the runqueue spinlock specifically
      (very short critical sections, alternating add/remove).
 
+
+## #64 round 4 — HelloSchedStress reproduces the bug at byte level
+
+Built `firmware/phase1/HelloSchedStress.hs` (commit 0b3aa89 / c0b4fe2):
+two cooperative tasks with an SRAM-backed 14-word context block
+(ra, sp, s0..s11 — same as RV32 Linux's `__switch_to`) and a
+hand-rolled `switch_to(curr, next)` that mirrors the kernel's
+__switch_to instruction sequence.
+
+Expected steady-state stream: `B A b . A b . A b . …`
+  - B = boot byte (0x42)
+  - A = task 0 marker, before yielding to task 1 (0x41)
+  - b = task 1 marker, before yielding back (0x62)
+  - . = task 0 round-trip-complete marker (0x2E)
+
+### Pure-Haskell `Riski5.SocSim` baseline (test/SchedStressSpec.hs)
+
+  - 20 K cycles, single test case
+  - Asserted ≥5 `Ab.` round trips
+  - **PASSES** in 2.0 s.
+  - The reference model handles wake-from-sleep correctly.
+
+### Verilator hwsim (riski5-sim with HelloSchedStress overlaid)
+
+  - Re-pointed `pkgs/riski5-sim/package.nix`'s `coreMarkFirmwareWords`
+    overlay at `helloSchedStressFirmwareWords`, rebuilt the sim lib,
+    re-linked `riski5-linux-hwsim`, ran for 5 M cycles.
+  - **3682 UART bytes captured.**
+  - **Histogram: 1841 × 'B' (0x42) + 1841 × 'A' (0x41). ZERO 'b'
+    (0x62), ZERO '.' (0x2E).**
+  - Stream is `B A B A B A …` — task 1's body never runs and
+    task 0 never reaches the post-switch '.' print. The only
+    explanation that fits is: task 0's switch_to to task 1 ends
+    up jumping back to PC=0 (boot), which re-emits the boot 'B'
+    and then re-enters the task 0 loop (emitting 'A'), forever.
+
+### Implication
+
+The same `switch_to` instruction sequence — a sequence of `sw` to
+save ra/sp/s0-s11 to one struct, a sequence of `lw` to load the
+same fields from another, and a `jalr x0, ra, 0` `ret` — works in
+the reference model but fails in the synthesised core. It's the
+exact same shape as the kernel's `__switch_to`, and the failure
+mode is "the core ends up at the wrong PC after the `ret`".
+
+The byte-level reproduction means we can iterate without booting
+Linux. Next step: trace this firmware through hwsim with the
+existing `__schedule` / `ret_from_fork_kernel` / etc. instrumentation
+re-purposed at the schedstress firmware's specific PCs to pinpoint
+the exact `lw → jalr` transition where ra is loaded incorrectly.
+
