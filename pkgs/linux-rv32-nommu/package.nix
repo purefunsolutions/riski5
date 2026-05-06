@@ -23,6 +23,13 @@
   stdenv,
   lib,
   linux_6_18,
+  linux_6_12,
+  linux_6_6,
+  # Pick which upstream kernel to base the build on. Default 6.18
+  # (current stable). Override with "6.12" or "6.6" (LTS) for
+  # bisecting suspected scheduler / nommu bugs without rebuilding
+  # the whole pipeline.
+  kernelChoice ? "6.18",
   pkgsCross,
   bc,
   bison,
@@ -41,10 +48,14 @@
 }: let
   ccPkg = pkgsCross.riscv64.buildPackages.gcc;
   cc = "${ccPkg}/bin/riscv64-unknown-linux-gnu-";
+  upstream =
+    if kernelChoice == "6.12" then linux_6_12
+    else if kernelChoice == "6.6" then linux_6_6
+    else linux_6_18;
 in
   stdenv.mkDerivation {
     pname = "riski5-linux-rv32-nommu";
-    inherit (linux_6_18) version src;
+    inherit (upstream) version src;
 
     nativeBuildInputs = [
       ccPkg

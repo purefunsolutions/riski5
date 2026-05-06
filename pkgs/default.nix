@@ -290,6 +290,19 @@
       # .#linux-rv32-nommu`.
       linux-rv32-nommu = pkgs.callPackage ./linux-rv32-nommu/package.nix {};
 
+      # 6.12 LTS variant for #64 bisect — try a more conservative
+      # kernel to see if the silent post-Mountpoint-cache wedge is
+      # specific to 6.18 or shared across branches.
+      linux-rv32-nommu-6-12 =
+        pkgs.callPackage ./linux-rv32-nommu/package.nix {
+          kernelChoice = "6.12";
+        };
+      linux-rv32-nommu-6-12-with-initramfs =
+        pkgs.callPackage ./linux-rv32-nommu/package.nix {
+          kernelChoice = "6.12";
+          initramfs = self'.packages.initramfs-rv32-nommu;
+        };
+
       # Same kernel but with the L-7 BFLT init baked into a built-in
       # cpio initramfs (CONFIG_INITRAMFS_SOURCE). With this variant
       # the kernel auto-extracts /init at boot from its own ELF
