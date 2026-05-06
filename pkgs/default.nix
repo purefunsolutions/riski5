@@ -290,6 +290,17 @@
       # .#linux-rv32-nommu`.
       linux-rv32-nommu = pkgs.callPackage ./linux-rv32-nommu/package.nix {};
 
+      # Same kernel but with the L-7 BFLT init baked into a built-in
+      # cpio initramfs (CONFIG_INITRAMFS_SOURCE). With this variant
+      # the kernel auto-extracts /init at boot from its own ELF
+      # __initramfs_start segment instead of relying on a separate
+      # cpio loaded by the bootloader. Useful for #64 debug to
+      # bypass any bootloader-side initramfs handover bug.
+      linux-rv32-nommu-with-initramfs =
+        pkgs.callPackage ./linux-rv32-nommu/package.nix {
+          initramfs = self'.packages.initramfs-rv32-nommu;
+        };
+
       # L-7: BFLT /init hello-world. Cross-compiles
       # firmware/phase2/init-rv32-nommu/init.S to a tiny BFLT
       # binary that the L-8 initramfs places at /init.
