@@ -41,7 +41,7 @@ module Main (main) where
 
 import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
-import Data.Bits (shiftR, (.&.))
+import Data.Bits (complement, shiftR, (.&.), (.|.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
 import Data.Foldable (toList)
@@ -478,13 +478,56 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
   -- s0, ra). Holds the last 5000 cycles. Dumped on the CPU-RESET event so we
   -- can see exactly which dmem load returned 0 → wound up in ra → ret to 0.
   ringRef <- liftIO $ newIORef (Seq.empty :: Seq.Seq (Int, Word32, Word32, Word32, Word32, Word32, Word32))
-  go maxCycles 0 0 prevSpRef prevRaRef ringRef
+  -- Behavioural SRAM chip model — drives sSramDqIn each cycle from a
+  -- sparse Map view of the SRAM contents, latches writes on WE_N's
+  -- rising edge with UB_N / LB_N byte gating. Mirrors the Clash-side
+  -- @Riski5.Sram.sramChipSim@ semantics so any firmware that uses
+  -- SRAM (HelloRetStress / HelloSchedStress / future kernel modules
+  -- that touch SRAM) sees consistent behaviour between pure-Haskell
+  -- 'socSimFullWith' and Verilator hwsim. Without this the chip's
+  -- DqIn pin stays at 0 forever and every SRAM read returns 0,
+  -- which breaks any test that exercises SRAM-backed data — e.g.
+  -- HelloSchedStress's switch_to context blocks (load returns 0 →
+  -- jalr to 0 → boot loop "BABABA…").
+  sramRef <- liftIO $ newIORef (Map.empty :: Map Word32 Word16)
+  prevSramWeNRef <- liftIO $ newIORef (1 :: Word8)
+  go maxCycles 0 0 prevSpRef prevRaRef ringRef sramRef prevSramWeNRef
  where
-  go 0 cycs _prevPc _ _ _ = pure cycs
-  go k cycs prevPc prevSpRef prevRaRef ringRef = do
+  go 0 cycs _prevPc _ _ _ _ _ = pure cycs
+  go k cycs prevPc prevSpRef prevRaRef ringRef sramRef prevSramWeNRef = do
     clockCycle
     s <- peekState
     let !pc = sDebugPcfetch s
+    -- Behavioural SRAM chip model. Drive DqIn from the stored
+    -- contents at the current address, then latch writes on the
+    -- WE_N rising edge with UB_N / LB_N byte gating. Matches
+    -- Riski5.Sram.sramChipSim semantics in pure-Haskell sim so
+    -- the same firmware behaves identically across both backends.
+    do
+      let !addr   = sSramAddr s .&. 0x3FFFF      -- 18-bit half-word index
+          !weN    = sSramWeN s
+          !ceN    = sSramCeN s
+          !ubN    = sSramUbN s
+          !lbN    = sSramLbN s
+          !dqOut  = sSramDqOut s
+      prevWeN <- liftIO $ readIORef prevSramWeNRef
+      liftIO $ writeIORef prevSramWeNRef weN
+      -- Latch on rising edge of WE_N (low → high) when chip selected.
+      when (prevWeN == 0 && weN /= 0 && ceN == 0) $ liftIO $
+        modifyIORef' sramRef $ \m ->
+          let !old = Map.findWithDefault 0 addr m
+              !lowMask = if lbN == 0 then 0x00FF else 0
+              !hiMask  = if ubN == 0 then 0xFF00 else 0
+              !mask    = lowMask .|. hiMask
+              !new     = (old .&. complement mask) .|. (dqOut .&. mask)
+           in Map.insert addr new m
+      -- Drive DqIn for the next cycle's read: sram[addr]. Always
+      -- presented (the controller / chip uses OE_N to gate, but we
+      -- can be lazy and just always provide; the controller ignores
+      -- it during writes anyway).
+      curMap <- liftIO $ readIORef sramRef
+      let !curVal = Map.findWithDefault 0 addr curMap
+      modifyState $ \st -> st { sSramDqIn = curVal }
     -- Use a strict update closure so the (+) thunk doesn't pile up
     -- as `1+(1+(1+(...)))` deep — earlier `Map.insertWith (+) pc 1`
     -- was the dominant heap leak (1 GB residency at cycle ~22M).
@@ -903,8 +946,8 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
           -- accumulator that retained every byte for end-of-run dump.
           BS.hPut uartLogHandle (BS.singleton b)
           modifyIORef' uartByteCountRef (+ 1)
-        go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
-      else go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
+        go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef sramRef prevSramWeNRef
+      else go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef sramRef prevSramWeNRef
 
 -- * Entry point ------------------------------------------------------
 

@@ -331,3 +331,40 @@ existing `__schedule` / `ret_from_fork_kernel` / etc. instrumentation
 re-purposed at the schedstress firmware's specific PCs to pinpoint
 the exact `lw → jalr` transition where ra is loaded incorrectly.
 
+
+## #64 round 5 — false alarm: hwsim SRAM was unmodelled
+
+Wrote a smaller `HelloRetStress` firmware (2 tests: jalr-through-
+register, jalr-through-SRAM-load) to isolate the failure. The
+register-only test (test 0) **passed** on hwsim. The SRAM-loading
+test (test 1) **failed** — same "BABABA…" loop as HelloSchedStress.
+
+Inspecting `tools/linux-hwsim/Main.hs`: `sSramDqIn` is initialised
+to 0 and never updated. **The hwsim has no SRAM chip model** — the
+SRAM I/O pins are exposed in the wrapper but the host side never
+drives `sSramDqIn`. Every SRAM read returns 0, so any firmware that
+saves a return address to SRAM and loads it back ends up jalring
+through 0 → boot loop.
+
+Implemented a minimal behavioural SRAM in `runUartStream`'s `go`
+loop, mirroring `Riski5.Sram.sramChipSim` semantics:
+  - Combinational read: drive `sSramDqIn = sram[addr]` each cycle.
+  - Latched write on rising edge of `WE_N` (with `UB_N` / `LB_N`
+    byte gating) when `CE_N` is low.
+
+Re-ran:
+  - HelloRetStress: now prints `B 0 G b h` end-to-end. ✓
+  - HelloSchedStress: now prints `B A b . A b . A b . …` —
+    **4750 successful round trips** in 5 M cycles, identical to
+    pure-Haskell sim.
+
+So **the synthesised core's switch_to-style sequence works fine**
+in hwsim once SRAM is modelled. The Linux silicon hang in #64 is
+NOT a wake-from-sleep / context-restore bug — that hypothesis was
+contaminated by the broken SRAM model in hwsim. Linux uses BRAM +
+SDRAM only, so the SRAM gap didn't affect the Linux-boot trace
+(the kernel really IS blocked in wait_for_completion, but for some
+other reason — needs fresh investigation).
+
+The SRAM model in hwsim is reusable for any future firmware test
+that touches SRAM.

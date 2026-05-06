@@ -140,6 +140,7 @@ library riski5-firmware
     HelloAmoStress
     HelloLrScStress
     HelloMdStress
+    HelloRetStress
     HelloSchedStress
     HelloSdramDataStress
     HelloSdramExec
