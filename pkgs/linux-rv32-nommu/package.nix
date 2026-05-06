@@ -104,6 +104,20 @@ in
         -e 's|wait_for_completion(&kthreadd_done);|wait_for_completion(\&kthreadd_done);\n\tpr_emerg("DBG64: kthreadd_done complete\\n");|' \
         init/main.c
       grep -c DBG64 init/main.c || true
+
+      # #64-step2: workqueue_init wedges. Sprinkle inside it to find
+      # which sub-step hangs. The previous kernel reached
+      # "DBG64: pre workqueue_init" but never printed "post" — wedge
+      # is between the two. Fine markers narrow it to: thresh_init,
+      # BH worker create, online cpu_worker create, unbound pool
+      # worker create, wq_online=true, wq_watchdog_init.
+      sed -i \
+        -e 's|wq_cpu_intensive_thresh_init();|pr_emerg("DBG64-WQ: pre thresh_init\\n");\n\twq_cpu_intensive_thresh_init();\n\tpr_emerg("DBG64-WQ: post thresh_init\\n");|' \
+        -e 's|hash_for_each(unbound_pool_hash, bkt, pool, hash_node)|pr_emerg("DBG64-WQ: pre unbound_pool create_worker\\n");\n\thash_for_each(unbound_pool_hash, bkt, pool, hash_node)|' \
+        -e 's|wq_online = true;|pr_emerg("DBG64-WQ: pre wq_online=true\\n");\n\twq_online = true;|' \
+        -e 's|wq_watchdog_init();|pr_emerg("DBG64-WQ: pre wq_watchdog_init\\n");\n\twq_watchdog_init();\n\tpr_emerg("DBG64-WQ: post wq_watchdog_init\\n");|' \
+        kernel/workqueue.c
+      grep -c DBG64-WQ kernel/workqueue.c || true
     '';
 
     KBUILD_BUILD_VERSION = "1-riski5";
