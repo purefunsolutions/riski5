@@ -102,6 +102,12 @@ in
         -e 's|sched_init_smp();|pr_emerg("DBG64: pre sched_init_smp\\n");\n\tsched_init_smp();|' \
         -e 's|do_basic_setup();|pr_emerg("DBG64: pre do_basic_setup\\n");\n\tdo_basic_setup();\n\tpr_emerg("DBG64: post do_basic_setup\\n");|' \
         -e 's|wait_for_completion(&kthreadd_done);|wait_for_completion(\&kthreadd_done);\n\tpr_emerg("DBG64: kthreadd_done complete\\n");|' \
+        -e 's|async_synchronize_full();|pr_emerg("DBG64: pre async_synchronize_full\\n");\n\tasync_synchronize_full();\n\tpr_emerg("DBG64: post async_synchronize_full\\n");|' \
+        -e 's|kprobe_free_init_mem();|pr_emerg("DBG64: pre kprobe_free_init_mem\\n");\n\tkprobe_free_init_mem();|' \
+        -e 's|free_initmem();|pr_emerg("DBG64: pre free_initmem\\n");\n\tfree_initmem();\n\tpr_emerg("DBG64: post free_initmem\\n");|' \
+        -e 's|mark_readonly();|pr_emerg("DBG64: pre mark_readonly\\n");\n\tmark_readonly();|' \
+        -e 's|rcu_end_inkernel_boot();|pr_emerg("DBG64: pre rcu_end_inkernel_boot\\n");\n\trcu_end_inkernel_boot();\n\tpr_emerg("DBG64: post rcu_end_inkernel_boot\\n");|' \
+        -e 's|do_sysctl_args();|pr_emerg("DBG64: pre do_sysctl_args\\n");\n\tdo_sysctl_args();\n\tpr_emerg("DBG64: post do_sysctl_args\\n");|' \
         init/main.c
       grep -c DBG64 init/main.c || true
 
