@@ -804,29 +804,37 @@ main :: IO ()
 main = do
   args <- getArgs
   case args of
-    [k, d] -> runHwsim k d 5_000_000
-    [k, d, n] -> runHwsim k d (read n)
+    [k, d] -> runHwsim k d Nothing 5_000_000
+    [k, d, n] -> runHwsim k d Nothing (read n)
+    [k, d, n, c] -> runHwsim k d (Just c) (read n)
     _ -> do
-      hPutStrLn stderr "usage: riski5-linux-hwsim KERNEL DTB [MAX_STEPS]"
+      hPutStrLn stderr "usage: riski5-linux-hwsim KERNEL DTB [MAX_STEPS [CPIO]]"
+      hPutStrLn stderr "  CPIO is loaded at 0x80700000 (must match the DTB's"
+      hPutStrLn stderr "  chosen.linux,initrd-start property — change DTS to"
+      hPutStrLn stderr "  point initrd at 0x80700000 if you supply this)."
       exitFailure
 
-runHwsim :: FilePath -> FilePath -> Int -> IO ()
-runHwsim kPath dPath maxSteps = do
+runHwsim :: FilePath -> FilePath -> Maybe FilePath -> Int -> IO ()
+runHwsim kPath dPath mCpioPath maxSteps = do
   hPutStrLn stderr $
     "linux-hwsim: kernel="
       ++ kPath
       ++ " dtb="
       ++ dPath
+      ++ maybe "" (\p -> " cpio=" ++ p) mCpioPath
       ++ " max-steps="
       ++ show maxSteps
   kernel <- BS.readFile kPath
   dtb <- BS.readFile dPath
+  mCpio <- traverse BS.readFile mCpioPath
   hPutStrLn stderr $
     "  loading "
       ++ show (BS.length kernel)
       ++ "-byte kernel @ 0x80000000 + "
       ++ show (BS.length dtb)
-      ++ "-byte DTB @ 0x80400000 ..."
+      ++ "-byte DTB @ 0x80400000"
+      ++ maybe "" (\bs -> " + " ++ show (BS.length bs) ++ "-byte cpio @ 0x80700000") mCpio
+      ++ " ..."
   -- Stream UART bytes to disk (riski5-linux-hwsim.uart.bin) instead
   -- of accumulating them in a Builder. This was the second-largest
   -- heap cost in long Linux-boot runs (Builder retained every byte
@@ -869,6 +877,7 @@ runHwsim kPath dPath maxSteps = do
     clockCycle
     loadWords 0x8000_0000 kernel
     loadWords 0x8040_0000 dtb
+    mapM_ (loadWords 0x8070_0000) mCpio
     -- A few quiet cycles so the SDRAM chip's pre-load writes
     -- settle before reset releases.
     clockCycle
