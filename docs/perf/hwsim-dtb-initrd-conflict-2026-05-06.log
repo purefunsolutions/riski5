@@ -435,3 +435,42 @@ remaining suspects:
   - Some specific kernel instruction sequence in `kernel_init_freeable`
     or `workqueue_init` (could be a CSR access, fence, or specific
     arithmetic the test FW doesn't exercise)
+
+## #64 round 7 — sched-trace shows kthreadd stuck in __schedule
+
+Added sp logging to __SWITCH-TO-ENTER + FINISH-TASK-SWITCH hooks
+(commit pending). Linux boot trace identifies tasks by sp range:
+
+  - 0x80271xxxx = swapper / init_task / IRQ stacks
+  - 0x8040Xxxxx = kernel_init (PID 1)
+  - 0x8070Xxxxx = kthreadd (PID 2) and other forked kthreads
+
+Past cycle 234M (the silent zone we keep observing):
+
+  - FINISH-TASK-SWITCH events fire every ~1.1 M cycles (timer tick)
+    with sp=0x8070bec0 (kthreadd's stack) and ra=0x801ed7c0 (the
+    instruction RIGHT AFTER `jal __switch_to` in __schedule's
+    context_switch path).
+  - KTHREADD-AFTER-SCHED (PC 0x80032238 = kthreadd's body after
+    `jalr ra, schedule`) NEVER fires past cycle 231M.
+  - PC samples past 234M concentrate in CFS bookkeeping:
+    __udivdi3 (63 hits), decay_load (53), div_u64_rem (12),
+    calc_delta_fair (12), __update_load_avg_se / cfs_rq (30),
+    avg_vruntime (9). All scheduler tick housekeeping — NO sample
+    in workqueue, kernel_init, or kthreadd's body.
+
+So the kernel IS scheduling (timer ticks → CFS update → context
+switch → finish_task_switch → __schedule returns). But control
+NEVER actually reaches kthreadd's loop body (PC 0x80032238) again
+after iter 2.
+
+Most likely culprit (consistent with #52's TIF flag bug): the
+`__schedule_loop` macro's `do { __schedule(SM_NONE); } while
+(need_resched())` keeps cycling because need_resched stays set.
+Need to instrument `__schedule_loop`'s post-loop check, or read
+the actual TIF flags for the running task. Or test against a
+patched kernel with extra printk in this exact path.
+
+Embedded-initramfs Linux variant in flight as a side test —
+different boot path may sidestep the wedge if it's specific to
+how the init code path interacts with the scheduler.
