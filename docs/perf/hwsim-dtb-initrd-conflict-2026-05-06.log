@@ -1,0 +1,152 @@
+# hwsim Linux boot — DTB / initrd address conflict (task #62)
+# 2026-05-06
+
+## Setup
+
+Three parallel hwsim runs explored why hwsim Linux boot goes silent
+shortly after `Mountpoint-cache hash table entries: 1024` (cycle 216M
+in the prior 5B-cycle run). All three with the same kernel image
+(`riski5-linux-rv32-nommu-6.18.22`, 3184860 bytes) and 200-300M cycle
+budget. Instrumented PCs in `tools/linux-hwsim/Main.hs` log:
+- [CALLED-START-KERNEL] 0x80000124
+- [CALLED-PRINTK]       0x80002b44
+- [CALLED-SETUP-ARCH]   0x801f73c8
+- [CALLED-DT-CHOSEN]    0x8020f0a0
+- + many others
+
+Run A — original DTB, no cpio (baseline)
+  DTB chosen.linux,initrd-start = 0x80400000
+  DTB chosen.linux,initrd-end   = 0x80800000
+  DTB itself loaded at          0x80400000   ← SAME ADDRESS
+  No real cpio loaded.
+
+Run B — patched DTB without initrd-start/end, no cpio
+  Removed both linux,initrd-* properties from DTB.
+  DTB itself loaded at 0x80400000 as before.
+
+Run C — patched DTB with initrd at 0x80700000 + real cpio there
+  DTB chosen.linux,initrd-start = 0x80700000
+  DTB chosen.linux,initrd-end   = 0x80700400 (1 KB)
+  DTB itself loaded at          0x80400000
+  cpio (1024 bytes from `riski5-initramfs-rv32-nommu`) loaded at
+                                 0x80700000
+
+## Result
+
+Run | Wall   | Last cycle in stderr | UART bytes | Last UART text
+----|--------|---------------------|-----------|----------------
+A   | ~50min | 100,664,787 (free_area_init) | 1044 | "Initmem setup node 0..."
+B   | ~30min | (no instrumented PC ever hit) | 32  | only BootMaster preamble
+C   | ~10min | 21,495,398 (DT chosen parse) | 32 still | only BootMaster preamble (kernel still in early DT setup)
+
+## Significance
+
+**Run B (DTB without linux,initrd-*) hangs in early head.S** — the
+kernel never reaches its first earlycon write. Removing the initrd
+properties is enough to break the boot.
+
+This proves the original DTB's `linux,initrd-start = 0x80400000` /
+`linux,initrd-end = 0x80800000` (which point at the same address as
+the DTB itself) was acting as a **memory reservation hack**: the
+kernel sees a "reserved 4 MB region" at 0x80400000 and avoids
+overwriting it during early init (early memblock allocations).
+Without that reservation, early memblock_alloc() picks 0x80400000
+and stomps the DTB. Subsequent DT parsing reads garbage and the
+boot dead-ends silently in head.S.
+
+**Run C (initrd moved to 0x80700000 + real cpio there) boots
+normally.** Reaches start_kernel (cycle 19.35M), first printk
+(cycle 19.36M), setup_arch (cycle 19.77M), and parse_chosen
+(cycle 21.5M) — same boot trajectory as Run A modulo wall time.
+
+## Implication for the silent-past-Mountpoint-cache symptom
+
+The "silent past Mountpoint-cache" observed in both **silicon** and
+hwsim is now best explained by:
+
+  Both bitstreams loaded the DTB at 0x80400000 with self-conflicting
+  initrd-start = 0x80400000. The kernel respected the reservation
+  (good), tried to extract a cpio from the DTB bytes (magic mismatch,
+  silently skipped — good), reached kernel_init (good), but had no
+  /init in initramfs and no root= cmdline → `prepare_namespace()`
+  fell through every default mount candidate without printing each
+  individual failure, and either panic()'d silently or wedged in a
+  retry loop while timer IRQs continued to fire.
+
+## Next steps
+
+1. Wait for Run C to reach Mountpoint-cache + beyond — this should
+   cleanly print `Run /init as init process` followed by /init's
+   own MMIO writes, confirming the initramfs path works.
+
+2. Roll the same fix into the **silicon** boot path: have the L-3b
+   JTAG-Avalon-Master loader place the cpio at 0x80700000 (or
+   wherever) and use a DTB whose linux,initrd-* points there.
+   Keep the DTB itself at its current address but no longer have
+   initrd-* alias to it.
+
+3. Fold the source DTS edit into a follow-up commit (currently the
+   patched DTBs live in /tmp/ only).
+
+## 1B-cycle cpio rerun follow-up (same date, evening)
+
+Re-ran Run C (DTB initrd at 0x80700000 + real cpio loaded there) with
+1 000 000 000-cycle budget on a fresh single-threaded hwsim binary
+(Verilator -march=tigerlake CFLAGS, GHC -O3 -fasm). Final state:
+
+  - Wall: 26 min, exit 0
+  - UART: 2812 bytes, last printk = "Mountpoint-cache hash table
+    entries: 1024" — **same silent point as the original-DTB run**.
+  - Zero PCs sampled at 0x803XXXXX or higher → kernel never loaded
+    a userspace BFLT, init binary never executed.
+  - Zero PCs in `populate_rootfs` / `kernel_init_freeable` /
+    `driver_init` / `do_basic_setup` ranges.
+  - Highest .init.text PC seen: vfs_caches_init+0xc4 (the LW right
+    after chrdev_init() returns to vfs_caches_init).
+  - Last successful printk caller: ~mnt_init via vfs_caches_init.
+
+So vfs_caches_init() did finish (we got back to its tail). Then
+start_kernel() proceeded into pagecache_init, signals_init,
+workqueue_init (PCs in 0x801fdf, 0x801f9 ranges — confirmed entry).
+
+Then a 0x801ee** sample = `wait_for_completion+...` → the **kernel_init
+thread is blocked in `wait_for_completion(&kthreadd_done)`**. The
+boot CPU (PID 0) is in the normal cpu_idle / IRQ-servicing /
+__switch_to loop (164 samples in 0x801edxx, 52 in 0x801ecxx
+noinstr_text, lots in scheduler/load-decay code).
+
+## What this rules out
+
+  - DTB-initrd self-conflict was a workaround for memblock stomping
+    the DTB region, **not** the silent-past-Mountpoint-cache cause.
+    Loading a real cpio at a non-conflicting address gives the SAME
+    silent point. (Rules out #62 hypothesis as the silicon hang root.)
+  - Initramfs unpacking is not the culprit — `populate_rootfs` was
+    never reached.
+
+## What it points at
+
+`kernel_init` thread is stuck in `wait_for_completion(&kthreadd_done)`
+inside rest_init's coordination handshake. Either:
+
+  a. `complete(&kthreadd_done)` in rest_init was never called (rest_init
+     itself stuck somewhere between spawning kthreadd and the complete()
+     call), OR
+  b. `complete()` fired but the wakeup didn't propagate — possible if
+     the completion's wait-queue spinlock (LR/SC) has a corner-case
+     bug on our core that makes the wakeup signal lost.
+
+Hypothesis (b) is consistent with a few earlier task hangs (#34,
+#46, #51, #52) that also turned out to be atomic-op / wakeup-path
+related. Worth a stress-test of `wait_for_completion` /
+`complete()` paths on silicon and hwsim.
+
+## Next steps (separate task — see #64 once filed)
+
+  1. Build a tiny firmware that exercises completion-style synchronization
+     (one thread wait_event, another wake_up via memory_barrier+ store).
+  2. Or instrument hwsim to log every `complete()` call site (PC of
+     `__wake_up_common_lock` or `__wake_up`) and see if it ever fires
+     during the silent area.
+  3. Decode whether kthreadd was actually spawned and ran (search for
+     PCs in the kthreadd function range).
