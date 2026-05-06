@@ -111,13 +111,30 @@ in
       # is between the two. Fine markers narrow it to: thresh_init,
       # BH worker create, online cpu_worker create, unbound pool
       # worker create, wq_online=true, wq_watchdog_init.
+      #
+      # #64-step3: thresh_init completed; wedge is between
+      # post-thresh_init and pre-unbound_pool. Add finer markers
+      # around the early-rescuer WARN, BH worker create loop, and
+      # online cpu_worker_pool create loop.
       sed -i \
         -e 's|wq_cpu_intensive_thresh_init();|pr_emerg("DBG64-WQ: pre thresh_init\\n");\n\twq_cpu_intensive_thresh_init();\n\tpr_emerg("DBG64-WQ: post thresh_init\\n");|' \
+        -e 's|WARN(init_rescuer(wq),|pr_emerg("DBG64-WQ: pre init_rescuer WARN loop\\n");\n\t\tWARN(init_rescuer(wq),|' \
+        -e 's| \* possible CPUs here\.| * possible CPUs here.\n\t * DBG64-WQ marker below: pre BH create_worker loop|' \
         -e 's|hash_for_each(unbound_pool_hash, bkt, pool, hash_node)|pr_emerg("DBG64-WQ: pre unbound_pool create_worker\\n");\n\thash_for_each(unbound_pool_hash, bkt, pool, hash_node)|' \
         -e 's|wq_online = true;|pr_emerg("DBG64-WQ: pre wq_online=true\\n");\n\twq_online = true;|' \
         -e 's|wq_watchdog_init();|pr_emerg("DBG64-WQ: pre wq_watchdog_init\\n");\n\twq_watchdog_init();\n\tpr_emerg("DBG64-WQ: post wq_watchdog_init\\n");|' \
         kernel/workqueue.c
+      # The BH-loop marker needs to actually emit code, not just a
+      # comment — add it via line-anchored insertion.
+      sed -i '/DBG64-WQ marker below: pre BH create_worker loop/a\\tpr_emerg("DBG64-WQ: pre BH create_worker loop\\n");' kernel/workqueue.c
+      # Instrument create_worker() itself: print every entry + post
+      # kthread_create_on_node + post wake_up_process. The unique
+      # "ID is needed to determine kthread name" comment anchors it.
+      sed -i 's|/\* ID is needed to determine kthread name \*/|/* ID is needed to determine kthread name */\n\tpr_emerg("DBG64-CW: enter create_worker pool_id=%d flags=0x%x\\n", pool->id, pool->flags);|' kernel/workqueue.c
+      sed -i 's|kthread_bind_mask(worker->task, pool_allowed_cpus(pool));|kthread_bind_mask(worker->task, pool_allowed_cpus(pool));\n\t\tpr_emerg("DBG64-CW: post kthread_create+bind worker_id=%d\\n", worker->id);|' kernel/workqueue.c
+      sed -i 's|wake_up_process(worker->task);|wake_up_process(worker->task);\n\t\tpr_emerg("DBG64-CW: post wake_up_process worker_id=%d\\n", worker->id);|' kernel/workqueue.c
       grep -c DBG64-WQ kernel/workqueue.c || true
+      grep -c DBG64-CW kernel/workqueue.c || true
     '';
 
     KBUILD_BUILD_VERSION = "1-riski5";
