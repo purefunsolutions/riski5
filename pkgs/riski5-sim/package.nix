@@ -257,6 +257,7 @@ in
       # dump(), so this is a small price for keeping the shim portable.
       verilator --cc --build --trace --O3 \
         -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
+        --converge-limit 10000 \
         -CFLAGS '-O3 -fPIC -march=tigerlake -mtune=tigerlake' \
         --top-module riski5_sim_top \
         --Mdir obj_dir \
