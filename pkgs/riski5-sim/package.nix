@@ -256,8 +256,8 @@ in
       # Per-eval() overhead is negligible when the harness never calls
       # dump(), so this is a small price for keeping the shim portable.
       verilator --cc --build --trace --O3 \
-        -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
-        --converge-limit 10000 \
+        -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC \
+        --converge-limit 100 \
         -CFLAGS '-O3 -fPIC -march=tigerlake -mtune=tigerlake' \
         --top-module riski5_sim_top \
         --Mdir obj_dir \

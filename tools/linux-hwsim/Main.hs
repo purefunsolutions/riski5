@@ -955,6 +955,12 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
     when (cycs == 15_000_000) $
       liftIO $ hPutStrLn stderr
         ("[CHECKPOINT] cycle=15M pc=0x" ++ showHex pc "")
+    -- #64: heartbeat every 100M cycles past 100M, so we can tell if
+    -- the sim is making cycle progress when no other instrumentation
+    -- fires (e.g., kernel sitting in a non-hooked initcall loop).
+    when (cycs `mod` 100_000_000 == 0 && cycs > 100_000_000) $
+      liftIO $ hPutStrLn stderr
+        ("[HEARTBEAT] cycle=" ++ show cycs ++ " pc=0x" ++ showHex pc "")
     if sUartTxValid s /= 0
       then do
         let b = sUartTxByte s
