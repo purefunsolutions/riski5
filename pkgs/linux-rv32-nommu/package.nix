@@ -86,13 +86,22 @@ in
     # past Mountpoint-cache the boot gets. Toggle by setting
     # `debugSchedulerPrintks = true` on the package call.
     prePatch = lib.optionalString debugSchedulerPrintks ''
-      # Patch init/main.c to add KERN_EMERG markers at key boot points
-      # (uses sed instead of a context-diff patch so it's immune to
-      # line-number drift across kernel versions).
+      # Patch init/main.c to add KERN_EMERG markers at every step of
+      # kernel_init_freeable so we can see exactly where the boot
+      # silently wedges in 6.18 nommu on this SoC. Uses sed (immune
+      # to line-number drift) — checks every key call site.
       sed -i \
-        -e '/^noinline void __ref __noreturn rest_init/,/rcu_scheduler_starting/ s|rcu_scheduler_starting|pr_emerg("DBG64: rest_init entered\\n");\n\trcu_scheduler_starting|' \
-        -e '/^static noinline void __init kernel_init_freeable/,/cad_pid =/ s|cad_pid =|pr_emerg("DBG64: kernel_init_freeable entered\\n");\n\tcad_pid =|' \
-        -e '/^static int __ref kernel_init/,/wait_for_completion.&kthreadd_done/ s|wait_for_completion(&kthreadd_done);|wait_for_completion(\&kthreadd_done);\n\tpr_emerg("DBG64: kthreadd_done complete\\n");|' \
+        -e 's|cad_pid = get_pid(task_pid(current));|pr_emerg("DBG64: kernel_init_freeable entered\\n");\n\tcad_pid = get_pid(task_pid(current));|' \
+        -e 's|smp_prepare_cpus(setup_max_cpus);|pr_emerg("DBG64: pre smp_prepare_cpus\\n");\n\tsmp_prepare_cpus(setup_max_cpus);|' \
+        -e 's|workqueue_init();|pr_emerg("DBG64: pre workqueue_init\\n");\n\tworkqueue_init();\n\tpr_emerg("DBG64: post workqueue_init\\n");|' \
+        -e 's|init_mm_internals();|pr_emerg("DBG64: pre init_mm_internals\\n");\n\tinit_mm_internals();\n\tpr_emerg("DBG64: post init_mm_internals\\n");|' \
+        -e 's|rcu_init_tasks_generic();|pr_emerg("DBG64: pre rcu_init_tasks_generic\\n");\n\trcu_init_tasks_generic();|' \
+        -e 's|do_pre_smp_initcalls();|pr_emerg("DBG64: pre do_pre_smp_initcalls\\n");\n\tdo_pre_smp_initcalls();|' \
+        -e 's|lockup_detector_init();|pr_emerg("DBG64: pre lockup_detector_init\\n");\n\tlockup_detector_init();|' \
+        -e 's|smp_init();|pr_emerg("DBG64: pre smp_init\\n");\n\tsmp_init();|' \
+        -e 's|sched_init_smp();|pr_emerg("DBG64: pre sched_init_smp\\n");\n\tsched_init_smp();|' \
+        -e 's|do_basic_setup();|pr_emerg("DBG64: pre do_basic_setup\\n");\n\tdo_basic_setup();\n\tpr_emerg("DBG64: post do_basic_setup\\n");|' \
+        -e 's|wait_for_completion(&kthreadd_done);|wait_for_completion(\&kthreadd_done);\n\tpr_emerg("DBG64: kthreadd_done complete\\n");|' \
         init/main.c
       grep -c DBG64 init/main.c || true
     '';
