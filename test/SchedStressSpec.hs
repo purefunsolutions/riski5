@@ -76,6 +76,9 @@ case_roundtrips = do
       countOccurrences needle =
         length . filter ((== needle) . P.take (length needle)) . L.tails
       n = countOccurrences "Ab." str
+  -- Dump first 200 bytes for debug visibility
+  putStrLn $ "[SchedStress] first 200 UART bytes: " ++ show (P.take 200 str)
+  putStrLn $ "[SchedStress] total bytes=" ++ show (length bytes) ++ " 'Ab.' count=" ++ show n
   assertBool
     ( "Expected >=5 'Ab.' round trips in "
         ++ show (length bytes)

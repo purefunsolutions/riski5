@@ -812,6 +812,25 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
     when (pc == 0x801ed320 && prevPc /= 0x801ed320) $
       liftIO $ hPutStrLn stderr
         ("[CALLED-__SCHEDULE] cycle=" ++ show cycs
+          ++ " sp=0x" ++ showHex (sDebugSp s) ""
+          ++ " from prev=0x" ++ showHex prevPc "")
+    -- After __schedule's context switch, the next instruction we
+    -- naturally fetch when the picked task resumes is at PC = saved
+    -- ra of that task. Logging sp/ra at the entry of finish_task_switch
+    -- tells us which task actually got CPU time. PC from vmlinux:
+    --   finish_task_switch.isra.0  0x8003a5c8
+    when (pc == 0x8003a5c8 && prevPc /= 0x8003a5c8) $
+      liftIO $ hPutStrLn stderr
+        ("[FINISH-TASK-SWITCH] cycle=" ++ show cycs
+          ++ " sp=0x" ++ showHex (sDebugSp s) ""
+          ++ " ra=0x" ++ showHex (sDebugRa s) "")
+    -- After __switch_to returns, log the new sp — uniquely identifies
+    -- which task the scheduler just picked.
+    --   __switch_to                0x801f24f4
+    when (pc == 0x801f24f4 && prevPc /= 0x801f24f4) $
+      liftIO $ hPutStrLn stderr
+        ("[__SWITCH-TO-ENTER] cycle=" ++ show cycs
+          ++ " sp=0x" ++ showHex (sDebugSp s) ""
           ++ " from prev=0x" ++ showHex prevPc "")
     when (pc == 0x80007b20 && prevPc /= 0x80007b20) $
       liftIO $ hPutStrLn stderr
