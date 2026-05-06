@@ -139,6 +139,7 @@ library riski5-firmware
     HelloAExt
     HelloAmoStress
     HelloLrScStress
+    HelloKthreadCreateStress
     HelloMdStress
     HelloRetStress
     HelloSchedStress
