@@ -24,16 +24,24 @@ packages:
 -- deps (hedgehog, tasty-hedgehog) unnecessarily.
 tests: False
 
--- Optimisation policy: -O2 (== ghc's "-O3" alias) with the default
--- native code generator (NCG / -fasm), no LLVM backend. Conclusion
--- of the May 2026 benchmark sweep (-O2 vs -O3, with vs without
--- -fllvm at 50 M cycles): all four configurations hit the same
--- ~0.59 MHz emulation rate because the hwsim is C++/Verilator
--- bound (the Haskell wrapper is a thin FFI loop). NCG over -fllvm
--- wins on (a) zero LLVM toolchain dependency in the build closure,
--- (b) marginally faster GHC compile times, and (c) avoids the
--- GHC LLVM-version-pinning headaches.
+-- Optimisation policy: -O3 explicitly with the native code generator
+-- (-fasm), no LLVM backend. Symmetric with the Verilator C++ side
+-- (also -O3 in pkgs/riski5-sim/package.nix). May 2026 benchmark
+-- sweep (-O2 vs -O3 × NCG vs LLVM at 25 M cycles, after pinning
+-- Verilator CFLAGS to -march=tigerlake): all four within 0.13% (the
+-- entire +8.5% gain came from the Verilator -march pin alone, since
+-- hwsim is C++/Verilator-bound and the Haskell wrapper is a thin
+-- FFI loop). NCG over -fllvm wins on (a) zero LLVM toolchain
+-- dependency in the build closure, (b) marginally faster GHC
+-- compile times, and (c) avoids the GHC LLVM-version-pinning
+-- headaches. -O3 over -O2 on the Haskell side is symmetry-only —
+-- in modern GHC -O3 is an alias for -O2 with no extra passes —
+-- but spelling it out makes the policy explicit.
 optimization: 2
 
 package riski5
   tests: True
+  ghc-options: -O3 -fasm
+
+package verilambda
+  ghc-options: -O3 -fasm
