@@ -368,3 +368,34 @@ other reason — needs fresh investigation).
 
 The SRAM model in hwsim is reusable for any future firmware test
 that touches SRAM.
+
+## Linux boot retried with new SRAM model (still hangs)
+
+Re-ran the 500M-cycle Linux boot test after adding the SRAM chip
+model (commit e5b0be2). UART output ENDS at the same line:
+
+  [    0.436084] Mountpoint-cache hash table entries: 1024 ...
+
+So SRAM was indeed irrelevant for Linux (as expected — kernel uses
+BRAM + SDRAM only). The hang is a real bug in some other path.
+
+Open question for the next iteration: with kthreadd's wake mechanism
+proven working (per #64 round 5), what else could prevent the
+scheduler from picking kthreadd to run after the second
+wake_up_process? Candidates:
+
+  - CFS rbtree corruption (nommu-Linux scheduler edge case?)
+  - Some other task with lower vruntime always wins (idle thread
+    shouldn't, but maybe a stuck kworker does)
+  - kthreadd's task state transitions getting corrupted by an IRQ
+    that fires mid-wakeup
+  - SDRAM read corruption that returns stale data for a key field
+    of the runqueue / task struct
+
+Concrete next step: build a small kthread-create-stress firmware
+that mimics the kernel's kthread_create_on_node + wait_for_completion
++ kthreadd-dispatch pattern (NOT the simpler cooperative
+context-switch in HelloSchedStress). If that reproduces the wedge
+in hwsim, we've isolated. If not, we know the bug is somewhere
+deeper in the Linux init path.
+
