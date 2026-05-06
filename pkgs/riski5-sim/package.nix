@@ -228,9 +228,28 @@ in
       # in Clash's first emitted Verilog (a `byte` signal from
       # Riski5.Lcd + Riski5.Core) have been renamed at source
       # — see the Haskell-side comments in both modules.
-      verilator --cc --build --trace \
+      # Performance flags:
+      #   --O3            : Verilator's own optimisation pass — aggressive
+      #                     function inlining + branch combining inside the
+      #                     generated C++. Pure throughput win.
+      #   -CFLAGS -O3 -fPIC : C++ compiler optimisation. -fPIC stays for
+      #                     the static lib's relocatability.
+      # NOT enabled:
+      #   --threads N     : multi-threaded sim. Tested at --threads 8 —
+      #                     it made the riski5 SoC 3.7× SLOWER (0.59 MHz
+      #                     → 0.16 MHz at 50 M cycles). Verilator's
+      #                     per-eval thread-barrier sync dominates for
+      #                     designs with <10 K combinational gates, and
+      #                     ours is well below that threshold. Stay
+      #                     single-threaded.
+      # --trace stays on because the C++ shim references VerilatedVcd
+      # symbols unconditionally (verilambda_riski5_sim_top_trace_open
+      # / _close / _dump). Removing --trace would break the shim.
+      # Per-eval() overhead is negligible when the harness never calls
+      # dump(), so this is a small price for keeping the shim portable.
+      verilator --cc --build --trace --O3 \
         -Wno-WIDTHEXPAND -Wno-WIDTHTRUNC -Wno-UNOPTFLAT \
-        -CFLAGS -fPIC \
+        -CFLAGS '-O3 -fPIC' \
         --top-module riski5_sim_top \
         --Mdir obj_dir \
         verilog/riski5_sim_top.v \

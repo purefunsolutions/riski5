@@ -44,11 +44,11 @@ import Control.Monad.IO.Class (liftIO)
 import Data.Bits (shiftR, (.&.))
 import qualified Data.ByteString as BS
 import Data.ByteString (ByteString)
-import qualified Data.ByteString.Builder as BSB
-import qualified Data.ByteString.Lazy as BSL
 import Data.Foldable (toList)
 import qualified Data.Sequence as Seq
 import Data.Sequence (Seq, (|>))
+import System.IO (BufferMode (..), Handle, IOMode (..), SeekMode (..),
+                   hClose, hFileSize, hSeek, hSetBuffering, openBinaryFile)
 import Data.IORef (IORef, modifyIORef', newIORef, readIORef, writeIORef)
 import Data.Kind (Type)
 import Data.List (sortBy)
@@ -457,7 +457,10 @@ loadWords baseByte bs = do
 -- can post-process the returned map.
 runUartStream ::
   Int ->
-  IORef BSB.Builder ->
+  -- | Handle to write UART bytes to (line-buffered, streaming)
+  Handle ->
+  -- | Counter of UART bytes emitted (for end-of-run summary)
+  IORef Int ->
   IORef (Map Word32 Int) ->
   IORef (Seq (Int, Word32)) ->
   IORef (Map Word32 Int) ->
@@ -468,7 +471,7 @@ runUartStream ::
   -- bridge is presenting a different value than the bus mux shows;
   -- if they match, the bus signal IS the LW result the kernel sees.
   SimM Riski5SimTopPorts Riski5SimTopState Int
-runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
+runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef bridgeRdataRef = do
   prevSpRef <- liftIO $ newIORef (0 :: Word32)
   prevRaRef <- liftIO $ newIORef (0 :: Word32)
   -- Task #55: rolling buffer of (cycle, pc, dmem_rdata, bridge_rdata, sp,
@@ -786,9 +789,12 @@ runUartStream maxCycles bufRef pcRef snapsRef rdataRef bridgeRdataRef = do
       then do
         let b = sUartTxByte s
         liftIO $ do
-          modifyIORef' bufRef (<> BSB.word8 b)
-          BS.hPutStr stdout (BS.singleton b)
-          hFlush stdout
+          -- Stream UART byte directly to disk (uartLogHandle, line-
+          -- buffered) — bounded ~constant memory regardless of cycle
+          -- count. Replaces the prior `bufRef <> word8 b` Builder
+          -- accumulator that retained every byte for end-of-run dump.
+          BS.hPut uartLogHandle (BS.singleton b)
+          modifyIORef' uartByteCountRef (+ 1)
         go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
       else go (k - 1) (cycs + 1) pc prevSpRef prevRaRef ringRef
 
@@ -821,9 +827,23 @@ runHwsim kPath dPath maxSteps = do
       ++ "-byte kernel @ 0x80000000 + "
       ++ show (BS.length dtb)
       ++ "-byte DTB @ 0x80400000 ..."
-  -- Builder accumulator for UART bytes — O(1) append vs the prior
-  -- `(b :)` list-cons that ends up reversed at consumption.
-  bufRef <- newIORef (mempty :: BSB.Builder)
+  -- Stream UART bytes to disk (riski5-linux-hwsim.uart.bin) instead
+  -- of accumulating them in a Builder. This was the second-largest
+  -- heap cost in long Linux-boot runs (Builder retained every byte
+  -- ever emitted for the end-of-run summary; for a verbose Linux
+  -- boot with thousands of printks that's MBs that shouldn't be
+  -- pinned). The `uartByteCountRef` retains just the count; the
+  -- end-of-run summary reads the tail of the file for "last printk".
+  uartLogPath <- pure ("riski5-linux-hwsim.uart.bin" :: FilePath)
+  uartLogHandle <- openBinaryFile uartLogPath WriteMode
+  -- NoBuffering so each UART byte hits disk immediately. The kernel
+  -- emits ~one byte every several thousand cycles (printk rate-
+  -- limited by JTAG-UART FIFO drain), so per-byte syscall overhead
+  -- is irrelevant. Critical: a SIGKILL in mid-run still leaves a
+  -- coherent on-disk view of every byte the sim emitted up to that
+  -- moment, instead of losing the last 4 KB of Haskell buffer.
+  hSetBuffering uartLogHandle NoBuffering
+  uartByteCountRef <- newIORef (0 :: Int)
   pcRef <- newIORef Map.empty
   -- Strict-spine Seq for cycle/PC snapshots — avoids the lazy-list
   -- thunk pile-up the rolling-cons pattern produces.
@@ -855,18 +875,27 @@ runHwsim kPath dPath maxSteps = do
     clockCycle
     -- Release all three resets in lockstep.
     modifyState $ \s -> s {sRstN = 1, sRstCoreN = 1, sRstSdramN = 1}
-    runUartStream maxSteps bufRef pcRef snapsRef rdataRef bridgeRdataRef
-  collected <- readIORef bufRef
+    runUartStream maxSteps uartLogHandle uartByteCountRef pcRef snapsRef rdataRef bridgeRdataRef
+  -- Flush + close the UART log so end-of-run reads see all bytes.
+  hClose uartLogHandle
+  byteCount <- readIORef uartByteCountRef
   pcMap <- readIORef pcRef
   snaps <- readIORef snapsRef
   rdataMap <- readIORef rdataRef
-  -- Builder → strict ByteString → [Word8] in one pass (O(N), no
-  -- reverse needed: bytes are already in chronological order).
-  let bytes = BS.unpack (BSL.toStrict (BSB.toLazyByteString collected))
+  -- Read just the last 4 KB of the UART log to find the most recent
+  -- printk. Bounded memory regardless of total log size.
+  bytes <- do
+    h <- openBinaryFile uartLogPath ReadMode
+    sz <- hFileSize h
+    let tailLen = min 4096 (fromInteger sz :: Int)
+    hSeek h SeekFromEnd (negate (fromIntegral tailLen))
+    tailBs <- BS.hGet h tailLen
+    hClose h
+    pure (BS.unpack tailBs)
   hPutStrLn stderr ""
   hPutStrLn stderr "--- linux-hwsim done ---"
   hPutStrLn stderr $ "  cycles : " ++ show cycles
-  hPutStrLn stderr $ "  uart-tx: " ++ show (length bytes) ++ " bytes"
+  hPutStrLn stderr $ "  uart-tx: " ++ show byteCount ++ " bytes (full stream → " ++ uartLogPath ++ ")"
   case lastNonNullPrintk bytes of
     Just s -> hPutStrLn stderr $ "  last printk: " ++ s
     Nothing -> hPutStrLn stderr "  (no printk emitted)"
