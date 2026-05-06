@@ -303,6 +303,15 @@
           initramfs = self'.packages.initramfs-rv32-nommu;
         };
 
+      # Linux 6.18 with debug pr_emerg()s in rest_init /
+      # kernel_init_freeable / after kthreadd_done — see where #64
+      # actually wedges past Mountpoint-cache.
+      linux-rv32-nommu-debug =
+        pkgs.callPackage ./linux-rv32-nommu/package.nix {
+          initramfs = self'.packages.initramfs-rv32-nommu;
+          debugSchedulerPrintks = true;
+        };
+
       # Same kernel but with the L-7 BFLT init baked into a built-in
       # cpio initramfs (CONFIG_INITRAMFS_SOURCE). With this variant
       # the kernel auto-extracts /init at boot from its own ELF
