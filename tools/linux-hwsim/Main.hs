@@ -700,6 +700,60 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
       liftIO $ hPutStrLn stderr
         ("[CALLED-WARN-PRINTK] cycle=" ++ show cycs
           ++ " from prev=0x" ++ showHex prevPc "")
+    -- Task #64: trace completion / wakeup / kthread path. The 1B-cycle
+    -- cpio run showed kernel_init blocked in wait_for_completion
+    -- (&kthreadd_done) and never reaching kernel_init_freeable. We
+    -- need to know whether complete() ever fires for that completion,
+    -- whether kthreadd actually starts, and whether wakeups propagate
+    -- through __wake_up. PC addresses from vmlinux symbols
+    -- (riski5-linux-rv32-nommu-6.18.22):
+    --   complete                         0x80052a30
+    --   complete_all                     0x80054370
+    --   __wake_up                        0x8005156c
+    --   __wake_up_common                 0x80051434
+    --   __wake_up_common_lock            0x80051514
+    --   try_to_wake_up                   0x8003cd44
+    --   wake_up_process                  0x8003cfb0
+    --   wake_up_new_task                 0x8003d500
+    --   kthreadd                         0x800321a8
+    --   wait_for_completion              0x801ee330
+    --   rest_init                        0x801ec6c8
+    when (pc == 0x80052a30 && prevPc /= 0x80052a30) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-COMPLETE] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80054370 && prevPc /= 0x80054370) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-COMPLETE-ALL] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8005156c && prevPc /= 0x8005156c) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-WAKE-UP] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8003cd44 && prevPc /= 0x8003cd44) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-TRY-TO-WAKE-UP] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8003cfb0 && prevPc /= 0x8003cfb0) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-WAKE-UP-PROCESS] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8003d500 && prevPc /= 0x8003d500) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-WAKE-UP-NEW-TASK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x800321a8 && prevPc /= 0x800321a8) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-KTHREADD] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801ee330 && prevPc /= 0x801ee330) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-WAIT-FOR-COMPLETION] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x801ec6c8 && prevPc /= 0x801ec6c8) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-REST-INIT] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
     -- Task #55: sample sp at the canary save vs check PCs. Widen
     -- the match to a small range around the actual instruction
     -- PCs to handle pipeline slip; edge-detect on the WHOLE range

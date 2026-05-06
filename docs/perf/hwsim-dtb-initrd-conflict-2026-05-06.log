@@ -150,3 +150,85 @@ related. Worth a stress-test of `wait_for_completion` /
      during the silent area.
   3. Decode whether kthreadd was actually spawned and ran (search for
      PCs in the kthreadd function range).
+
+## Task #64 instrumentation results (500M cycle run, cpio5)
+
+Added 9 edge-detected PC hooks (complete, complete_all, __wake_up,
+try_to_wake_up, wake_up_process, wake_up_new_task, kthreadd,
+wait_for_completion, rest_init). Result of full 500M-cycle run with
+cpio at 0x80700000:
+
+```
+cycle 218477041: REST-INIT enter (called from start_kernel+...)
+cycle 221822237: WAKE-UP-NEW-TASK ← rest_init forks kernel_init thread
+cycle 224963199: WAKE-UP-NEW-TASK ← rest_init forks kthreadd
+cycle 225414358: COMPLETE          ← rest_init's complete(&kthreadd_done)
+cycle 225416836: COMPLETE          (helper from same)
+cycle 225874366: WAIT-FOR-COMPLETION ← kernel_init enters wait
+cycle 225878143: WAIT-FOR-COMPLETION (helper from same)
+cycle 226293452: WAKE-UP-PROCESS    ← __kthread_create_on_node wakes kthreadd
+cycle 226293924: TRY-TO-WAKE-UP
+cycle 226297678: WAKE-UP-PROCESS
+cycle 226917231: KTHREADD          ← kthreadd starts running for first time
+cycle 230806386: WAKE-UP-NEW-TASK  ← kthreadd creates first kthread
+cycle 232900647: COMPLETE           ← that kthread signals create->done
+cycle 232902765: TRY-TO-WAKE-UP    (from swake_up_locked)
+cycle 233112664: WAKE-UP-PROCESS
+cycle 233399435: COMPLETE
+cycle 234463974: WAIT-FOR-COMPLETION ← kernel_init waits AGAIN
+cycle 234480930: WAKE-UP-PROCESS   ← workqueue_init+0x50 wakes kthreadd
+cycle 234481410: TRY-TO-WAKE-UP
+cycle 234937494: WAKE-UP-PROCESS
+cycle 235501363: WAKE-UP-PROCESS   ← __kthread_create_on_node+0xe8 wakes
+cycle 235501835: TRY-TO-WAKE-UP    kthreadd AGAIN
+cycle 235999129: WAKE-UP-PROCESS
+[ ALL QUIET — 264M more cycles, only timer IRQs (CALLED-HE) fire ]
+```
+
+## Diagnosis
+
+The wakeup mechanism IS working. Boot proceeded:
+
+1. rest_init() runs, forks kernel_init + kthreadd, signals
+   `complete(&kthreadd_done)`.
+2. kernel_init wakes up, enters kernel_init_freeable, starts spawning
+   worker threads via kthread_create_on_node.
+3. **First** kthread_create_on_node call succeeds: kthreadd is woken,
+   creates the kthread, the kthread signals `complete(create->done)`,
+   kernel_init wakes.
+4. **Second** kthread_create_on_node call fails: kernel_init enters
+   wait_for_completion AGAIN, calls `wake_up_process(kthreadd)` —
+   we see TWO wake_up_process calls fire (cycles 234M, 235M) — but
+   **kthreadd never wakes up to process the new create request**.
+   No further WAKE-UP-NEW-TASK ever fires. No new kthread is ever
+   spawned. kernel_init waits forever.
+
+So the problem is **between wake_up_process(kthreadd) and kthreadd
+actually getting scheduled to run**. Two candidates:
+
+a) try_to_wake_up sets kthreadd's TASK state to RUNNING and adds to
+   runqueue, but the scheduler's pick_next_task never selects it
+   (CFS bug? RT priority bug? On-cpu flag stuck from previous run?).
+
+b) kthreadd does get scheduled and runs, but the kthread_create_list
+   is empty when it checks (race between list_add and the wake?).
+   The list manipulation uses spin_lock_irq under kthread_create_lock —
+   if our LR/SC has a corner-case bug for spin_lock under specific
+   conditions, the new entry might not be visible.
+
+(b) fits the pattern of past hangs (#34 stack-stress + IRQ races,
+#46 CoreCdcBridge, #51 amoand.w through bridge, #52 stuck TIF flag).
+
+## Next-step instrumentation candidates
+
+Further hooks to confirm (a) vs (b):
+  - `__schedule` entry — see if scheduler runs after wake_up_process
+  - `pick_next_task` entry — see what task it selects
+  - `kthread_create_on_node` entry — see exact call site, log a0
+    (first arg = create info pointer)
+  - kthreadd's main loop body PC range — see if it iterates the loop
+    body again after the wake_up
+  - `ret_from_fork_kernel` — see when new kthreads start running
+  - LR/SC stress test specifically targeting kthread_create_lock
+    style usage (very short critical sections, list manipulation,
+    cross-CPU-not-applicable since single-core)
