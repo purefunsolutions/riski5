@@ -399,3 +399,39 @@ context-switch in HelloSchedStress). If that reproduces the wedge
 in hwsim, we've isolated. If not, we know the bug is somewhere
 deeper in the Linux init path.
 
+
+## #64 round 6 — HelloKthreadCreateStress also passes
+
+Built `firmware/phase1/HelloKthreadCreateStress.hs` (commit f269143)
+to mimic Linux's `kthread_create_on_node + wait_for_completion +
+kthreadd-dispatch` pattern at the byte level: two cooperative tasks
+share an SRAM `request` + `completion` slot. Main writes a counter
+to `request`, yields to worker, verifies `completion == request + 1`
+on resume.
+
+5 M-cycle hwsim run: **4360 successful round trips** (4361 'A',
+4360 'b', 4360 '.'), no verification failures, no truncation.
+
+So the shared-SRAM-state + cooperative-yield + post-resume-read
+pattern works in hwsim. Combined with HelloSchedStress (passes)
+and HelloRetStress (passes), we've ruled out:
+
+  - basic context save/restore (lw → jalr)
+  - jalr through SRAM-stored target address
+  - shared SRAM read/write across context switches with verification
+  - 14-register switch_to mirror of __switch_to
+
+The Linux silicon hang must therefore be in something more specific
+that none of these byte-level reproductions hit. Plausible
+remaining suspects:
+
+  - CFS scheduler rbtree corruption on multi-task init
+  - LR/SC under interrupt-contention specifically
+  - A `__schedule` code path triggered only when a specific task is
+    the prev/next pair (e.g. swapper ↔ kthreadd, or kthreadd ↔
+    a worker thread)
+  - Memory-ordering edge case visible only with IRQ-driven
+    preemption (timer tick mid-spin_lock)
+  - Some specific kernel instruction sequence in `kernel_init_freeable`
+    or `workqueue_init` (could be a CSR access, fence, or specific
+    arithmetic the test FW doesn't exercise)
