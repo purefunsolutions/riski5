@@ -107,6 +107,19 @@
   # hang here is unambiguously the iterative MUL/DIV FSM,
   # not a bridge / external-memory issue.
   mdStress ? false,
+  # Build the cooperative-context-switch stress variant (task #64
+  # follow-up). Overlay
+  # @HelloSchedStress.helloSchedStressFirmwareWords@ into the imem.
+  # Two tasks share an SRAM-backed 14-word context block (ra, sp,
+  # s0..s11 — same field set @__switch_to@ saves) and yield to each
+  # other via a switch_to() routine that mirrors the kernel's
+  # @__switch_to@ instruction sequence. The 1B-cycle Linux-boot
+  # trace in #64 narrowed the silicon hang to "wake-from-sleep
+  # doesn't actually resume the sleeping task". This firmware
+  # exercises just that path with no Linux / SDRAM / Linux-bus
+  # noise — a hang here pins the bug to context-restore at the
+  # byte level.
+  schedStress ? false,
   # Build the LR/SC-stress silicon-test variant (task #32 follow-
   # up to #29). Overlay
   # @HelloLrScStress.helloLrScStressFirmwareWords@ into the imem.
@@ -241,6 +254,7 @@
   isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad;
   isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
   isMdStress = mdStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster;
+  isSchedStress = schedStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster && !isMdStress;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -351,6 +365,7 @@ in
       else if isLinuxBoot then "riski5-core-linux"
       else if isLinuxBootMaster then "riski5-core-linux-master"
       else if isMdStress then "riski5-core-mdstress"
+      else if isSchedStress then "riski5-core-schedstress"
       else "riski5-core") + slowSuffix + combMdSuffix;
     version = "0.1.0";
 
@@ -1085,6 +1100,41 @@ in
               cat firmware/phase1/CoreMark.hs
             ''}
 
+            ${lib.optionalString isSchedStress ''
+              # Task #64 follow-up: cooperative context-switch stress.
+              # Same overlay mechanism — re-export HelloSchedStress's
+              # firmware under the CoreMark name. Two tasks share an
+              # SRAM-backed 14-word context block and yield via a
+              # switch_to() routine modelled on the kernel's
+              # __switch_to. Probes the wake-from-sleep path the
+              # 1B-cycle Linux trace narrowed in #64.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the schedStress Nix build: re-exports
+              -- HelloSchedStress's firmware under the CoreMark name so
+              -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
+              -- bakes the context-switch stress probe into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSchedStress (helloSchedStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSchedStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### schedStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+            ''}
+
             # Clash emits Verilog into ./verilog/Top.topEntity/ based on
             # the Synthesize annotation in app/Top.hs (named "riski5").
             # Top.hs imports MemTest (or CoreMark under
@@ -1101,7 +1151,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster || isMdStress) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster || isMdStress || isSchedStress) "-DFIRMWARE_COREMARK"} \
               ${lib.optionalString combinationalMuldiv "-DSILICON_MULCOMB_ONLY"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \

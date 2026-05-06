@@ -168,6 +168,21 @@
         mdStress = true;
       };
 
+      # Task #64 follow-up: cooperative-context-switch silicon stress.
+      # Bakes firmware/phase1/HelloSchedStress.hs into imem. Two
+      # tasks share an SRAM-backed 14-word context block (ra, sp,
+      # s0..s11) and yield to each other via a switch_to() routine
+      # mirroring the kernel's __switch_to. Expected steady-state
+      # silicon stream: `BAb.Ab.Ab.…`. If silicon hangs after
+      # `BA` (or any short prefix shorter than the third `Ab.`),
+      # the synthesised core's wake-from-sleep path is broken —
+      # exactly the symptom the 1B-cycle Linux trace narrowed
+      # in #64.
+      riski5-core-schedstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        schedStress = true;
+      };
+
       # Task #60 follow-up: same M-extension stress firmware but at
       # 30 MHz uniform clock (slowClock=true → +8 ns/cycle headroom).
       # If silicon passes here but fails at 40 MHz, the iterative
@@ -374,6 +389,13 @@
       flash-riski5-mdstress = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
         riski5-core = self'.packages.riski5-core-mdstress;
+      };
+
+      # Flasher for the cooperative-context-switch stress bitstream
+      # (task #64 follow-up).
+      flash-riski5-schedstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-schedstress;
       };
 
       # Flasher for the LR/SC-stress silicon test bitstream (task #32).
