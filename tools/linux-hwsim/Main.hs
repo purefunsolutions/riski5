@@ -754,6 +754,60 @@ runUartStream maxCycles uartLogHandle uartByteCountRef pcRef snapsRef rdataRef b
       liftIO $ hPutStrLn stderr
         ("[CALLED-REST-INIT] cycle=" ++ show cycs
           ++ " from prev=0x" ++ showHex prevPc "")
+    -- Task #64 round 2: scheduler internals + kthreadd loop body.
+    -- After the round-1 trace showed wake_up_process(kthreadd) firing
+    -- twice without kthreadd producing a new wake_up_new_task, we need
+    -- to know whether: (i) __schedule actually picks kthreadd to run,
+    -- and (ii) kthreadd's main loop body re-iterates the list check
+    -- after a wakeup. PCs from vmlinux:
+    --   __schedule              0x801ed320
+    --   ret_from_fork_kernel    0x80007b20
+    --   kthreadd .L363 (top)    0x80032224  -- set_current_state +
+    --                                          list_check + schedule
+    --   kthreadd .L358 (after)  0x80032238  -- back from schedule
+    --   kthreadd .L362 (proc)   0x80032248  -- list_del_init = real work
+    when (pc == 0x801ed320 && prevPc /= 0x801ed320) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-__SCHEDULE] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80007b20 && prevPc /= 0x80007b20) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-RET-FROM-FORK-KERNEL] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80032224 && prevPc /= 0x80032224) $
+      liftIO $ hPutStrLn stderr
+        ("[KTHREADD-LOOP-TOP] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80032238 && prevPc /= 0x80032238) $
+      liftIO $ hPutStrLn stderr
+        ("[KTHREADD-AFTER-SCHED] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80032248 && prevPc /= 0x80032248) $
+      liftIO $ hPutStrLn stderr
+        ("[KTHREADD-PROCESS] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    -- Task #64 round 3: distinguish "wake_up didn't re-enqueue" from
+    -- "scheduler skips kthreadd". PCs from vmlinux:
+    --   enqueue_task        0x8003b224
+    --   activate_task       0x8003b488
+    --   deactivate_task     0x8003b4e8
+    --   pick_next_task_fair 0x80045028
+    when (pc == 0x8003b224 && prevPc /= 0x8003b224) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-ENQUEUE-TASK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8003b488 && prevPc /= 0x8003b488) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-ACTIVATE-TASK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x8003b4e8 && prevPc /= 0x8003b4e8) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-DEACTIVATE-TASK] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
+    when (pc == 0x80045028 && prevPc /= 0x80045028) $
+      liftIO $ hPutStrLn stderr
+        ("[CALLED-PICK-NEXT-TASK-FAIR] cycle=" ++ show cycs
+          ++ " from prev=0x" ++ showHex prevPc "")
     -- Task #55: sample sp at the canary save vs check PCs. Widen
     -- the match to a small range around the actual instruction
     -- PCs to handle pipeline slip; edge-detect on the WHOLE range

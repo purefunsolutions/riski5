@@ -232,3 +232,51 @@ Further hooks to confirm (a) vs (b):
   - LR/SC stress test specifically targeting kthread_create_lock
     style usage (very short critical sections, list manipulation,
     cross-CPU-not-applicable since single-core)
+
+## #64 round 3 — narrowed to wake-from-sleep, NOT enqueue
+
+cpio7 (280M cycles, 14 instrumented hooks) confirmed:
+
+  - try_to_wake_up runs correctly for second-and-later wakeups of
+    kthreadd: ttwu_do_activate → activate_task → enqueue_task all
+    fire in sequence (cycles 234511, 235531).
+  - kthreadd IS placed back on the runqueue.
+  - pick_next_task_fair fires every ~1.1 M cycles (timer ticks)
+    after that — but kthreadd's body PCs never fire (no
+    KTHREADD-AFTER-SCHED).
+  - 100 K cycles after each enqueue, deactivate_task fires from
+    activate_task+0x5c — kthreadd is removed from the runqueue
+    again without ever running.
+  - The pattern repeats: kernel_init keeps calling wake_up_process,
+    activate runs, enqueue runs, deactivate runs ~100K cycles later,
+    nothing ever resumes the sleeping task. Eventually kernel_init
+    stops trying (no more kthread_create_on_node calls).
+
+The first-ever kthreadd run (cycle 226M, via `ret_from_fork_kernel`
+on a newly-forked task) WORKED — KTHREADD-LOOP-TOP +
+KTHREADD-AFTER-SCHED + KTHREADD-PROCESS all fired. Same for the
+first kthread it spawned (cycle 231-232M).
+
+So: initial-fork wakeup works, **but waking a task that called
+schedule() and is sleeping does not resume it**. The scheduler
+re-activates and enqueues the task but the actual context-switch
+into the sleeping task fails — the task never executes the
+instruction after its `jalr ra → schedule` JALR.
+
+Hypothesis: a bug in `__switch_to` context restore (loading saved
+sp / s-regs / pc) when the task was previously sleeping, OR an LR/SC
+race in the runqueue rbtree that loses the task.
+
+This is a much narrower target than "completion path is broken" or
+"wakeup is broken". Direct path forward:
+
+  1. Build a 2-thread kernel-style stress firmware:
+     thread A: spin a few iterations, then call __schedule;
+     thread B: wake_up_process(A), check A resumes;
+     loop and watch for hangs.
+  2. OR: instrument hwsim to trap on every store of a specific
+     task's saved sp/regs in __switch_to, plus every load of
+     the same on resume. Confirm the values match round-trip.
+  3. OR: stress LR/SC on the runqueue spinlock specifically
+     (very short critical sections, alternating add/remove).
+
