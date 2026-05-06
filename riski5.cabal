@@ -140,6 +140,7 @@ library riski5-firmware
     HelloAmoStress
     HelloLrScStress
     HelloMdStress
+    HelloSchedStress
     HelloSdramDataStress
     HelloSdramExec
     HelloSdramStress
@@ -257,6 +258,7 @@ test-suite riski5-test
     PlicSpec
     ReferenceSpec
     RegfileSpec
+    SchedStressSpec
     SdramCdcSpec
     SdramExecSpec
     SdramSpec

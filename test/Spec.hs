@@ -35,6 +35,7 @@ import PlicSocSpec qualified
 import PlicSpec qualified
 import ReferenceSpec qualified
 import RegfileSpec qualified
+import SchedStressSpec qualified
 import SdramCdcSpec qualified
 import SdramExecSpec qualified
 import SdramSpec qualified
@@ -93,6 +94,7 @@ main =
       , SdrControllerSpec.tests
       , SocChainIntegrationSpec.tests
       , HelloSpec.tests
+      , SchedStressSpec.tests
       , IFetchSpec.tests
       , JalrStackSpec.tests
       , JtagLoadByteEnableSpec.tests
