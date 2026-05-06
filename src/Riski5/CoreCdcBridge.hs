@@ -406,10 +406,17 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
           | otherwise -> defaultReply
         MIdle
           | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st)
-              P.|| mFlushPending st P.|| cbrFlush req ->
+              P.|| mFlushPending st ->
               -- Stall in MIdle when a flush is pending OR is firing
               -- this cycle — the master is about to refire and the
               -- core mustn't commit the stale mReply. See TODO #55.
+              -- (#64 fix: dropped `cbrFlush req` from this disjunct
+              -- to break the comb loop replyOutC.cbrStall → core.flushS
+              -- → cbrFlush req → replyOutC.cbrStall that Verilator
+              -- detected as UNOPTFLAT and aborted on at sim cycle 480M.
+              -- The pendingFlush latch in masterStep still catches the
+              -- flush pulse and asserts mFlushPending on the next cycle,
+              -- so flush detection lags by 1 cycle but is preserved.)
               defaultReply
           | otherwise -> mReply st
     )
