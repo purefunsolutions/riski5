@@ -59,7 +59,7 @@
 		 * keeps the floor of CONFIG_DYNAMIC_DEBUG enabled in case
 		 * any subsystem we care about uses pr_debug().
 		 */
-		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug initcall_blacklist=deferred_probe_initcall";
+		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug initcall_blacklist=deferred_probe_initcall,init_pipe_fs";
 		/*
 		 * initrd window — DISABLED for #64 hwsim run. The DTB
 		 * is loaded at 0x80400000 itself, so pointing initrd
@@ -100,7 +100,16 @@
 
 	memory@80000000 {
 		device_type = "memory";
-		reg = <0x80000000 0x800000>;  /* 8 MB */
+		/* 6 MB instead of 8 MB. Workaround for #64 follow-up:
+		 * /init binary was being allocated to 0x807cc000 by the
+		 * BFLT loader and reading back as 0xffff (uninitialized
+		 * SDRAM pattern), suggesting the data-port write path may
+		 * not consistently land at 0x807c0000+. By restricting the
+		 * kernel's memory to 6 MB, the page allocator stays inside
+		 * 0x80000000..0x80600000 where every test we have proves
+		 * SDRAM is reliable. Drop back to 8 MB once the high-half
+		 * write path is independently verified.  */
+		reg = <0x80000000 0x600000>;  /* 6 MB */
 	};
 
 	soc {
