@@ -142,6 +142,21 @@ in
       grep -c DBG64-WQ kernel/workqueue.c || true
       grep -c DBG64-CW kernel/workqueue.c || true
 
+      # #64-step5: kernel hangs INSIDE devtmpfs_init at
+      # wait_for_completion(&setup_done) — the kdevtmpfs kthread does
+      # ksys_unshare + init_mount("devtmpfs","/",...) + init_chdir +
+      # init_chroot. Sprinkle markers so we can see exactly which call
+      # wedges. The "devtmpfs: initialized" pr_info fires BEFORE this
+      # path; the missing "initcall ... returned" tells us we never
+      # exit devtmpfs_init.
+      sed -i \
+        -e 's|err = ksys_unshare(CLONE_NEWNS);|pr_emerg("DBG64-DT: pre ksys_unshare\\n"); err = ksys_unshare(CLONE_NEWNS);\n\tpr_emerg("DBG64-DT: post ksys_unshare err=%d\\n", err);|' \
+        -e 's|err = init_mount("devtmpfs", "/", "devtmpfs", DEVTMPFS_MFLAGS, NULL);|pr_emerg("DBG64-DT: pre init_mount /\\n"); err = init_mount("devtmpfs", "/", "devtmpfs", DEVTMPFS_MFLAGS, NULL);\n\tpr_emerg("DBG64-DT: post init_mount / err=%d\\n", err);|' \
+        -e 's|init_chdir("/..");|pr_emerg("DBG64-DT: pre init_chdir\\n"); init_chdir("/..");\n\tpr_emerg("DBG64-DT: post init_chdir\\n");|' \
+        -e 's|init_chroot(".");|pr_emerg("DBG64-DT: pre init_chroot\\n"); init_chroot(".");\n\tpr_emerg("DBG64-DT: post init_chroot\\n");|' \
+        drivers/base/devtmpfs.c
+      grep -c DBG64-DT drivers/base/devtmpfs.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
