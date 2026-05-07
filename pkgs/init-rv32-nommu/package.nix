@@ -39,7 +39,15 @@ in
 
       ${cc}as -march=rv32ima -mabi=ilp32 -o init.o init.S
 
+      # --no-relax keeps the explicit auipc + addi pairs in init.S
+      # for `la t0, msg` / `la a1, msg`. Without it the linker
+      # collapses each PC-relative pair into a single absolute
+      # `addi rd, x0, link_addr`, which would dereference the
+      # link-time virtual address (msg @ 0x88) instead of the
+      # runtime BFLT load address + 0x88. See init.S header for
+      # the full explanation.
       ${cc}ld -m elf32lriscv \
+        --no-relax \
         --build-id=none \
         -e _start \
         -Ttext=0x40 \
