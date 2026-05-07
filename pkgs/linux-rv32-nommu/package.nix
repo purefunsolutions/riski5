@@ -210,6 +210,12 @@ in
         drivers/base/init.c
       grep -c DBG64-DR drivers/base/init.c || true
 
+      # #64-step10: clocksource_done_booting wedges in spin_lock_irqsave
+      # under load. Same root pattern as pm_init/of_core_init. Skip
+      # the fs_initcall registration entirely to advance past it.
+      sed -i 's|fs_initcall(clocksource_done_booting);|/* #64: skipped — wedges in __clocksource_watchdog_kthread spinlock */ /* fs_initcall(clocksource_done_booting); */|' kernel/time/clocksource.c
+      grep -c "skipped.*clocksource_done_booting" kernel/time/clocksource.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
