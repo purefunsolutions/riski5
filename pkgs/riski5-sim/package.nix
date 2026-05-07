@@ -177,6 +177,7 @@ in
         -DSOC_CLOCK_HZ=40000000 \
         -DSOC_SDRAM_CLOCK_HZ=40000000 \
         -DSOC_SDRAM_PERIOD_PS=25000 \
+        -DSILICON_MULCOMB_ONLY \
         -isrc -iapp -ifirmware/phase1 \
         Top
 

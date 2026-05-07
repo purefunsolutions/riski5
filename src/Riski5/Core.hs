@@ -537,6 +537,17 @@ core imemData imemReadyS dmemRData stallS dataStallS mtipS meipS =
   -- back-pressure all fold into the same stall signal. Back-end
   -- stages (EX/MEM, MEM/WB) drain on bubbles so already-issued
   -- instructions keep retiring.
+  --
+  -- WFI is implemented as a nop in handleInstr (not as a stall
+  -- here). Halting at WFI was attempted but deadlocks: when the X
+  -- stage stalls, pcFetch is frozen, the CoreCdcBridge sees no new
+  -- fetch and stays in MIdle, and 'cbrMtip' / 'cbrMeip' present the
+  -- last captured mReply forever. Live mtip / meip transitions on
+  -- the bus side never reach the core, so the WFI never wakes —
+  -- kernel idle loop deadlocks. Until the bridge gains a side-channel
+  -- for the irq-pending bits (or proactively refires on bus-side
+  -- mtip / meip edges), WFI must keep PC advancing so the bridge
+  -- keeps round-tripping and refreshing the irq-pending view.
   stallInternalS :: Signal dom Bool
   stallInternalS = (\s m a -> s || m || a) <$> stallS <*> mdBusyS <*> amoBusyS
 
