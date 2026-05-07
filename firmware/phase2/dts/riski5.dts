@@ -59,14 +59,18 @@
 		 * keeps the floor of CONFIG_DYNAMIC_DEBUG enabled in case
 		 * any subsystem we care about uses pr_debug().
 		 */
-		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug";
+		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug initcall_blacklist=deferred_probe_initcall";
 		/*
-		 * initrd window — the L-3b loader writes the cpio
-		 * starting at base + 4 MB, so it spans [0x80400000,
-		 * 0x80800000). Adjust if the cpio outgrows 4 MB.
+		 * initrd window — DISABLED for #64 hwsim run. The DTB
+		 * is loaded at 0x80400000 itself, so pointing initrd
+		 * there means kernel tries to unpack the DTB as cpio
+		 * (fails), then wedges in flush_delayed_fput. Embedded
+		 * initramfs (CONFIG_INITRAMFS_SOURCE) provides /init.
+		 * Re-enable when hwsim loads a real cpio at a separate
+		 * address (e.g. 0x80700000) and update both ends.
 		 */
-		linux,initrd-start = <0x80400000>;
-		linux,initrd-end   = <0x80800000>;
+		// linux,initrd-start = <0x80700000>;
+		// linux,initrd-end   = <0x80800000>;
 	};
 
 	cpus {

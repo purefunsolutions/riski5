@@ -216,6 +216,26 @@ in
       sed -i 's|fs_initcall(clocksource_done_booting);|/* #64: skipped — wedges in __clocksource_watchdog_kthread spinlock */ /* fs_initcall(clocksource_done_booting); */|' kernel/time/clocksource.c
       grep -c "skipped.*clocksource_done_booting" kernel/time/clocksource.c || true
 
+      # #64-step11: kswapd_init (device_initcall in mm/vmscan.c) wedges
+      # at create_worker pool_id=4 / wake_up_process worker_id=1 — same
+      # workqueue/kthread pattern. Boot needs to reach run_init_process,
+      # not wait for memory reclaim daemon. Skip its module_init
+      # registration so it never runs. (The system may OOM later under
+      # pressure; harmless for booting.)
+      sed -i 's|module_init(kswapd_init)|/* #64: skipped — wedges at create_worker pool_id=4 wake */ /* module_init(kswapd_init) */|' mm/vmscan.c
+      grep -c "skipped.*kswapd_init" mm/vmscan.c || true
+
+      # #64-step12: altera_jtaguart_init wedges AFTER console=ttyJ0 is
+      # registered (we see "printk: legacy console [ttyJ0] enabled" twice
+      # then silence — even bootcon stops). Suspect: printk_kthread spawn
+      # for the new console, or console_lock contention with the second
+      # console. earlycon keeps boot output working, so we don't actually
+      # need the regular ttyJ0 console for booting to /init. Skip its
+      # module_init registration. The driver's probe via platform_driver
+      # path won't run either (no driver registered).
+      sed -i 's|module_init(altera_jtaguart_init)|/* #64: skipped — wedges in console kthread spawn after console takeover */ /* module_init(altera_jtaguart_init) */|' drivers/tty/serial/altera_jtaguart.c
+      grep -c "skipped.*altera_jtaguart_init" drivers/tty/serial/altera_jtaguart.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
