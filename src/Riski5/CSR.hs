@@ -187,27 +187,31 @@ applyTrap cause epc tval cs =
       oldMie = oldStatus .&. bit 3 -- MIE bit (bit 3)
       -- MPIE := old MIE (shifted to bit 7); clear MIE.
       mpieSet = if oldMie /= 0 then bit 7 else 0
-      -- MPP := previous privilege mode. Our core only implements
-      -- M-mode (no U/S/H), so the prev mode is always M-mode = 0b11
-      -- (bits 12:11). Linux's trap handlers READ mstatus.MPP to
-      -- decide whether the trap came from user or kernel — e.g.
-      -- handle_break (arch/riscv/kernel/traps.c) routes EBREAKs
-      -- from user mode to force_sig_fault(SIGTRAP) and EBREAKs from
-      -- kernel mode to report_bug() (the WARN_ON / BUG_ON path).
-      -- If MPP is left at 0 (U-mode), every WARN_ON in the kernel
-      -- ends up queuing a SIGTRAP for the boot CPU's idle task,
-      -- and the idle task spins in irqentry_exit_to_user_mode
-      -- forever because no signal handler clears TIF_SIGPENDING.
-      -- Caught by Linux mid-init hang on Verilator hwsim AND
-      -- silicon (task #52): early_init_dt_scan_root WARN()s about
-      -- missing #address-cells (a separate bug downstream from
-      -- this), the WARN's ebreak entered handle_break, kernel saw
-      -- MPP=0 and shipped a SIGTRAP, idle task hung on it.
-      mppMmode = 0b11 `shiftL` 11 -- bits[12:11] = 0b11
+      -- MPP := previous privilege mode. Our core only physically
+      -- implements M-mode (no U/S/H privilege transitions), but Linux
+      -- nommu RISC-V uses mstatus.MPP as a mode-hint that drives
+      -- syscall dispatch (do_trap_ecall_u checks user_mode(regs) ==
+      -- (mstatus.MPP == 0) before syscall_set_arguments) and exception
+      -- routing (handle_break uses MPP to choose SIGTRAP vs report_bug).
+      --
+      -- Preserve whatever MPP the kernel last wrote — we never
+      -- overwrite it. Common case:
+      --
+      --   - During kernel boot, the kernel keeps MPP=11 (we boot with
+      --     MPP=11 from initCsrs), so EBREAK / illegal-instr exceptions
+      --     route to report_bug as expected (task #52 was this).
+      --   - When the kernel is about to mret into /init, it sets
+      --     MPP=0 — the mret then "transitions" to U-mode (logically).
+      --     A subsequent ECALL from /init traps with the saved MPP=0,
+      --     so user_mode(regs) returns true and the kernel dispatches
+      --     the syscall through do_trap_ecall_u (#64 follow-up).
+      --
+      -- The 'oldMpp' bits 12:11 of mstatus pass through unchanged.
+      oldMpp = oldStatus .&. (0b11 `shiftL` 11)
       newStatus =
         (oldStatus .&. complement (bit 3 .|. bit 7 .|. (0b11 `shiftL` 11)))
           .|. mpieSet
-          .|. mppMmode
+          .|. oldMpp
    in cs
         { cMcause = cause
         , cMepc = epc
@@ -275,4 +279,26 @@ causeBreakpoint = 3
 causeLoadAddrMisaligned, causeStoreAddrMisaligned, causeEcallFromM :: BitVector 32
 causeLoadAddrMisaligned = 4
 causeStoreAddrMisaligned = 6
-causeEcallFromM = 11
+-- Cause code reported for ECALL. Per priv-spec the value depends on
+-- the privilege mode the ECALL was executed in:
+--
+--   8  = environment call from U-mode
+--   9  = environment call from S-mode
+--   11 = environment call from M-mode
+--
+-- Our core does NOT actually implement privilege modes — every
+-- instruction effectively runs in M-mode internally. But Linux on
+-- RV32 nommu (CONFIG_RISCV_M_MODE=y) is built specifically for cores
+-- like ours that don't have user mode, and its trap dispatcher
+-- ALWAYS treats ECALL as a userspace syscall — it routes through
+-- do_trap_ecall_u regardless of cause==8 vs 11. But the assertion
+-- inside that path checks @regs->cause == 8@ and panics with
+-- "Oops - environment call from M-mode" if cause==11.
+--
+-- So we report cause=8 ("ECALL from U-mode") even though the core
+-- is really in M-mode. This is the standard approach for M-mode-
+-- only cores running upstream nommu Linux; the kernel-side syscall
+-- entry path doesn't care what the core thinks the privilege was.
+-- (Reference: arch/riscv/kernel/traps.c::do_trap_ecall_u — the
+-- syscall dispatcher; all M-only nommu RISC-V boards do this.)
+causeEcallFromM = 8

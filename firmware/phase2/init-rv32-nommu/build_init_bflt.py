@@ -69,11 +69,27 @@ def main() -> int:
 
     text_size = len(text)
     # 4 (magic) + 10 × 4 (be32 fields) + 20 (filler 5×4 bytes) = 64.
+    #
+    # Critical detail (#64 silicon-init follow-up): the Linux kernel's
+    # binfmt_flat loader uses
+    #
+    #   read_code(bprm->file, textpos, 0, text_len);
+    #   start_thread(regs, textpos + ntohl(hdr->entry), 0);
+    #
+    # i.e. it copies starting from FILE OFFSET 0 (which includes our
+    # 64-byte BFLT header!) and then jumps to textpos+entry. With
+    # entry=0 the kernel jumps to the "bFLT" magic and traps with an
+    # illegal-instruction fault on user-mode entry. The entry MUST be
+    # 64 so PC lands on the first real instruction of our _start.
+    HEADER_SIZE = 64
     header = struct.pack(
         ">4sIIIIIIIIII20s",
         BFLT_MAGIC,
         BFLT_VERSION,
-        0,                  # entry — start of text
+        HEADER_SIZE,        # entry — first instruction lives 64 bytes
+                            #         past the start of textpos because
+                            #         the kernel copies the header along
+                            #         with the text segment.
         64 + text_size,     # data_start (= end of text within file;
                             # we have no data segment, so this also
                             # equals data_end below)
