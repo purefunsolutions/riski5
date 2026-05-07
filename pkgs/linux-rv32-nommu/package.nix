@@ -182,6 +182,34 @@ in
       sed -i 's|do_trace_initcall_finish(fn, ret);|do_trace_initcall_finish(fn, ret); pr_emerg("DBG64-IC: post fn=%pS ret=%d\\n", fn, ret); *(volatile unsigned int *)0x10000000 = 0x65;|' init/main.c
       grep -c "DBG64-IC" init/main.c || true
 
+      # #64-step9: KEY DISCOVERY — devtmpfs_init is called DIRECTLY
+      # from driver_init(), not via the initcall mechanism. After
+      # devtmpfs_init returns, driver_init calls devices_init,
+      # buses_init, classes_init, firmware_init, hypervisor_init,
+      # faux_bus_init, of_core_init, platform_bus_init,
+      # auxiliary_bus_init, memory_dev_init, node_dev_init,
+      # cpu_dev_init, container_dev_init. One of those wedges
+      # (we never see "DBG64: post do_basic_setup"). Add markers
+      # around each so we can pinpoint.
+      sed -i \
+        -e 's|bdi_init(&noop_backing_dev_info);|pr_emerg("DBG64-DR: pre bdi_init\\n"); bdi_init(\&noop_backing_dev_info); pr_emerg("DBG64-DR: post bdi_init\\n");|' \
+        -e 's|devtmpfs_init();|pr_emerg("DBG64-DR: pre devtmpfs_init\\n"); devtmpfs_init(); pr_emerg("DBG64-DR: post devtmpfs_init\\n");|' \
+        -e 's|devices_init();|pr_emerg("DBG64-DR: pre devices_init\\n"); devices_init(); pr_emerg("DBG64-DR: post devices_init\\n");|' \
+        -e 's|buses_init();|pr_emerg("DBG64-DR: pre buses_init\\n"); buses_init(); pr_emerg("DBG64-DR: post buses_init\\n");|' \
+        -e 's|classes_init();|pr_emerg("DBG64-DR: pre classes_init\\n"); classes_init(); pr_emerg("DBG64-DR: post classes_init\\n");|' \
+        -e 's|firmware_init();|pr_emerg("DBG64-DR: pre firmware_init\\n"); firmware_init(); pr_emerg("DBG64-DR: post firmware_init\\n");|' \
+        -e 's|hypervisor_init();|pr_emerg("DBG64-DR: pre hypervisor_init\\n"); hypervisor_init(); pr_emerg("DBG64-DR: post hypervisor_init\\n");|' \
+        -e 's|faux_bus_init();|pr_emerg("DBG64-DR: pre faux_bus_init\\n"); faux_bus_init(); pr_emerg("DBG64-DR: post faux_bus_init\\n");|' \
+        -e 's|of_core_init();|pr_emerg("DBG64-DR: pre of_core_init\\n"); of_core_init(); pr_emerg("DBG64-DR: post of_core_init\\n");|' \
+        -e 's|platform_bus_init();|pr_emerg("DBG64-DR: pre platform_bus_init\\n"); platform_bus_init(); pr_emerg("DBG64-DR: post platform_bus_init\\n");|' \
+        -e 's|auxiliary_bus_init();|pr_emerg("DBG64-DR: pre auxiliary_bus_init\\n"); auxiliary_bus_init(); pr_emerg("DBG64-DR: post auxiliary_bus_init\\n");|' \
+        -e 's|memory_dev_init();|pr_emerg("DBG64-DR: pre memory_dev_init\\n"); memory_dev_init(); pr_emerg("DBG64-DR: post memory_dev_init\\n");|' \
+        -e 's|node_dev_init();|pr_emerg("DBG64-DR: pre node_dev_init\\n"); node_dev_init(); pr_emerg("DBG64-DR: post node_dev_init\\n");|' \
+        -e 's|cpu_dev_init();|pr_emerg("DBG64-DR: pre cpu_dev_init\\n"); cpu_dev_init(); pr_emerg("DBG64-DR: post cpu_dev_init\\n");|' \
+        -e 's|container_dev_init();|pr_emerg("DBG64-DR: pre container_dev_init\\n"); container_dev_init(); pr_emerg("DBG64-DR: post container_dev_init\\n");|' \
+        drivers/base/init.c
+      grep -c DBG64-DR drivers/base/init.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
