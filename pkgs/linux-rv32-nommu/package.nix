@@ -166,6 +166,15 @@ in
       sed -i 's|printk(KERN_DEBUG "entering initcall level:|printk(KERN_EMERG "entering initcall level:|' init/main.c
       grep -c "KERN_EMERG \"calling\\|KERN_EMERG \"initcall\\|KERN_EMERG \"entering initcall" init/main.c || true
 
+      # #64-step7: KERN_EMERG via tracepoint still didn't fire for
+      # non-early initcalls (tracepoint registration issue?). Inject
+      # a direct pr_emerg in do_one_initcall — bypasses the trace
+      # mechanism entirely. Anchor on "do_trace_initcall_start(fn);"
+      # which is unique inside do_one_initcall.
+      sed -i 's|do_trace_initcall_start(fn);|pr_emerg("DBG64-IC: pre fn=%pS\\n", fn); do_trace_initcall_start(fn);|' init/main.c
+      sed -i 's|do_trace_initcall_finish(fn, ret);|do_trace_initcall_finish(fn, ret); pr_emerg("DBG64-IC: post fn=%pS ret=%d\\n", fn, ret);|' init/main.c
+      grep -c "DBG64-IC" init/main.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
