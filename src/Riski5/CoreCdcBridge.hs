@@ -398,32 +398,69 @@ coreCdcBridgeWithDebugWide clkC rstC enC clkB rstB enB reqInC replyInB =
   --       would never get its 0x10000000, and every subsequent
   --       SW would commit to address 0 instead of the UART base.
   --       Caught by 'CdcSocIntegrationSpec.case_core_dAddr'.
+  -- Side-channel mtip / meip propagation. The interrupt-pending
+  -- bits MUST cross continuously, NOT bundled in the request/reply
+  -- round-trip — otherwise the core's view goes stale during
+  -- MIdle (live req) and MBusy (non-doneEdge) cycles where the
+  -- 'replyOutC' below picks 'defaultReply' (mtip=False, meip=False).
+  -- That used to be harmless in the common case (every fetch refires
+  -- the bridge so the round-trip refreshes mtip on each round) but
+  -- it deadlocks the kernel idle loop: when WFI halts the X stage,
+  -- pcFetch freezes, no new bridge round-trip ever fires, and the
+  -- last-captured mReply.cbrMtip stays at whatever value it had at
+  -- the last SDone — typically False if the timer hadn't fired yet.
+  -- Live mtipS rising on the bus side then never reaches the core,
+  -- WFI never wakes, and the kernel hangs forever in arch_cpu_idle.
+  --
+  -- These two 2-FF synchronisers carry mtip / meip from busDom
+  -- straight to coreDom every cycle, regardless of bridge phase.
+  -- 'replyOutC' below overlays them onto whatever payload it picks,
+  -- so the core's view of the irq-pending bits is always live within
+  -- 1-2 cycles of the bus side asserting them.
+  liveMtipB :: Signal busDom Bool
+  liveMtipB = cbrMtip <$> replyInB
+  liveMtipC :: Signal coreDom Bool
+  liveMtipC = syncBit clkB clkC rstC enC liveMtipB
+
+  liveMeipB :: Signal busDom Bool
+  liveMeipB = cbrMeip <$> replyInB
+  liveMeipC :: Signal coreDom Bool
+  liveMeipC = syncBit clkB clkC rstC enC liveMeipB
+
   replyOutC =
-    ( \st req capR doneE -> case mPhase st of
-        MDone -> mReply st
-        MBusy
-          | doneE -> capR{cbrStall = True, cbrDataStall = True}
-          | otherwise -> defaultReply
-        MIdle
-          | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st)
-              P.|| mFlushPending st ->
-              -- Stall in MIdle when a flush is pending OR is firing
-              -- this cycle — the master is about to refire and the
-              -- core mustn't commit the stale mReply. See TODO #55.
-              -- (#64 fix: dropped `cbrFlush req` from this disjunct
-              -- to break the comb loop replyOutC.cbrStall → core.flushS
-              -- → cbrFlush req → replyOutC.cbrStall that Verilator
-              -- detected as UNOPTFLAT and aborted on at sim cycle 480M.
-              -- The pendingFlush latch in masterStep still catches the
-              -- flush pulse and asserts mFlushPending on the next cycle,
-              -- so flush detection lags by 1 cycle but is preserved.)
-              defaultReply
-          | otherwise -> mReply st
+    ( \st req capR doneE liveMtip liveMeip ->
+        let base = case mPhase st of
+              MDone -> mReply st
+              MBusy
+                | doneE -> capR{cbrStall = True, cbrDataStall = True}
+                | otherwise -> defaultReply
+              MIdle
+                | reqIsLive req (mLastSentPc st) (mLastDBe st) (mLastDRen st)
+                    P.|| mFlushPending st ->
+                    -- Stall in MIdle when a flush is pending OR is firing
+                    -- this cycle — the master is about to refire and the
+                    -- core mustn't commit the stale mReply. See TODO #55.
+                    -- (#64 fix: dropped `cbrFlush req` from this disjunct
+                    -- to break the comb loop replyOutC.cbrStall → core.flushS
+                    -- → cbrFlush req → replyOutC.cbrStall that Verilator
+                    -- detected as UNOPTFLAT and aborted on at sim cycle 480M.
+                    -- The pendingFlush latch in masterStep still catches the
+                    -- flush pulse and asserts mFlushPending on the next cycle,
+                    -- so flush detection lags by 1 cycle but is preserved.)
+                    defaultReply
+                | otherwise -> mReply st
+         in -- Always overlay live-synced mtip / meip from the bus
+            -- side, regardless of phase. See the long comment above
+            -- 'liveMtipB' for why this side-channel is essential
+            -- for the WFI-halt path to work.
+            base{cbrMtip = liveMtip, cbrMeip = liveMeip}
     )
       <$> masterStateC
       <*> reqInC
       <*> capReplyC
       <*> doneEdgeC
+      <*> liveMtipC
+      <*> liveMeipC
 
   -- Drive the latched request to the bus differently per phase:
   --
