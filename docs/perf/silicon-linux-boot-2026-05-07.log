@@ -1,0 +1,1229 @@
+== boot-linux-master: clearing stale JTAG holders ==
+== boot-linux-master: detecting USB-Blaster ==
+  cable: USB-Blaster [3-4.1]
+== boot-linux-master: flashing /nix/store/7sajsq3f5xmh0n91r9xg7dmmx1cl9w25-riski5-core-linux-master-0.1.0/Riski5.sof ==
+Info: *******************************************************************
+Info: Running Quartus II 32-bit Programmer
+    Info: Version 13.0.1 Build 232 06/12/2013 Service Pack 1 SJ Web Edition
+    Info: Copyright (C) 1991-2013 Altera Corporation. All rights reserved.
+    Info: Your use of Altera Corporation's design tools, logic functions 
+    Info: and other software and tools, and its AMPP partner logic 
+    Info: functions, and any output files from any of the foregoing 
+    Info: (including device programming or simulation files), and any 
+    Info: associated documentation or information are expressly subject 
+    Info: to the terms and conditions of the Altera Program License 
+    Info: Subscription Agreement, Altera MegaCore Function License 
+    Info: Agreement, or other applicable license agreement, including, 
+    Info: without limitation, that your use is for the sole purpose of 
+    Info: programming logic devices manufactured by Altera and sold by 
+    Info: Altera or its authorized distributors.  Please refer to the 
+    Info: applicable agreement for further details.
+    Info: Processing started: Thu May  7 23:12:27 2026
+Info: Command: quartus_pgm -c "USB-Blaster [3-4.1]" -m JTAG -o p;/nix/store/7sajsq3f5xmh0n91r9xg7dmmx1cl9w25-riski5-core-linux-master-0.1.0/Riski5.sof
+Info (213045): Using programming cable "USB-Blaster [3-4.1]"
+Info (213011): Using programming file /nix/store/7sajsq3f5xmh0n91r9xg7dmmx1cl9w25-riski5-core-linux-master-0.1.0/Riski5.sof with checksum 0x00C7184A for device EP2C35F672@1
+Info (209060): Started Programmer operation at Thu May  7 23:12:28 2026
+Info (209016): Configuring device index 1
+Info (209017): Device 1 contains JTAG ID code 0x020B40DD
+Info (209007): Configuration succeeded -- 1 device(s) configured
+Info (209011): Successfully performed operation(s)
+Info (209061): Ended Programmer operation at Thu May  7 23:12:29 2026
+Info: Quartus II 32-bit Programmer was successful. 0 errors, 0 warnings
+    Info: Peak virtual memory: 127 megabytes
+    Info: Processing ended: Thu May  7 23:12:29 2026
+    Info: Elapsed time: 00:00:02
+    Info: Total CPU time (on all processors): 00:00:00
+== boot-linux-master: streaming kernel + DTB via master_write_32 ==
+source /nix/store/j1hhcbg4jx76cv29hrfpp4fdldf82zax-boot-linux-master.tcl
+--------------------------------------------------------------------------------
+ Version 13.0sp1 232
+ Copyright (C) 1991-2013 Altera Corporation. All rights reserved.
+ Your use of Altera Corporation's design tools, logic functions
+ and other software and tools, and its AMPP partner logic
+ functions, and any output files from any of the foregoing
+ (including device programming or simulation files), and any
+ associated documentation or information is expressly subject
+ to the terms and conditions of the Altera Program License
+ Subscription Agreement, Altera MegaCore Function License
+ Agreement, or other applicable license agreements, including,
+ without limitation, that your use is for the sole purpose of
+ programming logic devices manufactured by Altera and sold by
+ Altera or its authorized distributors.  Please refer to the
+ applicable agreement for further details.
+--------------------------------------------------------------------------------
+--------------------------------------------------------------------------------
+ Welcome to Altera's System Console
+
+ This Tcl console provides access to the hardware modules instantiated in your
+ FPGA. You can use System Console for all of the following purposes:
+
+    * To start, stop, or step a Nios II processor
+    * To read or write Avalon Memory-Mapped (Avalon-MM) slaves using special
+     masters
+    * To sample the SOPC system clock as well as system reset signal
+    * To run JTAG loopback tests to analyze board noise problems
+    * To shift arbitrary instruction register and data register values to
+     instantiated system level debug (SLD) nodes
+
+ In addition, the directory <QuartusII Dir>/sopc_builder/system_console_macros
+ contains Tcl files that provide miscellaneous utilities and examples of how to
+ access the functionality provided. You can include those macros in your
+ scripts by issuing Tcl source commands.
+--------------------------------------------------------------------------------
+% boot-linux-master:
+  kernel : /home/mika/riski5/result-linux-debug/Image (3141728 bytes, padded to 3141728)
+  dtb    : /home/mika/riski5/result-dtb/riski5.dtb (1514 bytes, padded to 1516)
+  layout : kernel @ 0x80000000..0x802ff05f
+           dtb    @ 0x80400000..0x804005eb
+  trigger: SDRAM[0x807ffff0] <- kbytes=3141728
+           SDRAM[0x807ffff4] <- 1
+
+  master : /devices/EP2C35@1#3-4.1/(link)/JTAG/(110:132 v1 #0)/phy_0/master
+  kernel     10.0 / 3068.1 KB  @   9.6 KB/s
+  kernel     21.0 / 3068.1 KB  @  10.1 KB/s
+  kernel     32.0 / 3068.1 KB  @  10.4 KB/s
+  kernel     44.0 / 3068.1 KB  @  10.6 KB/s
+  kernel     55.0 / 3068.1 KB  @  10.6 KB/s
+  kernel     67.0 / 3068.1 KB  @  10.7 KB/s
+  kernel     78.0 / 3068.1 KB  @  10.7 KB/s
+  kernel     89.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    100.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    112.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    123.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    134.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    146.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    158.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    168.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    179.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    190.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    201.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    213.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    223.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    235.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    246.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    257.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    269.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    280.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    292.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    304.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    315.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    326.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    338.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    349.0 / 3068.1 KB  @  10.7 KB/s
+  kernel    361.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    373.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    385.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    396.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    407.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    419.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    430.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    441.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    453.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    465.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    477.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    489.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    501.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    512.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    524.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    536.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    548.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    560.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    571.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    583.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    595.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    607.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    618.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    630.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    641.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    653.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    664.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    675.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    687.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    698.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    710.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    721.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    732.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    744.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    756.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    768.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    779.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    791.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    801.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    812.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    822.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    833.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    843.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    854.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    865.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    874.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    885.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    896.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    908.0 / 3068.1 KB  @  10.9 KB/s
+  kernel    919.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    930.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    940.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    952.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    962.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    972.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    983.0 / 3068.1 KB  @  10.8 KB/s
+  kernel    994.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1005.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1017.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1027.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1039.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1050.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1061.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1072.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1083.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1094.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1106.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1117.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1129.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1141.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1152.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1163.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1174.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1186.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1198.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1209.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1220.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1232.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1242.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1253.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1263.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1274.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1285.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1296.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1308.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1320.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1331.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1343.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1355.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1366.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1377.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1389.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1400.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1412.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1424.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1435.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1446.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1457.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1468.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1480.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1492.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1504.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1515.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1527.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1539.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1550.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1561.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1573.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1585.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1597.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1609.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1621.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1633.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1645.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1657.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1669.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1682.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1694.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1706.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1717.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1728.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1738.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1750.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1762.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1774.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1785.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1797.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1808.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1818.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1829.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1840.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1851.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1863.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1874.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1885.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1895.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1904.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1914.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1925.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1937.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1948.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1960.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1972.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1984.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   1995.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2007.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2018.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2029.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2041.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2052.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2062.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2073.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2083.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2094.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2106.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2116.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2126.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2136.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2148.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2159.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2170.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2180.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2191.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2202.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2213.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2223.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2235.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2246.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2257.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2269.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2281.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2292.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2302.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2313.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2325.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2336.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2347.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2359.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2371.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2382.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2394.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2406.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2417.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2428.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2440.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2450.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2461.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2473.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2485.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2497.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2509.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2520.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2532.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2545.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2555.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2566.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2578.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2590.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2602.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2613.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2624.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2635.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2647.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2658.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2669.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2680.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2692.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2703.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2714.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2725.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2737.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2747.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2757.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2768.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2779.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2791.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2802.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2813.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2824.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2836.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2847.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2858.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2869.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2881.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2893.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2903.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2914.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2924.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2936.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2947.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2959.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2970.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2982.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   2993.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3003.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3014.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3026.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3038.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3049.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   3058.0 / 3068.1 KB  @  10.8 KB/s
+  kernel   done ? 3068.1 KB in 285.0 s (10.8 KB/s)
+  dtb      done ? 1.5 KB in 0.1 s (11.1 KB/s)
+  verify dtb: 0 / 64 words bulk-dropped, 0 recovered
+  verify-all dtb: 379 / 379 words OK
+  verify kernel: 0 / 1024 words bulk-dropped, 0 recovered
+  verify-all kernel    19.0 / 3068.1 KB  @  18.5 KB/s  (0 bad so far)
+  verify-all kernel    38.0 / 3068.1 KB  @  18.3 KB/s  (0 bad so far)
+  verify-all kernel    57.0 / 3068.1 KB  @  18.4 KB/s  (0 bad so far)
+  verify-all kernel    76.0 / 3068.1 KB  @  18.3 KB/s  (0 bad so far)
+  verify-all kernel    94.0 / 3068.1 KB  @  18.1 KB/s  (0 bad so far)
+  verify-all kernel   111.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel   127.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   144.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   162.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   182.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel   198.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   218.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel   235.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   251.0 / 3068.1 KB  @  17.4 KB/s  (0 bad so far)
+  verify-all kernel   267.0 / 3068.1 KB  @  17.3 KB/s  (0 bad so far)
+  verify-all kernel   285.0 / 3068.1 KB  @  17.3 KB/s  (0 bad so far)
+  verify-all kernel   304.0 / 3068.1 KB  @  17.4 KB/s  (0 bad so far)
+  verify-all kernel   323.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   342.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   361.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   380.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   396.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   415.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   433.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   452.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   469.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   487.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   506.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   525.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   541.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   560.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   577.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   594.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   613.0 / 3068.1 KB  @  17.5 KB/s  (0 bad so far)
+  verify-all kernel   632.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   650.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   668.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   686.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   704.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   723.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   741.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   759.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   777.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   795.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   814.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   833.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   851.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   869.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   887.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   906.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   923.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   942.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   961.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   980.0 / 3068.1 KB  @  17.6 KB/s  (0 bad so far)
+  verify-all kernel   999.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1018.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1038.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1058.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1076.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1095.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1113.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1132.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1151.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1168.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1185.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1203.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1221.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1240.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1258.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1277.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1296.0 / 3068.1 KB  @  17.7 KB/s  (0 bad so far)
+  verify-all kernel  1316.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1335.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1353.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1372.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1391.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1410.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1428.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1448.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1467.0 / 3068.1 KB  @  17.8 KB/s  (0 bad so far)
+  verify-all kernel  1486.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1505.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1524.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1543.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1561.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1579.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1597.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1616.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1634.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1653.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1672.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1690.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1709.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1728.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1747.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1767.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1786.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1805.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1824.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1843.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1862.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1880.0 / 3068.1 KB  @  17.9 KB/s  (0 bad so far)
+  verify-all kernel  1899.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1918.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1937.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1956.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1977.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  1998.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2016.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2036.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2055.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2073.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2092.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2110.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2129.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2147.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2165.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2184.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2203.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2222.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2241.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2260.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2277.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2294.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2311.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2326.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2343.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2361.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2380.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2399.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2417.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2435.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2454.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2473.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2493.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2512.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2530.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2549.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2569.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2588.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2607.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2625.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2644.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2663.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2682.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2701.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2719.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2736.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2755.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2773.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2790.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2809.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2828.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2847.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2865.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2884.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2903.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2922.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2941.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2959.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2977.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  2997.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  3014.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  3030.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  3049.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel  3068.0 / 3068.1 KB  @  18.0 KB/s  (0 bad so far)
+  verify-all kernel: 785432 / 785432 words OK
+
+Writing boot-trigger record...
+
+Trigger written. Boot stub will JR to 0x80000000.
+== boot-linux-master: opening kernel console ==
+  kernel printk and your keystrokes are now bridged.
+  press Ctrl-C to detach.
+nios2-terminal: connected to hardware target using JTAG UART on cable
+nios2-terminal: "USB-Blaster [3-4.1]", device 1, instance 0
+nios2-terminal: (Use the IDE stop button or Ctrl-C to terminate)
+
+MT             @    JK`ð/ SD@0o À|@1“†ö|@2B$|@3S ð|ZO    P   Xï¾­ÞL[    0.000000] Linux version 6.18.22 (nixbld@localhost) (riscv64-unknown-linux-gnu-gcc (GCC) 14.3.0, GNU ld (GNU Binutils) 2.44) #1-riski5 Thu Jan  1 00:00:00 UTC 1970
+[    0.000000] Machine model: riski5-de2
+[    0.000000] earlycon: juart0 at MMIO 0x10000000 (options '')
+[    0.000000] printk: legacy bootconsole [juart0] enabled
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] printk: debug: skip boot console de-registration.
+[    0.000000] printk: debug: ignoring loglevel setting.
+[    0.000000] OF: reserved mem: Reserved memory: No reserved-memory node in the DT
+[    0.000000] Zone ranges:
+[    0.000000]   Normal   [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000080000000-0x00000000807fffff]
+[    0.000000] Falling back to deprecated "riscv,isa"
+[    0.000000] riscv: base ISA extensions aim
+[    0.000000] riscv: ELF capabilities aim
+[    0.000000] Ticket spinlock: enabled
+[    0.000000] pcpu-alloc: s0 r0 d32768 u32768 alloc=1*32768
+[    0.000000] pcpu-alloc: [0] 0 
+[    0.000000] Kernel command line: console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug initcall_blacklist=deferred_probe_initcall,init_pipe_fs console=ttyJ0 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init
+[    0.000000] blacklisting initcall deferred_probe_initcall
+[    0.000000] blacklisting initcall init_pipe_fs
+[    0.000000] printk: log buffer data + meta data: 65536 + 204800 = 270336 bytes
+[    0.000000] Dentry cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    0.000000] Built 1 zonelists, mobility grouping off.  Total pages: 2048
+[    0.000000] mem auto-init: stack:all(zero), heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-1, MinObjects=0, CPUs=1, Nodes=1
+[    0.000000] NR_IRQS: 64, nr_irqs: 64, preallocated irqs: 0
+[    0.000000] riscv-intc: 32 local interrupts mapped
+[    0.000000] clint: clint@2000000: timer running at 40000000 Hz
+[    0.000000] clocksource: clint_clocksource: mask: 0xffffffffffffffff max_cycles: 0x939a85c40, max_idle_ns: 440795202120 ns
+[    0.000808] sched_clock: 64 bits at 40MHz, resolution 25ns, wraps every 4398046511100ns
+[    0.271468] Calibrating delay loop (skipped), value calculated using timer frequency.. 80.00 BogoMIPS (lpj=160000)
+[    0.440158] pid_max: default: 4096 minimum: 301
+[    0.585428] Mount-cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    0.671077] Mountpoint-cache hash table entries: 1024 (order: 0, 4096 bytes, linear)
+[    1.334449] DBG64: kthreadd_done complete
+[    1.370662] DBG64: kernel_init_freeable entered
+[    1.515668] DBG64: pre smp_prepare_cpus
+[    1.551657] DBG64: pre workqueue_init
+[    1.734387] DBG64-WQ: pre thresh_init
+[    1.792960] DBG64-KD: kthreadd entry, before for(;;)
+[    1.957695] DBG64-KD: top of loop, list_empty=0, set TASK_INTERRUPTIBLE
+[    2.174967] DBG64-KD: woke up, set TASK_RUNNING
+[    2.212621] DBG64-KD: pre create_kthread
+[    2.484606] DBG64-KD: post create_kthread
+[    2.520683] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    2.695973] DBG64-WQ: post thresh_init
+[    2.731739] DBG64-WQ: pre init_rescuer WARN loop
+[    2.852775] DBG64-WQ: pre init_rescuer WARN loop
+[    2.890508] DBG64-WQ: pre init_rescuer WARN loop
+[    3.075773] DBG64-WQ: pre init_rescuer WARN loop
+[    3.113552] DBG64-WQ: pre init_rescuer WARN loop
+[    3.296223] DBG64-WQ: pre init_rescuer WARN loop
+[    3.333972] DBG64-WQ: pre init_rescuer WARN loop
+[    3.517937] DBG64-WQ: pre init_rescuer WARN loop
+[    3.555687] DBG64-WQ: pre init_rescuer WARN loop
+[    3.739755] DBG64-WQ: pre init_rescuer WARN loop
+[    3.777512] DBG64-WQ: pre init_rescuer WARN loop
+[    3.960815] DBG64-WQ: pre init_rescuer WARN loop
+[    4.046098] DBG64-KD: woke up, set TASK_RUNNING
+[    4.181877] DBG64-KD: pre create_kthread
+[    4.301162] DBG64-KD: post create_kthread
+[    4.400380] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    4.674241] DBG64-CW: enter create_worker pool_id=0 flags=0x5
+[    4.842610] DBG64-CW: post wake_up_process worker_id=0
+[    4.871119] DBG64-CW: enter create_worker pool_id=1 flags=0x5
+[    5.072983] DBG64-CW: post wake_up_process worker_id=0
+[    5.101500] DBG64-CW: enter create_worker pool_id=2 flags=0x0
+[    5.373358] DBG64-KD: woke up, set TASK_RUNNING
+[    5.410985] DBG64-KD: pre create_kthread
+[    5.613872] DBG64-KD: post create_kthread
+[    5.650026] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    5.802658] DBG64-CW: post kthread_create+bind worker_id=0
+[    5.849567] DBG64-CW: post wake_up_process worker_id=0
+[    5.985896] DBG64-CW: enter create_worker pool_id=3 flags=0x0
+[    6.262776] DBG64-KD: woke up, set TASK_RUNNING
+[    6.300438] DBG64-KD: pre create_kthread
+[    6.517006] DBG64-KD: post create_kthread
+[    6.553087] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    6.720118] DBG64-CW: post kthread_create+bind worker_id=0
+[    6.762205] DBG64-CW: post wake_up_process worker_id=0
+[    6.890092] DBG64-WQ: pre unbound_pool create_worker
+[    6.928151] DBG64-CW: enter create_worker pool_id=4 flags=0x4
+[    7.170182] DBG64-KD: woke up, set TASK_RUNNING
+[    7.207812] DBG64-KD: pre create_kthread
+[    7.433771] DBG64-KD: post create_kthread
+[    7.469876] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    7.634482] DBG64-CW: post kthread_create+bind worker_id=0
+[    7.676441] DBG64-CW: post wake_up_process worker_id=0
+[    7.804819] DBG64-WQ: pre wq_online=true
+[    7.840799] DBG64-WQ: pre wq_watchdog_init
+[    8.031196] DBG64-WQ: post wq_watchdog_init
+[    8.067986] DBG64: post workqueue_init
+[    8.254495] DBG64: pre init_mm_internals
+[    8.348954] DBG64-KD: woke up, set TASK_RUNNING
+[    8.476356] DBG64-KD: pre create_kthread
+[    8.597433] DBG64-KD: post create_kthread
+[    8.696288] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[    8.996210] DBG64: post init_mm_internals
+[    9.032354] DBG64: pre do_pre_smp_initcalls
+[    9.139667] entering initcall level: early
+I[    9.186122] DBG64-IC: pre fn=spawn_ksoftirqd+0x0/0x98
+[    9.362700] calling  spawn_ksoftirqd+0x0/0x98 @ 1
+[    9.475340] DBG64-KD: woke up, set TASK_RUNNING
+[    9.584294] DBG64-KD: pre create_kthread
+[    9.704985] DBG64-KD: post create_kthread
+[    9.803137] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[   10.141619] initcall spawn_ksoftirqd+0x0/0x98 returned 0 after 140000 usecs
+[   10.344749] DBG64-IC: post fn=spawn_ksoftirqd+0x0/0x98 ret=0
+eeI[   10.570540] DBG64-IC: pre fn=init_signal_sysctls+0x0/0x70
+[   10.620617] calling  init_signal_sysctls+0x0/0x70 @ 1
+[   10.810946] initcall init_signal_sysctls+0x0/0x70 returned 0 after 8000 usecs
+[   11.019613] DBG64-IC: post fn=init_signal_sysctls+0x0/0x70 ret=0
+eI[   11.248000] DBG64-IC: pre fn=init_umh_sysctls+0x0/0x50
+[   11.297294] calling  init_umh_sysctls+0x0/0x50 @ 1
+[   11.504907] initcall init_umh_sysctls+0x0/0x50 returned 0 after 8000 usecs
+[   11.703767] DBG64-IC: post fn=init_umh_sysctls+0x0/0x50 ret=0
+eI[   11.932866] DBG64-IC: pre fn=kthreads_init+0x0/0x58
+[   11.980257] calling  kthreads_init+0x0/0x58 @ 1
+[   12.163777] initcall kthreads_init+0x0/0x58 returned 0 after 0 usecs
+[   12.378571] DBG64-IC: post fn=kthreads_init+0x0/0x58 ret=0
+eI[   12.438228] DBG64-IC: pre fn=migration_init+0x0/0x48
+[   12.608167] calling  migration_init+0x0/0x48 @ 1
+[   12.658503] initcall migration_init+0x0/0x48 returned 0 after 0 usecs
+[   12.841949] DBG64-IC: post fn=migration_init+0x0/0x48 ret=0
+eII[   13.062671] DBG64-IC: pre fn=printk_set_kthreads_ready+0x0/0x5c
+[   13.286387] calling  printk_set_kthreads_ready+0x0/0x5c @ 1
+[   13.340998] initcall printk_set_kthreads_ready+0x0/0x5c returned 0 after 0 usecs
+[   13.520038] DBG64-IC: post fn=printk_set_kthreads_ready+0x0/0x5c ret=0
+eI[   13.757150] DBG64-IC: pre fn=irq_work_init_threads+0x0/0x24
+[   13.810801] calling  irq_work_init_threads+0x0/0x24 @ 1
+[   13.969389] initcall irq_work_init_threads+0x0/0x24 returned 0 after 0 usecs
+[   14.192748] DBG64-IC: post fn=irq_work_init_threads+0x0/0x24 ret=0
+eI[   14.422363] DBG64-IC: pre fn=init_fs_inode_sysctls+0x0/0x50
+[   14.472976] calling  init_fs_inode_sysctls+0x0/0x50 @ 1
+[   14.672071] initcall init_fs_inode_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   14.886241] DBG64-IC: post fn=init_fs_inode_sysctls+0x0/0x50 ret=0
+eI[   15.115828] DBG64-IC: pre fn=init_fs_locks_sysctls+0x0/0x50
+[   15.167467] calling  init_fs_locks_sysctls+0x0/0x50 @ 1
+[   15.343862] initcall init_fs_locks_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   15.561209] DBG64-IC: post fn=init_fs_locks_sysctls+0x0/0x50 ret=0
+eI[   15.791373] DBG64-IC: pre fn=init_fs_sysctls+0x0/0x50
+[   15.841529] calling  init_fs_sysctls+0x0/0x50 @ 1
+[   16.038097] initcall init_fs_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   16.244288] DBG64-IC: post fn=init_fs_sysctls+0x0/0x50 ret=0
+ee[   16.461447] DBG64: pre lockup_detector_init
+[   16.498312] DBG64: pre smp_init
+[   16.687134] DBG64: pre sched_init_smp
+[   16.879085] Memory: 4708K/8192K available (1828K kernel code, 590K rwdata, 345K rodata, 299K init, 93K bss, 3284K reserved, 0K cma-reserved)
+[   16.975301] DBG64-CW: enter create_worker pool_id=2 flags=0x2
+[   17.211179] DBG64-KD: woke up, set TASK_RUNNING
+[   17.248930] DBG64-KD: pre create_kthread
+[   17.478127] DBG64-KD: post create_kthread
+[   17.514311] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[   19.808154] DBG64-CW: post kthread_create+bind worker_id=1
+[   19.854190] DBG64-CW: post wake_up_process worker_id=1
+[   19.994929] DBG64: pre do_basic_setup
+[   20.030290] DBG64-DR: pre bdi_init
+[   20.179447] DBG64-DR: post bdi_init
+[   20.214643] DBG64-DR: pre devtmpfs_init
+[   20.529834] DBG64-KD: woke up, set TASK_RUNNING
+[   20.567578] DBG64-KD: pre create_kthread
+[   20.808371] DBG64-KD: post create_kthread
+[   20.844540] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[   21.020640] devtmpfs: DBG64-DT: pre ksys_unshare
+[   21.086204] devtmpfs: DBG64-DT: post ksys_unshare err=0
+[   21.182379] devtmpfs: DBG64-DT: pre init_mount /
+[   21.259401] devtmpfs: DBG64-DT: post init_mount / err=0
+[   21.402713] devtmpfs: DBG64-DT: pre init_chdir
+[   21.457811] devtmpfs: DBG64-DT: post init_chdir
+[   21.622341] devtmpfs: DBG64-DT: pre init_chroot
+[   21.677371] devtmpfs: DBG64-DT: post init_chroot
+[   21.871440] devtmpfs: initialized
+[   21.906036] DBG64-DR: post devtmpfs_init
+[   22.062903] DBG64-DR: pre devices_init
+[   22.125707] DBG64-DR: post devices_init
+[   22.285711] DBG64-DR: pre buses_init
+[   22.329316] DBG64-DR: post buses_init
+[   22.507928] DBG64-DR: pre classes_init
+[   22.544971] DBG64-DR: post classes_init
+[   22.730052] DBG64-DR: pre firmware_init
+[   22.767245] DBG64-DR: post firmware_init
+[   22.951244] DBG64-DR: pre hypervisor_init
+[   22.987459] DBG64-DR: post hypervisor_init
+[   23.175425] DBG64-DR: pre faux_bus_init
+[   23.296580] DBG64-DR: post faux_bus_init
+[   23.396054] DBG64-DR: pre of_core_init
+[   23.442665] DBG64-DR: post of_core_init
+[   23.617296] DBG64-DR: pre platform_bus_init
+[   23.700514] DBG64-DR: post platform_bus_init
+[   23.841375] DBG64-DR: pre auxiliary_bus_init
+[   23.878266] DBG64-DR: post auxiliary_bus_init
+[   24.062562] DBG64-DR: pre memory_dev_init
+[   24.098767] DBG64-DR: post memory_dev_init
+[   24.283719] DBG64-DR: pre node_dev_init
+[   24.319742] DBG64-DR: post node_dev_init
+[   24.503784] DBG64-DR: pre cpu_dev_init
+[   24.664413] DBG64-DR: post cpu_dev_init
+[   24.726819] DBG64-DR: pre container_dev_init
+[   24.811003] DBG64-DR: post container_dev_init
+[   25.210880] entering initcall level: pure
+[   25.420601] entering initcall level: core
+I[   25.467234] DBG64-IC: pre fn=ksysfs_init+0x0/0x50
+[   25.595091] calling  ksysfs_init+0x0/0x50 @ 1
+[   25.651479] initcall ksysfs_init+0x0/0x50 returned 0 after 0 usecs
+[   25.820618] DBG64-IC: post fn=ksysfs_init+0x0/0x50 ret=0
+eI[   25.888415] DBG64-IC: pre fn=init_jiffies_clocksource+0x0/0x40
+[   26.053160] calling  init_jiffies_clocksource+0x0/0x40 @ 1
+[   26.115294] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 7645041785100000 ns
+[   26.293348] initcall init_jiffies_clocksource+0x0/0x40 returned 0 after 16000 usecs
+[   26.511405] DBG64-IC: post fn=init_jiffies_clocksource+0x0/0x40 ret=0
+eI[   26.742162] DBG64-IC: pre fn=posixtimer_init+0x0/0x104
+[   26.799908] calling  posixtimer_init+0x0/0x104 @ 1
+[   26.983178] posixtimers hash table entries: 512 (order: 0, 2048 bytes, linear)
+[   27.176749] initcall posixtimer_init+0x0/0x104 returned 0 after 20000 usecs
+[   27.395637] DBG64-IC: post fn=posixtimer_init+0x0/0x104 ret=0
+eI[   27.627605] DBG64-IC: pre fn=futex_init+0x0/0xc0
+[   27.683525] calling  futex_init+0x0/0xc0 @ 1
+[   27.852070] futex hash table entries: 16 (256 bytes on 1 NUMA nodes, total 0 KiB, linear).
+[   28.063482] initcall futex_init+0x0/0xc0 returned 0 after 16000 usecs
+[   28.280444] DBG64-IC: post fn=futex_init+0x0/0xc0 ret=0
+eI[   28.350823] DBG64-IC: pre fn=filelock_init+0x0/0x138
+[   28.509189] calling  filelock_init+0x0/0x138 @ 1
+[   28.589121] initcall filelock_init+0x0/0x138 returned 0 after 8000 usecs
+[   28.733961] DBG64-IC: post fn=filelock_init+0x0/0x138 ret=0
+eII[   28.951953] DBG64-IC: pre fn=init_script_binfmt+0x0/0x3c
+[   29.008174] calling  init_script_binfmt+0x0/0x3c @ 1
+[   29.184181] initcall init_script_binfmt+0x0/0x3c returned 0 after 0 usecs
+[   29.400291] DBG64-IC: post fn=init_script_binfmt+0x0/0x3c ret=0
+eI[   29.633414] DBG64-IC: pre fn=init_elf_fdpic_binfmt+0x0/0x3c
+[   29.690777] calling  init_elf_fdpic_binfmt+0x0/0x3c @ 1
+[   29.851869] initcall init_elf_fdpic_binfmt+0x0/0x3c returned 0 after 0 usecs
+[   30.077637] DBG64-IC: post fn=init_elf_fdpic_binfmt+0x0/0x3c ret=0
+eI[   30.308986] DBG64-IC: pre fn=init_flat_binfmt+0x0/0x3c
+[   30.365061] calling  init_flat_binfmt+0x0/0x3c @ 1
+[   30.526801] initcall init_flat_binfmt+0x0/0x3c returned 0 after 0 usecs
+[   30.740936] DBG64-IC: post fn=init_flat_binfmt+0x0/0x3c ret=0
+eI[   30.972065] DBG64-IC: pre fn=free_raw_capacity+0x0/0x40
+[   31.028790] calling  free_raw_capacity+0x0/0x40 @ 1
+[   31.190513] initcall free_raw_capacity+0x0/0x40 returned 0 after 0 usecs
+[   31.406286] DBG64-IC: post fn=free_raw_capacity+0x0/0x40 ret=0
+e[   31.832238] entering initcall level: postcore
+I[   31.887324] DBG64-IC: pre fn=init_overflow_sysctl+0x0/0x50
+[   32.054791] calling  init_overflow_sysctl+0x0/0x50 @ 1
+[   32.122782] initcall init_overflow_sysctl+0x0/0x50 returned 0 after 4000 usecs
+[   32.282109] DBG64-IC: post fn=init_overflow_sysctl+0x0/0x50 ret=0
+eI[   32.521931] DBG64-IC: pre fn=bdi_class_init+0x0/0x2c
+[   32.579398] calling  bdi_class_init+0x0/0x2c @ 1
+[   32.763614] initcall bdi_class_init+0x0/0x2c returned 0 after 12000 usecs
+[   32.945551] DBG64-IC: post fn=bdi_class_init+0x0/0x2c ret=0
+eII[   33.162361] DBG64-IC: pre fn=mm_sysfs_init+0x0/0x54
+[   33.219866] calling  mm_sysfs_init+0x0/0x54 @ 1
+[   33.402554] initcall mm_sysfs_init+0x0/0x54 returned 0 after 0 usecs
+[   33.608997] DBG64-IC: post fn=mm_sysfs_init+0x0/0x54 ret=0
+eI[   33.691022] DBG64-IC: pre fn=init_per_zone_wmark_min+0x0/0x3c
+[   33.839893] calling  init_per_zone_wmark_min+0x0/0x3c @ 1
+[   33.911596] initcall init_per_zone_wmark_min+0x0/0x3c returned 0 after 0 usecs
+[   34.072759] DBG64-IC: post fn=init_per_zone_wmark_min+0x0/0x3c ret=0
+eI[   34.307466] DBG64-IC: pre fn=tty_class_init+0x0/0x2c
+[   34.364344] calling  tty_class_init+0x0/0x2c @ 1
+[   34.556247] initcall tty_class_init+0x0/0x2c returned 0 after 12000 usecs
+[   34.737018] DBG64-IC: post fn=tty_class_init+0x0/0x2c ret=0
+eII[   34.953905] DBG64-IC: pre fn=devlink_class_init+0x0/0x60
+[   35.012360] calling  devlink_class_init+0x0/0x60 @ 1
+[   35.229529] initcall devlink_class_init+0x0/0x60 returned 0 after 12000 usecs
+[   35.400730] DBG64-IC: post fn=devlink_class_init+0x0/0x60 ret=0
+eI[   35.640599] DBG64-IC: pre fn=software_node_init+0x0/0x5c
+[   35.699794] calling  software_node_init+0x0/0x5c @ 1
+[   35.858895] initcall software_node_init+0x0/0x5c returned 0 after 4000 usecs
+[   36.065446] DBG64-IC: post fn=software_node_init+0x0/0x5c ret=0
+eI[   36.307936] DBG64-IC: pre fn=regmap_initcall+0x0/0x24
+[   36.366746] calling  regmap_initcall+0x0/0x24 @ 1
+[   36.514543] initcall regmap_initcall+0x0/0x24 returned 0 after 0 usecs
+[   36.729257] DBG64-IC: post fn=regmap_initcall+0x0/0x24 ret=0
+ee[   37.152518] entering initcall level: arch
+I[   37.205610] DBG64-IC: pre fn=riscv_cpuinfo_init+0x0/0x84
+[   37.374910] calling  riscv_cpuinfo_init+0x0/0x84 @ 1
+[   37.429283] initcall riscv_cpuinfo_init+0x0/0x84 returned 0 after 0 usecs
+[   37.599321] DBG64-IC: post fn=riscv_cpuinfo_init+0x0/0x84 ret=0
+eI[   37.833142] DBG64-IC: pre fn=reserve_memblock_reserved_regions+0x0/0x218
+[   38.045903] calling  reserve_memblock_reserved_regions+0x0/0x218 @ 1
+[   38.335775] initcall reserve_memblock_reserved_regions+0x0/0x218 returned 0 after 24000 usecs
+[   38.492098] DBG64-IC: post fn=reserve_memblock_reserved_regions+0x0/0x218 ret=0
+eI[   38.721668] DBG64-IC: pre fn=check_unaligned_access_all_cpus+0x0/0x148
+[   38.929427] calling  check_unaligned_access_all_cpus+0x0/0x148 @ 1
+[   39.158960] initcall check_unaligned_access_all_cpus+0x0/0x148 returned 0 after 0 usecs
+[   39.373448] DBG64-IC: post fn=check_unaligned_access_all_cpus+0x0/0x148 ret=0
+eI[   39.613370] DBG64-IC: pre fn=serial_base_init+0x0/0x80
+[   39.671449] calling  serial_base_init+0x0/0x80 @ 1
+[   39.955119] initcall serial_base_init+0x0/0x80 returned 0 after 48000 usecs
+[   40.134050] DBG64-IC: post fn=serial_base_init+0x0/0x80 ret=0
+eI[   40.365234] DBG64-IC: pre fn=lock_and_set_unaligned_access_static_branch+0x0/0x2c
+[   40.588841] calling  lock_and_set_unaligned_access_static_branch+0x0/0x2c @ 1
+[   40.811060] initcall lock_and_set_unaligned_access_static_branch+0x0/0x2c returned 0 after 0 usecs
+[   41.034659] DBG64-IC: post fn=lock_and_set_unaligned_access_static_branch+0x0/0x2c ret=0
+eI[   41.276496] DBG64-IC: pre fn=of_platform_default_populate_init+0x0/0xd4
+[   41.472233] calling  of_platform_default_populate_init+0x0/0xd4 @ 1
+[   43.346576] initcall of_platform_default_populate_init+0x0/0xd4 returned 0 after 564000 usecs
+[   43.519227] DBG64-IC: post fn=of_platform_default_populate_init+0x0/0xd4 ret=0
+e[   43.944173] entering initcall level: subsys
+I[   43.998185] DBG64-IC: pre fn=init_fork_sysctl+0x0/0x70
+[   44.163025] calling  init_fork_sysctl+0x0/0x70 @ 1
+[   44.227763] initcall init_fork_sysctl+0x0/0x70 returned 0 after 4000 usecs
+[   44.387741] DBG64-IC: post fn=init_fork_sysctl+0x0/0x70 ret=0
+eI[   44.620149] DBG64-IC: pre fn=uid_cache_init+0x0/0xec
+[   44.674067] calling  uid_cache_init+0x0/0xec @ 1
+[   44.847807] initcall uid_cache_init+0x0/0xec returned 0 after 0 usecs
+[   45.055217] DBG64-IC: post fn=uid_cache_init+0x0/0xec ret=0
+eII[   45.273149] DBG64-IC: pre fn=pid_namespace_sysctl_init+0x0/0x38
+[   45.498362] calling  pid_namespace_sysctl_init+0x0/0x38 @ 1
+[   45.589890] initcall pid_namespace_sysctl_init+0x0/0x38 returned 0 after 12000 usecs
+[   45.732436] DBG64-IC: post fn=pid_namespace_sysctl_init+0x0/0x38 ret=0
+eI[   45.962166] DBG64-IC: pre fn=user_namespace_sysctl_init+0x0/0xe4
+[   46.173088] calling  user_namespace_sysctl_init+0x0/0xe4 @ 1
+[   46.320835] initcall user_namespace_sysctl_init+0x0/0xe4 returned 0 after 28000 usecs
+[   46.406942] DBG64-IC: post fn=user_namespace_sysctl_init+0x0/0xe4 ret=0
+eI[   46.637696] DBG64-IC: pre fn=init_rtmutex_sysctl+0x0/0x50
+[   46.694902] calling  init_rtmutex_sysctl+0x0/0x50 @ 1
+[   46.864041] initcall init_rtmutex_sysctl+0x0/0x50 returned 0 after 4000 usecs
+[   47.079492] DBG64-IC: post fn=init_rtmutex_sysctl+0x0/0x50 ret=0
+eI[   47.320156] DBG64-IC: pre fn=init_vm_util_sysctls+0x0/0x50
+[   47.379496] calling  init_vm_util_sysctls+0x0/0x50 @ 1
+[   47.553888] initcall init_vm_util_sysctls+0x0/0x50 returned 0 after 8000 usecs
+[   47.754782] DBG64-IC: post fn=init_vm_util_sysctls+0x0/0x50 ret=0
+eI[   47.994381] DBG64-IC: pre fn=init_user_buckets+0x0/0x58
+[   48.052746] calling  init_user_buckets+0x0/0x58 @ 1
+[   48.202468] initcall init_user_buckets+0x0/0x58 returned 0 after 0 usecs
+[   48.416372] DBG64-IC: post fn=init_user_buckets+0x0/0x58 ret=0
+eI[   48.656449] DBG64-IC: pre fn=default_bdi_init+0x0/0x58
+[   48.714747] calling  default_bdi_init+0x0/0x58 @ 1
+[   48.938972] DBG64-KD: woke up, set TASK_RUNNING
+[   48.982358] DBG64-KD: pre create_kthread
+[   49.178439] DBG64-KD: post create_kthread
+[   49.220180] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[   49.477546] initcall default_bdi_init+0x0/0x58 returned 0 after 120000 usecs
+[   49.733023] DBG64-IC: post fn=default_bdi_init+0x0/0x58 ret=0
+eI[   49.974661] DBG64-IC: pre fn=percpu_enable_async+0x0/0x38
+[   50.034524] calling  percpu_enable_async+0x0/0x38 @ 1
+[   50.183730] initcall percpu_enable_async+0x0/0x38 returned 0 after 0 usecs
+[   50.407576] DBG64-IC: post fn=percpu_enable_async+0x0/0x38 ret=0
+eI[   50.648219] DBG64-IC: pre fn=init_admin_reserve+0x0/0x58
+[   50.708169] calling  init_admin_reserve+0x0/0x58 @ 1
+[   50.856018] initcall init_admin_reserve+0x0/0x58 returned 0 after 0 usecs
+[   51.069676] DBG64-IC: post fn=init_admin_reserve+0x0/0x58 ret=0
+eI[   51.310902] DBG64-IC: pre fn=init_user_reserve+0x0/0x58
+[   51.370719] calling  init_user_reserve+0x0/0x58 @ 1
+[   51.520771] initcall init_user_reserve+0x0/0x58 returned 0 after 0 usecs
+[   51.734960] DBG64-IC: post fn=init_user_reserve+0x0/0x58 ret=0
+eI[   51.975117] DBG64-IC: pre fn=misc_init+0x0/0xf0
+[   52.031574] calling  misc_init+0x0/0xf0 @ 1
+[   52.237579] initcall misc_init+0x0/0xf0 returned 0 after 20000 usecs
+[   52.399243] DBG64-IC: post fn=misc_init+0x0/0xf0 ret=0
+eI[   52.469083] DBG64-IC: pre fn=register_cpu_capacity_sysctl+0x0/0x64
+[   52.629697] calling  register_cpu_capacity_sysctl+0x0/0x64 @ 1
+[   52.853940] initcall register_cpu_capacity_sysctl+0x0/0x64 returned 0 after 0 usecs
+[   53.077485] DBG64-IC: post fn=register_cpu_capacity_sysctl+0x0/0x64 ret=0
+eI[   53.308379] DBG64-IC: pre fn=vsprintf_init_hashval+0x0/0x34
+[   53.362988] calling  vsprintf_init_hashval+0x0/0x34 @ 1
+[   53.527738] initcall vsprintf_init_hashval+0x0/0x34 returned 0 after 0 usecs
+[   53.752094] DBG64-IC: post fn=vsprintf_init_hashval+0x0/0x34 ret=0
+e[   54.179526] entering initcall level: fs
+I[   54.233019] DBG64-IC: pre fn=iomem_init_inode+0x0/0xc8
+[   54.402111] calling  iomem_init_inode+0x0/0xc8 @ 1
+[   54.536662] initcall iomem_init_inode+0x0/0xc8 returned 0 after 24000 usecs
+[   54.627634] DBG64-IC: post fn=iomem_init_inode+0x0/0xc8 ret=0
+eI[   54.858468] DBG64-IC: pre fn=init_fs_stat_sysctls+0x0/0x50
+[   54.913903] calling  init_fs_stat_sysctls+0x0/0x50 @ 1
+[   55.089462] initcall init_fs_stat_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   55.302091] DBG64-IC: post fn=init_fs_stat_sysctls+0x0/0x50 ret=0
+eI[   55.532470] DBG64-IC: pre fn=init_fs_exec_sysctls+0x0/0x50
+[   55.588120] calling  init_fs_exec_sysctls+0x0/0x50 @ 1
+[   55.761287] initcall init_fs_exec_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   55.975385] DBG64-IC: post fn=init_fs_exec_sysctls+0x0/0x50 ret=0
+e[   56.205069] initcall init_pipe_fs blacklisted
+I[   56.260169] DBG64-IC: pre fn=init_fs_namei_sysctls+0x0/0x50
+[   56.422384] calling  init_fs_namei_sysctls+0x0/0x50 @ 1
+[   56.501476] initcall init_fs_namei_sysctls+0x0/0x50 returned 0 after 8000 usecs
+[   56.647256] DBG64-IC: post fn=init_fs_namei_sysctls+0x0/0x50 ret=0
+eI[   56.878491] DBG64-IC: pre fn=init_fs_dcache_sysctls+0x0/0x70
+[   57.087222] calling  init_fs_dcache_sysctls+0x0/0x70 @ 1
+[   57.176306] initcall init_fs_dcache_sysctls+0x0/0x70 returned 0 after 12000 usecs
+[   57.321237] DBG64-IC: post fn=init_fs_dcache_sysctls+0x0/0x70 ret=0
+eI[   57.552074] DBG64-IC: pre fn=init_fs_namespace_sysctls+0x0/0x50
+[   57.760920] calling  init_fs_namespace_sysctls+0x0/0x50 @ 1
+[   57.829502] initcall init_fs_namespace_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   57.995082] DBG64-IC: post fn=init_fs_namespace_sysctls+0x0/0x50 ret=0
+eI[   58.225101] DBG64-IC: pre fn=anon_inode_init+0x0/0x9c
+[   58.280450] calling  anon_inode_init+0x0/0x9c @ 1
+[   58.511199] initcall anon_inode_init+0x0/0x9c returned 0 after 24000 usecs
+[   58.758510] DBG64-IC: post fn=anon_inode_init+0x0/0x9c ret=0
+eeI[   58.989047] DBG64-IC: pre fn=proc_locks_init+0x0/0x5c
+[   59.044550] calling  proc_locks_init+0x0/0x5c @ 1
+[   59.219936] initcall proc_locks_init+0x0/0x5c returned 0 after 4000 usecs
+[   59.424704] DBG64-IC: post fn=proc_locks_init+0x0/0x5c ret=0
+eeI[   59.654180] DBG64-IC: pre fn=init_vm_drop_caches_sysctls+0x0/0x50
+[   59.866027] calling  init_vm_drop_caches_sysctls+0x0/0x50 @ 1
+[   60.099757] initcall init_vm_drop_caches_sysctls+0x0/0x50 returned 0 after 4000 usecs
+[   60.313292] DBG64-IC: post fn=init_vm_drop_caches_sysctls+0x0/0x50 ret=0
+eI[   60.554547] DBG64-IC: pre fn=proc_nommu_init+0x0/0x5c
+[   60.610320] calling  proc_nommu_init+0x0/0x5c @ 1
+[   60.770509] initcall proc_nommu_init+0x0/0x5c returned 0 after 4000 usecs
+[   60.975980] DBG64-IC: post fn=proc_nommu_init+0x0/0x5c ret=0
+eeI[   61.204076] DBG64-IC: pre fn=proc_cmdline_init+0x0/0x7c
+[   61.260483] calling  proc_cmdline_init+0x0/0x7c @ 1
+[   61.455701] initcall proc_cmdline_init+0x0/0x7c returned 0 after 4000 usecs
+[   61.661203] DBG64-IC: post fn=proc_cmdline_init+0x0/0x7c ret=0
+eI[   61.892123] DBG64-IC: pre fn=proc_consoles_init+0x0/0x5c
+[   61.948535] calling  proc_consoles_init+0x0/0x5c @ 1
+[   62.120216] initcall proc_consoles_init+0x0/0x5c returned 0 after 4000 usecs
+[   62.326080] DBG64-IC: post fn=proc_consoles_init+0x0/0x5c ret=0
+eI[   62.557340] DBG64-IC: pre fn=proc_cpuinfo_init+0x0/0x4c
+[   62.613883] calling  proc_cpuinfo_init+0x0/0x4c @ 1
+[   62.785536] initcall proc_cpuinfo_init+0x0/0x4c returned 0 after 4000 usecs
+[   62.991245] DBG64-IC: post fn=proc_cpuinfo_init+0x0/0x4c ret=0
+eI[   63.223654] DBG64-IC: pre fn=proc_devices_init+0x0/0x68
+[   63.280212] calling  proc_devices_init+0x0/0x68 @ 1
+[   63.450332] initcall proc_devices_init+0x0/0x68 returned 0 after 4000 usecs
+[   63.654543] DBG64-IC: post fn=proc_devices_init+0x0/0x68 ret=0
+eI[   63.886462] DBG64-IC: pre fn=proc_interrupts_init+0x0/0x5c
+[   63.943751] calling  proc_interrupts_init+0x0/0x5c @ 1
+[   64.115980] initcall proc_interrupts_init+0x0/0x5c returned 0 after 4000 usecs
+[   64.328842] DBG64-IC: post fn=proc_interrupts_init+0x0/0x5c ret=0
+eI[   64.560003] DBG64-IC: pre fn=proc_loadavg_init+0x0/0x64
+[   64.616620] calling  proc_loadavg_init+0x0/0x64 @ 1
+[   64.786362] initcall proc_loadavg_init+0x0/0x64 returned 0 after 4000 usecs
+[   64.992545] DBG64-IC: post fn=proc_loadavg_init+0x0/0x64 ret=0
+eI[   65.224439] DBG64-IC: pre fn=proc_meminfo_init+0x0/0x64
+[   65.281081] calling  proc_meminfo_init+0x0/0x64 @ 1
+[   65.451270] initcall proc_meminfo_init+0x0/0x64 returned 0 after 4000 usecs
+[   65.657155] DBG64-IC: post fn=proc_meminfo_init+0x0/0x64 ret=0
+eI[   65.888027] DBG64-IC: pre fn=proc_stat_init+0x0/0x4c
+[   65.943673] calling  proc_stat_init+0x0/0x4c @ 1
+[   66.113366] initcall proc_stat_init+0x0/0x4c returned 0 after 4000 usecs
+[   66.318539] DBG64-IC: post fn=proc_stat_init+0x0/0x4c ret=0
+eII[   66.535570] DBG64-IC: pre fn=proc_uptime_init+0x0/0x64
+[   66.591982] calling  proc_uptime_init+0x0/0x64 @ 1
+[   66.778125] initcall proc_uptime_init+0x0/0x64 returned 0 after 4000 usecs
+[   66.982984] DBG64-IC: post fn=proc_uptime_init+0x0/0x64 ret=0
+eI[   67.213448] DBG64-IC: pre fn=proc_version_init+0x0/0x64
+[   67.270201] calling  proc_version_init+0x0/0x64 @ 1
+[   67.440240] initcall proc_version_init+0x0/0x64 returned 0 after 4000 usecs
+[   67.645317] DBG64-IC: post fn=proc_version_init+0x0/0x64 ret=0
+eI[   67.876600] DBG64-IC: pre fn=proc_softirqs_init+0x0/0x64
+[   67.933378] calling  proc_softirqs_init+0x0/0x64 @ 1
+[   68.103673] initcall proc_softirqs_init+0x0/0x64 returned 0 after 4000 usecs
+[   68.308362] DBG64-IC: post fn=proc_softirqs_init+0x0/0x64 ret=0
+eI[   68.538979] DBG64-IC: pre fn=proc_kmsg_init+0x0/0x4c
+[   68.595014] calling  proc_kmsg_init+0x0/0x4c @ 1
+[   68.764188] initcall proc_kmsg_init+0x0/0x4c returned 0 after 4000 usecs
+[   68.969082] DBG64-IC: post fn=proc_kmsg_init+0x0/0x4c ret=0
+eII[   69.186421] DBG64-IC: pre fn=init_ramfs_fs+0x0/0x2c
+[   69.242363] calling  init_ramfs_fs+0x0/0x2c @ 1
+[   69.416892] initcall init_ramfs_fs+0x0/0x2c returned 0 after 0 usecs
+[   69.631885] DBG64-IC: post fn=init_ramfs_fs+0x0/0x2c ret=0
+eI[   69.710982] DBG64-IC: pre fn=chr_dev_init+0x0/0xe0
+[   69.860017] calling  chr_dev_init+0x0/0xe0 @ 1
+[   71.296026] initcall chr_dev_init+0x0/0xe0 returned 0 after 488000 usecs
+[   71.507709] DBG64-IC: post fn=chr_dev_init+0x0/0xe0 ret=0
+eI[   71.583995] DBG64-IC: pre fn=populate_rootfs+0x0/0x84
+[   71.737269] calling  populate_rootfs+0x0/0x84 @ 1
+[   71.808209] initcall populate_rootfs+0x0/0x84 returned 0 after 4000 usecs
+[   71.970741] DBG64-IC: post fn=populate_rootfs+0x0/0x84 ret=0
+ee[   72.398409] entering initcall level: device
+I[   72.452542] DBG64-IC: pre fn=register_kernel_offset_dumper+0x0/0x24
+[   72.623786] calling  register_kernel_offset_dumper+0x0/0x24 @ 1
+[   72.846660] initcall register_kernel_offset_dumper+0x0/0x24 returned 0 after 0 usecs
+[   73.070768] DBG64-IC: post fn=register_kernel_offset_dumper+0x0/0x24 ret=0
+eI[   73.300807] DBG64-IC: pre fn=proc_execdomains_init+0x0/0x54
+[   73.356147] calling  proc_execdomains_init+0x0/0x54 @ 1
+[   73.530126] initcall proc_execdomains_init+0x0/0x54 returned 0 after 4000 usecs
+[   73.746708] DBG64-IC: post fn=proc_execdomains_init+0x0/0x54 ret=0
+eI[   73.977127] DBG64-IC: pre fn=register_warn_debugfs+0x0/0x24
+[   74.032547] calling  register_warn_debugfs+0x0/0x24 @ 1
+[   74.195828] initcall register_warn_debugfs+0x0/0x24 returned 0 after 0 usecs
+[   74.420851] DBG64-IC: post fn=register_warn_debugfs+0x0/0x24 ret=0
+eI[   74.652310] DBG64-IC: pre fn=ioresources_init+0x0/0x88
+[   74.706868] calling  ioresources_init+0x0/0x88 @ 1
+[   74.882720] initcall ioresources_init+0x0/0x88 returned 0 after 4000 usecs
+[   75.086283] DBG64-IC: post fn=ioresources_init+0x0/0x88 ret=0
+eI[   75.327999] DBG64-IC: pre fn=timekeeping_init_ops+0x0/0x30
+[   75.386361] calling  timekeeping_init_ops+0x0/0x30 @ 1
+[   75.539706] initcall timekeeping_init_ops+0x0/0x30 returned 0 after 0 usecs
+[   75.764951] DBG64-IC: post fn=timekeeping_init_ops+0x0/0x30 ret=0
+eI[   76.005221] DBG64-IC: pre fn=init_timer_list_procfs+0x0/0x64
+[   76.204401] calling  init_timer_list_procfs+0x0/0x64 @ 1
+[   76.273903] initcall init_timer_list_procfs+0x0/0x64 returned 0 after 4000 usecs
+[   76.438435] DBG64-IC: post fn=init_timer_list_procfs+0x0/0x64 ret=0
+eI[   76.670447] DBG64-IC: pre fn=alarmtimer_init+0x0/0x90
+[   76.727765] calling  alarmtimer_init+0x0/0x90 @ 1
+[   76.932673] initcall alarmtimer_init+0x0/0x90 returned 0 after 16000 usecs
+[   77.100863] DBG64-IC: post fn=alarmtimer_init+0x0/0x90 ret=0
+eeI[   77.331690] DBG64-IC: pre fn=sched_clock_syscore_init+0x0/0x30
+[   77.564413] calling  sched_clock_syscore_init+0x0/0x30 @ 1
+[   77.625223] initcall sched_clock_syscore_init+0x0/0x30 returned 0 after 0 usecs
+[   77.798253] DBG64-IC: post fn=sched_clock_syscore_init+0x0/0x30 ret=0
+eI[   78.030826] DBG64-IC: pre fn=kallsyms_init+0x0/0x4c
+[   78.087887] calling  kallsyms_init+0x0/0x4c @ 1
+[   78.255728] initcall kallsyms_init+0x0/0x4c returned 0 after 4000 usecs
+[   78.460586] DBG64-IC: post fn=kallsyms_init+0x0/0x4c ret=0
+eI[   78.540893] DBG64-IC: pre fn=seccomp_sysctl_init+0x0/0x50
+[   78.689726] calling  seccomp_sysctl_init+0x0/0x50 @ 1
+[   78.770172] initcall seccomp_sysctl_init+0x0/0x50 returned 0 after 8000 usecs
+[   78.923412] DBG64-IC: post fn=seccomp_sysctl_init+0x0/0x50 ret=0
+eI[   79.164111] DBG64-IC: pre fn=utsname_sysctl_init+0x0/0x44
+[   79.222847] calling  utsname_sysctl_init+0x0/0x44 @ 1
+[   79.395610] initcall utsname_sysctl_init+0x0/0x44 returned 0 after 8000 usecs
+[   79.598291] DBG64-IC: post fn=utsname_sysctl_init+0x0/0x44 ret=0
+eI[   79.839232] DBG64-IC: pre fn=workingset_init+0x0/0x158
+[   79.898761] calling  workingset_init+0x0/0x158 @ 1
+[   80.045937] workingset: timestamp_bits=30 max_order=11 bucket_order=0
+[   80.269606] initcall workingset_init+0x0/0x158 returned 0 after 16000 usecs
+[   80.482048] DBG64-IC: post fn=workingset_init+0x0/0x158 ret=0
+eI[   80.712211] DBG64-IC: pre fn=fcntl_init+0x0/0x94
+[   80.764959] calling  fcntl_init+0x0/0x94 @ 1
+[   80.941393] initcall fcntl_init+0x0/0x94 returned 0 after 0 usecs
+[   81.156043] DBG64-IC: post fn=fcntl_init+0x0/0x94 ret=0
+eI[   81.223116] DBG64-IC: pre fn=proc_filesystems_init+0x0/0x54
+[   81.387431] calling  proc_filesystems_init+0x0/0x54 @ 1
+[   81.454209] initcall proc_filesystems_init+0x0/0x54 returned 0 after 4000 usecs
+[   81.622157] DBG64-IC: post fn=proc_filesystems_init+0x0/0x54 ret=0
+eI[   81.853023] DBG64-IC: pre fn=start_dirtytime_writeback+0x0/0x88
+[   82.061953] calling  start_dirtytime_writeback+0x0/0x88 @ 1
+[   82.131754] initcall start_dirtytime_writeback+0x0/0x88 returned 0 after 4000 usecs
+[   82.297370] DBG64-IC: post fn=start_dirtytime_writeback+0x0/0x88 ret=0
+eI[   82.528054] DBG64-IC: pre fn=init_devpts_fs+0x0/0x60
+[   82.584077] calling  init_devpts_fs+0x0/0x60 @ 1
+[   82.764747] initcall init_devpts_fs+0x0/0x60 returned 0 after 8000 usecs
+[   82.958099] DBG64-IC: post fn=init_devpts_fs+0x0/0x60 ret=0
+eII[   83.174614] DBG64-IC: pre fn=aplic_driver_init+0x0/0x34
+[   83.231736] calling  aplic_driver_init+0x0/0x34 @ 1
+[   83.473637] initcall aplic_driver_init+0x0/0x34 returned 0 after 24000 usecs
+[   83.722712] DBG64-IC: post fn=aplic_driver_init+0x0/0x34 ret=0
+eI[   83.962239] DBG64-IC: pre fn=imsic_platform_driver_init+0x0/0x34
+[   84.162797] calling  imsic_platform_driver_init+0x0/0x34 @ 1
+[   84.280094] initcall imsic_platform_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   84.397339] DBG64-IC: post fn=imsic_platform_driver_init+0x0/0x34 ret=0
+eI[   84.629650] DBG64-IC: pre fn=plic_driver_init+0x0/0x34
+[   84.686828] calling  plic_driver_init+0x0/0x34 @ 1
+[   85.075745] riscv-plic: plic@40000000: mapped 8 interrupts with 1 handlers for 1 contexts.
+[   85.353988] probe of 40000000.plic returned 0 after 108000 usecs
+[   85.625003] initcall plic_driver_init+0x0/0x34 returned 0 after 152000 usecs
+[   85.801627] DBG64-IC: post fn=plic_driver_init+0x0/0x34 ret=0
+eI[   86.040255] DBG64-IC: pre fn=simple_pm_bus_driver_init+0x0/0x34
+[   86.240783] calling  simple_pm_bus_driver_init+0x0/0x34 @ 1
+[   86.440773] probe of soc returned 0 after 36000 usecs
+[   86.559157] initcall simple_pm_bus_driver_init+0x0/0x34 returned 0 after 84000 usecs
+[   86.812264] DBG64-IC: post fn=simple_pm_bus_driver_init+0x0/0x34 ret=0
+eI[   87.052273] DBG64-IC: pre fn=of_fixed_factor_clk_driver_init+0x0/0x34
+[   87.251718] calling  of_fixed_factor_clk_driver_init+0x0/0x34 @ 1
+[   87.531708] initcall of_fixed_factor_clk_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   87.699220] DBG64-IC: post fn=of_fixed_factor_clk_driver_init+0x0/0x34 ret=0
+eI[   87.938023] DBG64-IC: pre fn=of_fixed_clk_driver_init+0x0/0x34
+[   88.138694] calling  of_fixed_clk_driver_init+0x0/0x34 @ 1
+[   88.256021] initcall of_fixed_clk_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   88.375087] DBG64-IC: post fn=of_fixed_clk_driver_init+0x0/0x34 ret=0
+eI[   88.618314] DBG64-IC: pre fn=gated_fixed_clk_driver_init+0x0/0x34
+[   88.820925] calling  gated_fixed_clk_driver_init+0x0/0x34 @ 1
+[   89.097708] initcall gated_fixed_clk_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   89.265591] DBG64-IC: post fn=gated_fixed_clk_driver_init+0x0/0x34 ret=0
+eI[   89.504865] DBG64-IC: pre fn=gpio_clk_driver_init+0x0/0x34
+[   89.563499] calling  gpio_clk_driver_init+0x0/0x34 @ 1
+[   89.779231] initcall gpio_clk_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   89.936543] DBG64-IC: post fn=gpio_clk_driver_init+0x0/0x34 ret=0
+eI[   90.168094] DBG64-IC: pre fn=n_null_init+0x0/0x34
+[   90.224494] calling  n_null_init+0x0/0x34 @ 1
+[   90.383126] initcall n_null_init+0x0/0x34 returned 0 after 0 usecs
+[   90.597825] DBG64-IC: post fn=n_null_init+0x0/0x34 ret=0
+eI[   90.669000] DBG64-IC: pre fn=pty_init+0x0/0x280
+[   90.826441] calling  pty_init+0x0/0x280 @ 1
+[   90.970035] DBG64-CW: enter create_worker pool_id=4 flags=0x6
+[   93.215024] DBG64-KD: woke up, set TASK_RUNNING
+[   93.258298] DBG64-KD: pre create_kthread
+[   93.468201] DBG64-KD: post create_kthread
+[   93.509961] DBG64-KD: top of loop, list_empty=1, set TASK_INTERRUPTIBLE
+[   96.269878] DBG64-CW: post kthread_create+bind worker_id=1
+[   96.321459] DBG64-CW: post wake_up_process worker_id=1
+[   96.681344] initcall pty_init+0x0/0x280 returned 0 after 1568000 usecs
+[   96.852803] DBG64-IC: post fn=pty_init+0x0/0x280 ret=0
+eI[   96.933500] DBG64-IC: pre fn=random_sysctls_init+0x0/0x50
+[   97.081737] calling  random_sysctls_init+0x0/0x50 @ 1
+[   97.173466] initcall random_sysctls_init+0x0/0x50 returned 0 after 12000 usecs
+[   97.317304] DBG64-IC: post fn=random_sysctls_init+0x0/0x50 ret=0
+eI[   97.557775] DBG64-IC: pre fn=topology_sysfs_init+0x0/0x60
+[   97.617348] calling  topology_sysfs_init+0x0/0x60 @ 1
+[   97.766561] initcall topology_sysfs_init+0x0/0x60 returned 0 after 0 usecs
+[   97.990344] DBG64-IC: post fn=topology_sysfs_init+0x0/0x60 ret=0
+eI[   98.231538] DBG64-IC: pre fn=cacheinfo_sysfs_init+0x0/0x60
+[   98.291569] calling  cacheinfo_sysfs_init+0x0/0x60 @ 1
+[   98.452401] initcall cacheinfo_sysfs_init+0x0/0x60 returned -2 after 4000 usecs
+[   98.665897] DBG64-IC: post fn=cacheinfo_sysfs_init+0x0/0x60 ret=-2
+eI[   98.907236] DBG64-IC: pre fn=syscon_reboot_driver_init+0x0/0x34
+[   99.106637] calling  syscon_reboot_driver_init+0x0/0x34 @ 1
+[   99.226380] initcall syscon_reboot_driver_init+0x0/0x34 returned 0 after 20000 usecs
+[   99.345008] DBG64-IC: post fn=syscon_reboot_driver_init+0x0/0x34 ret=0
+eI[   99.585690] DBG64-IC: pre fn=syscon_poweroff_driver_init+0x0/0x34
+[   99.783924] calling  syscon_poweroff_driver_init+0x0/0x34 @ 1
+[  100.060392] initcall syscon_poweroff_driver_init+0x0/0x34 returned 0 after 16000 usecs
+[  100.229790] DBG64-IC: post fn=syscon_poweroff_driver_init+0x0/0x34 ret=0
+e[  100.654429] entering initcall level: late
+I[  100.719524] DBG64-IC: pre fn=kernel_do_mounts_initrd_sysctls_init+0x0/0x50
+[  100.877546] calling  kernel_do_mounts_initrd_sysctls_init+0x0/0x50 @ 1
+[  101.112991] initcall kernel_do_mounts_initrd_sysctls_init+0x0/0x50 returned 0 after 4000 usecs
+[  101.328348] DBG64-IC: post fn=kernel_do_mounts_initrd_sysctls_init+0x0/0x50 ret=0
+eI[  101.558432] DBG64-IC: pre fn=kernel_panic_sysctls_init+0x0/0x50
+[  101.765539] calling  kernel_panic_sysctls_init+0x0/0x50 @ 1
+[  101.856604] initcall kernel_panic_sysctls_init+0x0/0x50 returned 0 after 12000 usecs
+[  102.000570] DBG64-IC: post fn=kernel_panic_sysctls_init+0x0/0x50 ret=0
+eI[  102.231456] DBG64-IC: pre fn=kernel_exit_sysctls_init+0x0/0x50
+[  102.442060] calling  kernel_exit_sysctls_init+0x0/0x50 @ 1
+[  102.509592] initcall kernel_exit_sysctls_init+0x0/0x50 returned 0 after 4000 usecs
+[  102.677333] DBG64-IC: post fn=kernel_exit_sysctls_init+0x0/0x50 ret=0
+eI[  102.910049] DBG64-IC: pre fn=sched_core_sysctl_init+0x0/0x50
+[  103.118664] calling  sched_core_sysctl_init+0x0/0x50 @ 1
+[  103.185634] initcall sched_core_sysctl_init+0x0/0x50 returned 0 after 4000 usecs
+[  103.352134] DBG64-IC: post fn=sched_core_sysctl_init+0x0/0x50 ret=0
+eI[  103.583584] DBG64-IC: pre fn=sched_fair_sysctl_init+0x0/0x50
+[  103.792513] calling  sched_fair_sysctl_init+0x0/0x50 @ 1
+[  103.859646] initcall sched_fair_sysctl_init+0x0/0x50 returned 0 after 4000 usecs
+[  104.027042] DBG64-IC: post fn=sched_fair_sysctl_init+0x0/0x50 ret=0
+eI[  104.258751] DBG64-IC: pre fn=sched_dl_sysctl_init+0x0/0x50
+[  104.315735] calling  sched_dl_sysctl_init+0x0/0x50 @ 1
+[  104.497242] initcall sched_dl_sysctl_init+0x0/0x50 returned 0 after 4000 usecs
+[  104.701480] DBG64-IC: post fn=sched_dl_sysctl_init+0x0/0x50 ret=0
+eI[  104.932500] DBG64-IC: pre fn=sched_rt_sysctl_init+0x0/0x50
+[  104.989388] calling  sched_rt_sysctl_init+0x0/0x50 @ 1
+[  105.173395] initcall sched_rt_sysctl_init+0x0/0x50 returned 0 after 8000 usecs
+[  105.374768] DBG64-IC: post fn=sched_rt_sysctl_init+0x0/0x50 ret=0
+eI[  105.606422] DBG64-IC: pre fn=sched_init_debug+0x0/0xa8
+[  105.662550] calling  sched_init_debug+0x0/0xa8 @ 1
+[  105.832686] initcall sched_init_debug+0x0/0xa8 returned 0 after 0 usecs
+[  106.037361] DBG64-IC: post fn=sched_init_debug+0x0/0xa8 ret=0
+eI[  106.269089] DBG64-IC: pre fn=printk_late_init+0x0/0x17c
+[  106.326158] calling  printk_late_init+0x0/0x17c @ 1
+[  106.530541] initcall printk_late_init+0x0/0x17c returned 0 after 16000 usecs
+[  106.701873] DBG64-IC: post fn=printk_late_init+0x0/0x17c ret=0
+eI[  106.943646] DBG64-IC: pre fn=sync_state_resume_initcall+0x0/0x28
+[  107.144251] calling  sync_state_resume_initcall+0x0/0x28 @ 1
+[  107.206409] initcall sync_state_resume_initcall+0x0/0x28 returned 0 after 0 usecs
+[  107.378556] DBG64-IC: post fn=sync_state_resume_initcall+0x0/0x28 ret=0
+e[  107.619223] initcall deferred_probe_initcall blacklisted
+I[  107.677492] DBG64-IC: pre fn=clk_disable_unused+0x0/0x110
+[  107.826407] calling  clk_disable_unused+0x0/0x110 @ 1
+[  107.885202] clk: Disabling unused clocks
+[  108.053857] initcall clk_disable_unused+0x0/0x110 returned 0 after 12000 usecs
+[  108.271450] DBG64-IC: post fn=clk_disable_unused+0x0/0x110 ret=0
+eI[  108.513656] DBG64-IC: pre fn=of_platform_sync_state_init+0x0/0x28
+[  108.714284] calling  of_platform_sync_state_init+0x0/0x28 @ 1
+[  108.936579] initcall of_platform_sync_state_init+0x0/0x28 returned 0 after 0 usecs
+[  109.159839] DBG64-IC: post fn=of_platform_sync_state_init+0x0/0x28 ret=0
+e[  109.381602] DBG64: post do_basic_setup
+[  110.324998] Warning: unable to open an initial console.
+[  110.385693] DBG64: pre async_synchronize_full
+[  110.531457] DBG64: post async_synchronize_full
+[  110.571438] DBG64: pre kprobe_free_init_mem
+[  110.750745] DBG64: pre free_initmem
+[  111.374095] Freeing unused kernel image (initmem) memory: 296K
+[  111.590072] DBG64: post free_initmem
+[  111.627805] DBG64: pre mark_readonly
+[  111.813193] This architecture does not have kernel memory protection.
+[  112.034483] DBG64: pre rcu_end_inkernel_boot
+[  112.073848] DBG64: post rcu_end_inkernel_boot
+[  112.259413] DBG64: pre do_sysctl_args
+[  112.340025] DBG64: post do_sysctl_args
+[  112.478558] Run /init as init process
+[  112.517620]   with arguments:
+[  112.700195]     /init
+[  112.735894]   with environment:
+[  112.772732]     HOME=/
+[  112.923735]     TERM=linux
+[  158.623919] Oops - illegal instruction [#1]
+[  158.631421] CPU: 0 UID: 0 PID: 1 Comm: init Not tainted 6.18.22 #1-riski5 NONE 
+[  158.647780] Hardware name: riski5-de2 (DT)
+[  158.653859] epc : 0x807cc000
+[  158.662852]  ra : 0x0
+[  158.670422] epc : 807cc000 ra : 00000000 sp : 807d1fc0
+[  158.681158]  gp : 00000000 tp : 00000000 t0 : 00000000
+[  158.689814]  t1 : 00000000 t2 : 00000000 s0 : 00000000
+[  158.698470]  s1 : 00000000 a0 : 00000000 a1 : 00000000
+[  158.707126]  a2 : 00000000 a3 : 00000000 a4 : 00000000
+[  158.715779]  a5 : 00000000 a6 : 00000000 a7 : 00000000
+[  158.724435]  s2 : 00000000 s3 : 00000000 s4 : 00000000
+[  158.733091]  s5 : 00000000 s6 : 00000000 s7 : 00000000
+[  158.741747]  s8 : 00000000 s9 : 00000000 s10: 00000000
+[  158.750401]  s11: 00000000 t3 : 00000000 t4 : 00000000
+[  158.759055]  t5 : 00000000 t6 : 00000000
+[  158.766069] status: 00001880 badaddr: 544c4662 cause: 00000002
+[  158.792544] Code: ffff fddf ffff ffff ffff ffff fffd f5fd ffff effd (4662) 544c 
+[  158.800275] ---[ end trace 0000000000000000 ]---
+[  158.806871] Kernel panic - not syncing: Fatal exception in interrupt
+[  159.167864] ---[ end Kernel panic - not syncing: Fatal exception in interrupt ]---
