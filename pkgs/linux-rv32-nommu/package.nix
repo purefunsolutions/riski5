@@ -171,8 +171,15 @@ in
       # a direct pr_emerg in do_one_initcall — bypasses the trace
       # mechanism entirely. Anchor on "do_trace_initcall_start(fn);"
       # which is unique inside do_one_initcall.
-      sed -i 's|do_trace_initcall_start(fn);|pr_emerg("DBG64-IC: pre fn=%pS\\n", fn); do_trace_initcall_start(fn);|' init/main.c
-      sed -i 's|do_trace_initcall_finish(fn, ret);|do_trace_initcall_finish(fn, ret); pr_emerg("DBG64-IC: post fn=%pS ret=%d\\n", fn, ret);|' init/main.c
+      #
+      # #64-step8: pr_emerg STILL only prints for early initcalls.
+      # Bypass all printk paths — write a single tag char directly
+      # to the JTAG-UART MMIO at 0x10000000 around every initcall.
+      # I=initcall start, e=end. If I/e show up but DBG64-IC doesn't,
+      # the printk path is filtering. If neither shows, do_one_initcall
+      # itself isn't being entered for non-early.
+      sed -i 's|do_trace_initcall_start(fn);|*(volatile unsigned int *)0x10000000 = 0x49; pr_emerg("DBG64-IC: pre fn=%pS\\n", fn); do_trace_initcall_start(fn);|' init/main.c
+      sed -i 's|do_trace_initcall_finish(fn, ret);|do_trace_initcall_finish(fn, ret); pr_emerg("DBG64-IC: post fn=%pS ret=%d\\n", fn, ret); *(volatile unsigned int *)0x10000000 = 0x65;|' init/main.c
       grep -c "DBG64-IC" init/main.c || true
 
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
