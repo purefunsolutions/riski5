@@ -157,6 +157,15 @@ in
         drivers/base/devtmpfs.c
       grep -c DBG64-DT drivers/base/devtmpfs.c || true
 
+      # #64-step6: pr_debug-via-tracepoint isn't firing for non-early
+      # initcalls — only the 10 early ones print "calling/returned".
+      # Force it by switching KERN_DEBUG → KERN_EMERG so all
+      # initcall_debug calls go to the JTAG-UART unconditionally.
+      sed -i 's|printk(KERN_DEBUG "calling  %pS|printk(KERN_EMERG "calling  %pS|' init/main.c
+      sed -i 's|printk(KERN_DEBUG "initcall %pS returned|printk(KERN_EMERG "initcall %pS returned|' init/main.c
+      sed -i 's|printk(KERN_DEBUG "entering initcall level:|printk(KERN_EMERG "entering initcall level:|' init/main.c
+      grep -c "KERN_EMERG \"calling\\|KERN_EMERG \"initcall\\|KERN_EMERG \"entering initcall" init/main.c || true
+
       # #64-step4: instrument kthreadd loop to confirm missed-wakeup
       # hypothesis. After 1st pool worker creates, kthreadd appears
       # to never wake again. Only modify within kthreadd's body
