@@ -59,7 +59,7 @@
 		 * keeps the floor of CONFIG_DYNAMIC_DEBUG enabled in case
 		 * any subsystem we care about uses pr_debug().
 		 */
-		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init";
+		bootargs = "console=ttyJ0,115200n8 earlycon=juart,mmio,0x10000000 keep_bootcon loglevel=8 ignore_loglevel debug rdinit=/init initcall_debug";
 		/*
 		 * initrd window — the L-3b loader writes the cpio
 		 * starting at base + 4 MB, so it spans [0x80400000,
