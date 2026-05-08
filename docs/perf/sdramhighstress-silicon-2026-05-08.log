@@ -67,19 +67,65 @@ Decoding:
 
 Total UART chars: 1 + 152 + 152 + 5 + 153 × 2 + 5 ≈ 621.
 
+## Follow-up: JTAG-Avalon-Master upload-path probe (same date)
+
+Re-flashed `riski5-core-linux-master` and ran the existing
+`sdram-write-pattern-test.tcl` against it. Test exercises full
+32-bit non-zero-upper writes, half-word LO and HI writes (the
+old #146 bug), post-`0xFFFFFFFF`-reset writes, and cross-row
+writes — every test address sits in `0x80700000`–`0x80800000`,
+i.e. the upper end of the suspect 2-MB region. Result:
+
+```
+summary: 29 passed, 0 failed of 29 total
+```
+
+This **rules out the JTAG-Avalon-Master upload path** as the
+source of the high-address corruption observed during prior
+Linux boots — both 32-bit and 16-bit hi/lo writes commit
+correctly across rows up to 0x80800000.
+
 ## Action items unblocked
 
 - [x] Discriminate "silicon-only" vs "RTL bug" for the high-SDRAM
   corruption: silicon is clean for BRAM-resident single-master
-  workload → the bug is **upload-path-related** or **kernel
-  workload-pattern-related**, not a generic data-path
-  failure.
-- [ ] Add a hwsim variant (Verilator-driven) of this same
+  workload → the bug is **kernel workload-pattern-related**,
+  not a generic data-path failure.
+- [x] Probe the JTAG-Avalon-Master upload path with a host-side
+  written-vs-readback verify covering the upper region.
+  Result: 29/29 PASS using the existing
+  `sdram-write-pattern-test.tcl` against
+  `riski5-core-linux-master`.
+- [ ] Add a hwsim variant (Verilator-driven) of the high-stress
   firmware → confirms RTL is also clean (expected) and gives us
   a sim baseline to compare future regressions against.
-- [ ] Probe the JTAG-Avalon-Master upload path with a host-side
-  written-vs-readback verify covering the upper 2 MB explicitly.
-- [ ] Re-test with a kernel-style workload: BRAM fetch interleaved
-  with high-SDRAM data accesses (closer to what Linux actually
-  does at boot) to see if concurrent fetch+data access on the
+- [ ] Re-test with a kernel-style workload: SDRAM-resident exec
+  + interleaved high-SDRAM data accesses (closer to what Linux
+  actually does at boot) to see if concurrent fetch+data on the
   runtime bus reproduces the corruption.
+
+## Outcome for the high-address-corruption hypothesis
+
+The two cleanest hypotheses (data-path bug, upload-path bug) are
+**both ruled out** by these two probes. What remains:
+
+1. **Concurrent fetch+data on the runtime bus** — the kernel
+   text/data both live in SDRAM, so during boot the master
+   port is multiplexed across instruction fetch and load/store.
+   Neither this firmware nor the JTAG-Master test exercises
+   that path. To test: build a sdramexec variant that runs
+   *itself* from SDRAM and exercises high-SDRAM data accesses
+   in parallel.
+2. **Workload-specific refresh interactions** — the kernel
+   touches very specific row patterns at boot; this test does
+   ~3500 writes but with a regular stride. Less likely.
+3. **The "high address corruption" suspicion may have been a
+   misdiagnosis.** Linux now boots to `/init` on silicon
+   (commit `aab129b`). The boot symptoms previously attributed
+   to high-address corruption may actually have been:
+   - STACKPROTECTOR canary checks (now disabled, see `aab129b`).
+   - The init.S `la t0, msg` absolute-addressing bug (also
+     fixed in `aab129b`).
+   In which case there may be no active high-address corruption
+   bug to find, and we should focus on STACKPROTECTOR re-enable
+   instead of more high-address probes.
