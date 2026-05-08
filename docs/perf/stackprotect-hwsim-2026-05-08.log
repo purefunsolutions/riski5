@@ -89,6 +89,66 @@ canary check itself. Candidate root causes:
    broken. Worth disassembling sched_tick before/after
    STACKPROTECTOR to compare.
 
+## Follow-up: debug-printk kernel boots through cleanly (2026-05-08)
+
+Built `linux-rv32-nommu-debug` (which adds `debugSchedulerPrintks=true`,
+applying `pkgs/linux-rv32-nommu/debug-schedule-printk.patch` — four
+`pr_emerg()` insertions in `rest_init`, `kernel_init_freeable`,
+`__schedule`, kthreadd's main loop, and `wait_for_completion` /
+`complete`) and ran the same 1B-cycle hwsim with the same
+STACKPROTECTOR + STRONG + PER_TASK config:
+
+```
+uart bytes:        17,608   (vs 3,068 with non-debug kernel)
+last kernel time:  19.95 s  (vs 0.43 s)
+printk lines:      252      (vs ~25)
+DBG64: kthreadd_done complete fires at kernel time 1.078 s
+```
+
+**The kernel boots through cleanly with the debug patch applied.**
+
+### What this tells us
+
+The four `pr_emerg()` calls in the debug patch *mask* the hang.
+The bug is a **race / timing window** that the extra printk delay
+prevents from triggering. The printk path traverses
+`vsnprintf` / `vprintk_emit` / `console_unlock` / JTAG-UART write —
+that cascade is dozens to hundreds of cycles long, plenty to
+shift the relative timing of two threads enough to hide a
+deterministic-but-narrow race.
+
+This rules out hypotheses 1, 2, and 4 from above. The leading
+hypothesis becomes:
+
+5. **A scheduler / wake-up race.** With STACKPROTECTOR's added
+   prologue/epilogue cycles spent on canary load-store-clear,
+   *some specific* function (likely in the wake-up or
+   completion path) extends just enough to make a wake-up
+   firing in `kernel_init` arrive before/after a complementary
+   action in `kthreadd`. The `pr_emerg()` interjections delay
+   one of those threads by ~µs and eliminate the race.
+
+### New action items
+
+- [x] Diagnostic: PER_TASK off (STRONG=y) — same hang, refutes
+  hypothesis 1.
+- [x] Diagnostic: debug-printk kernel — boots through, confirms
+  race-vs-deterministic-bug.
+- [ ] Localise the load-bearing `pr_emerg()`: bisect by
+  removing the four insertions one at a time. The remaining
+  patches that still let the kernel boot identify which delay
+  matters.
+- [ ] Once bisected, replace the printk delay with a smaller
+  primitive (e.g. an explicit `cpu_relax()`, `barrier()`, or
+  `udelay(1)`) at the same site, so STACKPROTECTOR can stay
+  enabled in the production build without depending on
+  pr_emerg() noise.
+- [ ] Investigate the *underlying* race in our SoC — the fact
+  that a kernel-thread scheduling window is this fragile to a
+  ~µs shift suggests our trap-entry / wake-up latency or
+  CoreCdcBridge round-trip is closer to a critical edge than
+  it should be.
+
 ## Action items
 
 - [x] Inspect the RISC-V trap entry assembly in
