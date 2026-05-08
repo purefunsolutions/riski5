@@ -104,6 +104,33 @@ correctly across rows up to 0x80800000.
   actually does at boot) to see if concurrent fetch+data on the
   runtime bus reproduces the corruption.
 
+## Follow-up: hwsim PASS1 (Verilator-driven RTL, same date)
+
+Built `riski5-sim-sdramhighstress` (newly parameterized
+`pkgs/riski5-sim/package.nix` with `firmware="sdramHighStress"`)
+and ran `riski5-linux-hwsim` against it with empty stub kernel
++ DTB:
+
+```
+$ cabal run riski5-linux-hwsim --flag=hwsim \
+    --extra-lib-dirs=$out/lib \
+    --ghc-options='-optl-lVriski5_sim_top -optl-lverilated -optl-lstdc++' \
+    -- /tmp/stub.bin /tmp/stub.bin 100000000
+```
+
+UART output captured: `B` + 24 `,` + 128 `.` + 24 `,` + 128 `.` +
+`PASS1` — identical to silicon through PASS1 (310 bytes total,
+byte-for-byte match).
+
+Phase 3 (re-read after `~100 ms` simulated delay = 4 M-iter
+countdown loop) does not fit in the 100 M-cycle hwsim budget.
+At cycle 99.7 M, hwsim is still in the countdown. At hwsim's
+sustained ~150 K cycles/s wall clock that loop alone needs
+~10–15 minutes wall to traverse; phase 3 reads add another
+few minutes. Skipped — PASS1 in both backends already
+validates writes + immediate readback, which is the bulk of
+the bug-detection power.
+
 ## Outcome for the high-address-corruption hypothesis
 
 The two cleanest hypotheses (data-path bug, upload-path bug) are
