@@ -71,6 +71,17 @@
   # mechanism as @sramExec@; @FetchPolicy@ stays at the BRAM-only
   # default.
   sdramDataStress ? false,
+  # Build the high-SDRAM-stress silicon-test variant (#64 follow-up).
+  # Overlay @HelloSdramHighStress.helloSdramHighStressFirmwareWords@
+  # into the imem. BRAM-resident three-phase walk over the full
+  # 8 MB SDRAM with denser coverage in the suspect upper-2-MB
+  # region (1 KB stride), targeted at the BFLT-loader-at-0x807cc000
+  # all-FFs read observed during the 2026-05-08 silicon Linux-to-
+  # userspace boot. @FetchPolicy@ stays at the BRAM-only default —
+  # any failure is unambiguously a data-port issue, not a fetch+
+  # data multiplex one. See firmware/phase1/HelloSdramHighStress.hs
+  # header for the full discrimination matrix vs hwsim.
+  sdramHighStress ? false,
   # Build the A-extension silicon-test variant. Overlay
   # @HelloAExt.helloAExtFirmwareWords@ into the imem and exercise
   # the @Riski5.Core.FU.Amo@ FSM against an SRAM word — see the
@@ -244,17 +255,18 @@
   isSdramExec = sdramExec && !isCoremark && !isSramExec;
   isSdramStress = sdramStress && !isCoremark && !isSramExec && !isSdramExec;
   isSdramDataStress = sdramDataStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress;
-  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress;
-  isAmoStress = amoStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest;
-  isLrScStress = lrScStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress;
-  isStackStress = stackStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress;
-  isTrapStress = trapStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress;
-  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress;
-  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest;
-  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad;
-  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
-  isMdStress = mdStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster;
-  isSchedStress = schedStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster && !isMdStress;
+  isSdramHighStress = sdramHighStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress;
+  isAExtTest = aExtTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress;
+  isAmoStress = amoStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest;
+  isLrScStress = lrScStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress;
+  isStackStress = stackStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress;
+  isTrapStress = trapStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress;
+  isTimerIrqTest = timerIrqTest && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress;
+  isSdramLoad = sdramLoad && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest;
+  isLinuxBoot = linuxBoot && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad;
+  isLinuxBootMaster = linuxBootMaster && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot;
+  isMdStress = mdStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster;
+  isSchedStress = schedStress && !isCoremark && !isSramExec && !isSdramExec && !isSdramStress && !isSdramDataStress && !isSdramHighStress && !isAExtTest && !isAmoStress && !isLrScStress && !isStackStress && !isTrapStress && !isTimerIrqTest && !isSdramLoad && !isLinuxBoot && !isLinuxBootMaster && !isMdStress;
   # Task #146 (single-PLL, with phase-shifted DRAM_CLK output):
   # the second PLL (u_altpll_sdram on CLOCK_27) was removed when
   # the Altera SDRAM Controller IP and the toggle-handshake CDC
@@ -355,6 +367,7 @@ in
       else if isSdramExec then "riski5-core-sdramexec"
       else if isSdramStress then "riski5-core-sdramstress"
       else if isSdramDataStress then "riski5-core-sdramdatastress"
+      else if isSdramHighStress then "riski5-core-sdramhighstress"
       else if isAExtTest then "riski5-core-aexttest"
       else if isAmoStress then "riski5-core-amostress"
       else if isLrScStress then "riski5-core-lrscstress"
@@ -635,6 +648,44 @@ in
               cat firmware/phase1/CoreMark.hs
               # FetchPolicy stays at BRAM-only default — important
               # for the bisect (no SDRAM arbiter instantiated).
+            ''}
+
+            ${lib.optionalString isSdramHighStress ''
+              # SDRAM-high-stress bisect variant (#64 follow-up): walks
+              # the suspect upper-2-MB region (0x80600000–0x80800000) at
+              # 1 KB stride and the proven-clean lower 6 MB at 4 KB
+              # stride in three phases (write, immediate read-back,
+              # re-read after delay). Pattern is `addr ^ 0xDEADBEEF` so
+              # every word is unique. BRAM-resident; FetchPolicy stays
+              # at the BRAM-only default — this is a data-path-only
+              # probe, no SDRAM fetch involved.
+              chmod -R u+w firmware/phase1
+              cat > firmware/phase1/CoreMark.hs <<'EOF'
+              -- SPDX-FileCopyrightText: 2026 Mika Tammi
+              -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+              --
+              -- Overlaid by the sdramHighStress Nix build: re-exports
+              -- HelloSdramHighStress's firmware under the CoreMark
+              -- name so the unchanged -DFIRMWARE_COREMARK path in
+              -- app/Top.hs bakes the BRAM-resident high-SDRAM probe
+              -- into imem.
+              {-# LANGUAGE DataKinds #-}
+              {-# LANGUAGE NoStarIsType #-}
+
+              module CoreMark (
+                coreMarkFirmwareWords,
+              ) where
+
+              import Clash.Prelude (BitVector)
+              import HelloSdramHighStress (helloSdramHighStressFirmwareWords)
+
+              coreMarkFirmwareWords :: [BitVector 32]
+              coreMarkFirmwareWords = helloSdramHighStressFirmwareWords
+              EOF
+              sed -i 's/^              //' firmware/phase1/CoreMark.hs
+              echo "### sdramHighStress variant: overlaid firmware/phase1/CoreMark.hs"
+              cat firmware/phase1/CoreMark.hs
+              # FetchPolicy stays at BRAM-only default.
             ''}
 
             ${lib.optionalString isAExtTest ''
@@ -1151,7 +1202,7 @@ in
             # operators.
             clash --verilog -fclash-hdlsyn Quartus \
               -XGHC2021 -XImplicitPrelude \
-              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster || isMdStress || isSchedStress) "-DFIRMWARE_COREMARK"} \
+              ${lib.optionalString (isCoremark || isSramExec || isSdramExec || isSdramStress || isSdramDataStress || isSdramHighStress || isAExtTest || isAmoStress || isLrScStress || isStackStress || isTrapStress || isTimerIrqTest || isSdramLoad || isLinuxBoot || isLinuxBootMaster || isMdStress || isSchedStress) "-DFIRMWARE_COREMARK"} \
               ${lib.optionalString combinationalMuldiv "-DSILICON_MULCOMB_ONLY"} \
               -DSOC_CLOCK_HZ=${toString (50000000 * pllBusMultBy / 5)} \
               -DSOC_SDRAM_CLOCK_HZ=${toString sdramClockHz} \

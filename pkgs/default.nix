@@ -132,6 +132,19 @@
         sdramDataStress = true;
       };
 
+      # Follow-up to task #64: walks the upper 2 MB of SDRAM
+      # (0x80600000–0x80800000) at 1 KB stride and the proven-clean
+      # lower 6 MB at 4 KB stride in three phases (write, immediate
+      # read-back, re-read after delay) using the unique pattern
+      # `addr ^ 0xDEADBEEF`. BRAM-resident; FetchPolicy stays at
+      # BRAM-only. Discriminates whether the high-address SDRAM
+      # corruption observed during Linux boot is silicon-only or
+      # also reproducible in hwsim.
+      riski5-core-sdramhighstress = pkgs.callPackage ./riski5-core/package.nix {
+        inherit quartus-ii-13;
+        sdramHighStress = true;
+      };
+
       # Debug bitstream that bakes firmware/phase1/HelloAExt.hs into
       # imem. Probes whether 'Riski5.Core.FU.Amo' (the new RV32A FSM)
       # works against the real SRAM controller on silicon. Expected
@@ -405,6 +418,12 @@
         riski5-core = self'.packages.riski5-core-sdramdatastress;
       };
 
+      # Flasher for the high-SDRAM-stress bisect (#64 follow-up).
+      flash-riski5-sdramhighstress = pkgs.callPackage ../apps/flash-riski5.nix {
+        inherit quartus-ii-13;
+        riski5-core = self'.packages.riski5-core-sdramhighstress;
+      };
+
       # Flasher for the A-extension silicon test bitstream.
       flash-riski5-aexttest = pkgs.callPackage ../apps/flash-riski5.nix {
         inherit quartus-ii-13;
@@ -664,6 +683,10 @@
       flash-riski5-sdramdatastress = {
         type = "app";
         program = "${self'.packages.flash-riski5-sdramdatastress}/bin/flash-riski5";
+      };
+      flash-riski5-sdramhighstress = {
+        type = "app";
+        program = "${self'.packages.flash-riski5-sdramhighstress}/bin/flash-riski5";
       };
       flash-riski5-aexttest = {
         type = "app";
