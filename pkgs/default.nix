@@ -55,6 +55,19 @@
         inherit quartus-ii-13 verilambda-shim-gen;
       };
 
+      # Verilator sim library variant for the high-SDRAM-stress
+      # firmware. Same Verilog flow as riski5-sim, but bakes
+      # HelloSdramHighStress into BRAM and keeps FetchPolicy at
+      # the BRAM-only default. Drives a self-contained probe that
+      # walks the upper 2 MB of SDRAM in three phases (write,
+      # readback, re-read after delay) — hwsim peer of the silicon
+      # riski5-core-sdramhighstress run, used to confirm the RTL
+      # also produces PASS2 (#64 follow-up).
+      riski5-sim-sdramhighstress = pkgs.callPackage ./riski5-sim/package.nix {
+        inherit quartus-ii-13 verilambda-shim-gen;
+        firmware = "sdramHighStress";
+      };
+
       # YosysHQ/riscv-formal harness — expose the pinned package
       # so consumers can point at it with `.#riscv-formal` too.
       inherit riscv-formal;

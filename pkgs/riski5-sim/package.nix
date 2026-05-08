@@ -42,6 +42,13 @@
   # riski5-core does. Later we may factor this into a shared
   # derivation.
   quartus-ii-13,
+  # Firmware variant baked into BRAM. "linuxBootSim" (the default)
+  # bakes the JTAG-Avalon-Master Linux boot stub + enables SDRAM
+  # fetch — what tools/linux-hwsim expects. "sdramHighStress"
+  # bakes the BRAM-resident high-SDRAM stress probe (#64 follow-up)
+  # with the default BRAM-only fetch policy — drives a self-contained
+  # write/readback test that emits "PASS2" on completion.
+  firmware ? "linuxBootSim",
 }: let
   # Clash build: emit riski5.v from our Haskell sources. Same flow
   # as pkgs/riski5-core/package.nix's first phase, reused here so
@@ -54,9 +61,14 @@
       containers
       mtl
     ]);
+  isLinuxBootSim = firmware == "linuxBootSim";
+  isSdramHighStress = firmware == "sdramHighStress";
 in
   stdenv.mkDerivation {
-    pname = "riski5-sim";
+    pname =
+      if isSdramHighStress
+      then "riski5-sim-sdramhighstress"
+      else "riski5-sim";
     version = "0.1.0";
 
     src = lib.cleanSourceWith {
@@ -95,70 +107,99 @@ in
       rm -rf "$BUILD"
       mkdir -p "$BUILD/cbits" "$BUILD/verilog"
 
-      # Overlay CoreMark.hs with a re-export of LinuxBootMaster's
-      # firmware. This is the same trick the silicon variants in
-      # pkgs/riski5-core/package.nix use to swap firmware without
-      # touching app/Top.hs — the unchanged @-DFIRMWARE_COREMARK@
-      # CPP path picks up @CoreMark.coreMarkFirmwareWords@ which we
-      # alias to @LinuxBootMaster.linuxBootMasterFirmwareWords@.
-      # Result: riski5-sim's BRAM contains the JTAG-Avalon-Master
-      # boot stub that polls @SDRAM[0x807FFFF4]@ for a "go"
-      # sentinel, then JALRs to @0x80000000@. The sim harness
-      # writes the go sentinel via the SDRAM init pins (or just
-      # pre-populates the trigger record alongside kernel + DTB)
-      # so the boot stub immediately advances into the kernel.
+      # Firmware overlay: pick which Hello* module CoreMark.hs
+      # re-exports based on the @firmware@ Nix arg. This is the
+      # same trick pkgs/riski5-core/package.nix uses for silicon
+      # variants — the unchanged @-DFIRMWARE_COREMARK@ CPP path in
+      # app/Top.hs picks up CoreMark.coreMarkFirmwareWords which
+      # we alias to whichever real firmware module we want baked
+      # into BRAM.
       chmod -R u+w firmware/phase1
-      cat > firmware/phase1/CoreMark.hs <<'EOF'
-      -- SPDX-FileCopyrightText: 2026 Mika Tammi
-      -- SPDX-License-Identifier: MIT OR BSD-3-Clause
-      --
-      -- Overlaid by the riski5-sim Nix build: re-exports
-      -- LinuxBootMaster's firmware under the CoreMark name so
-      -- the unchanged -DFIRMWARE_COREMARK path in app/Top.hs
-      -- bakes the Linux boot stub into BRAM. Without this, the
-      -- sim BRAM contains MemTest, which never JALRs to SDRAM
-      -- (the kernel + DTB pre-loaded by the sim harness would
-      -- never run).
-      {-# LANGUAGE DataKinds #-}
-      {-# LANGUAGE NoStarIsType #-}
 
-      module CoreMark (
-        coreMarkFirmwareWords,
-      ) where
+      ${lib.optionalString isLinuxBootSim ''
+        cat > firmware/phase1/CoreMark.hs <<'EOF'
+        -- SPDX-FileCopyrightText: 2026 Mika Tammi
+        -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+        --
+        -- Overlaid by the riski5-sim (firmware="linuxBootSim")
+        -- Nix build: re-exports LinuxBootSim's firmware under
+        -- CoreMark so the unchanged -DFIRMWARE_COREMARK path in
+        -- app/Top.hs bakes the Linux boot stub into BRAM. The
+        -- stub polls @SDRAM[0x807FFFF4]@ for a "go" sentinel,
+        -- then JALRs to @0x80000000@. The sim harness pre-loads
+        -- kernel + DTB into SDRAM and writes the sentinel.
+        {-# LANGUAGE DataKinds #-}
+        {-# LANGUAGE NoStarIsType #-}
 
-      import Clash.Prelude (BitVector)
-      import LinuxBootSim (linuxBootSimFirmwareWords)
+        module CoreMark (
+          coreMarkFirmwareWords,
+        ) where
 
-      coreMarkFirmwareWords :: [BitVector 32]
-      coreMarkFirmwareWords = linuxBootSimFirmwareWords
-      EOF
-      sed -i 's/^      //' firmware/phase1/CoreMark.hs
+        import Clash.Prelude (BitVector)
+        import LinuxBootSim (linuxBootSimFirmwareWords)
 
-      # Same FetchPolicy overlay as the linux-master variants in
-      # pkgs/riski5-core/package.nix — turns on fetch-side SDRAM
-      # routing so the kernel can execute from 0x80000000+.
-      cat > firmware/phase1/FetchPolicy.hs <<'EOF'
-      -- SPDX-FileCopyrightText: 2026 Mika Tammi
-      -- SPDX-License-Identifier: MIT OR BSD-3-Clause
-      module FetchPolicy (
-        enableSramFetch,
-        enableSdramFetch,
-      ) where
+        coreMarkFirmwareWords :: [BitVector 32]
+        coreMarkFirmwareWords = linuxBootSimFirmwareWords
+        EOF
+        sed -i 's/^        //' firmware/phase1/CoreMark.hs
 
-      import Prelude (Bool (..))
+        # Linux variant: turn on SDRAM fetch routing so the kernel
+        # can execute from 0x80000000+.
+        cat > firmware/phase1/FetchPolicy.hs <<'EOF'
+        -- SPDX-FileCopyrightText: 2026 Mika Tammi
+        -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+        module FetchPolicy (
+          enableSramFetch,
+          enableSdramFetch,
+        ) where
 
-      enableSramFetch :: Bool
-      enableSramFetch = False
+        import Prelude (Bool (..))
 
-      enableSdramFetch :: Bool
-      enableSdramFetch = True
-      EOF
-      sed -i 's/^      //' firmware/phase1/FetchPolicy.hs
+        enableSramFetch :: Bool
+        enableSramFetch = False
 
-      echo "### riski5-sim: overlaid firmware/phase1/CoreMark.hs"
+        enableSdramFetch :: Bool
+        enableSdramFetch = True
+        EOF
+        sed -i 's/^        //' firmware/phase1/FetchPolicy.hs
+      ''}
+
+      ${lib.optionalString isSdramHighStress ''
+        cat > firmware/phase1/CoreMark.hs <<'EOF'
+        -- SPDX-FileCopyrightText: 2026 Mika Tammi
+        -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+        --
+        -- Overlaid by the riski5-sim (firmware="sdramHighStress")
+        -- Nix build: re-exports HelloSdramHighStress's firmware
+        -- under CoreMark so the unchanged -DFIRMWARE_COREMARK path
+        -- in app/Top.hs bakes the BRAM-resident high-SDRAM stress
+        -- probe into BRAM. The probe writes addr^0xDEADBEEF into
+        -- the upper 2 MB of SDRAM, reads back, then re-reads after
+        -- a delay; emits "PASS2" on success.
+        {-# LANGUAGE DataKinds #-}
+        {-# LANGUAGE NoStarIsType #-}
+
+        module CoreMark (
+          coreMarkFirmwareWords,
+        ) where
+
+        import Clash.Prelude (BitVector)
+        import HelloSdramHighStress (helloSdramHighStressFirmwareWords)
+
+        coreMarkFirmwareWords :: [BitVector 32]
+        coreMarkFirmwareWords = helloSdramHighStressFirmwareWords
+        EOF
+        sed -i 's/^        //' firmware/phase1/CoreMark.hs
+        # FetchPolicy stays at the BRAM-only default — this firmware
+        # is data-path-only, no SDRAM fetch involved.
+      ''}
+
+      echo "### riski5-sim (${firmware}): overlaid firmware/phase1/CoreMark.hs"
       cat firmware/phase1/CoreMark.hs
-      echo "### riski5-sim: overlaid firmware/phase1/FetchPolicy.hs"
-      cat firmware/phase1/FetchPolicy.hs
+      if [[ -f firmware/phase1/FetchPolicy.hs ]]; then
+        echo "### riski5-sim (${firmware}): FetchPolicy.hs"
+        cat firmware/phase1/FetchPolicy.hs
+      fi
 
       # 1. Clash → riski5.v. Same invocation as riski5-core but
       #    with -DFIRMWARE_COREMARK so the overlaid CoreMark.hs
