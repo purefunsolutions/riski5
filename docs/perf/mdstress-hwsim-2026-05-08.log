@@ -1,0 +1,123 @@
+# mdstress hwsim — diverges from BOTH silicon and cabal sim — 2026-05-08
+
+## TL;DR
+
+The mdstress firmware running under Verilator hwsim produces:
+
+```
+BFMFFFFFFFFFFFFFFF...
+```
+
+i.e. the iter-1 `mul x3, x1, x2` (with x1 = 0x12345678, x2 = 0x100)
+produces a value that does NOT match the firmware's expected
+0x45678000, so the bne immediately triggers `mulFailL` and emits
+`F` followed by `M` followed by an infinite F-spin.
+
+This **disagrees with both other backends**:
+
+| Backend                           | mdstress result                          |
+|-----------------------------------|------------------------------------------|
+| cabal test (Clash pure-Haskell)   | passes 10/10 iters cleanly               |
+| **Verilator hwsim**               | **fails iter 1** (this run)              |
+| Silicon (Quartus, riski5-core-mdstress) | passes 9 iters, fails iter 10      |
+
+All three run the same Clash source — `mulDivFUIterative` in
+`src/Riski5/Core/FU/MulDiv.hs`. The iterative shift-and-add
+multiplier + restoring divider FSM. Same operands, same `li`
+reload sequence, same expected result `0x45678000`.
+
+## Significance
+
+This is the missing data point that constrains the silicon-only
+"10th-iter MUL fail" bug (#58 / #60). Previously we had:
+
+- Cabal sim PASS → "FSM is logically correct"
+- Silicon FAIL on iter 10 → "Quartus synth introduces something"
+
+With Verilator hwsim FAIL on iter 1, we now know:
+
+1. The Verilog Clash emits is **NOT logically equivalent to the
+   pure-Haskell Clash sim**. Verilator runs the emitted Verilog
+   directly; if that Verilog produced the same result as the sim,
+   it would also pass 10/10. It doesn't.
+2. The iter-1 hwsim failure mode is **stronger than the iter-10
+   silicon failure mode**. Quartus synthesis somehow recovers the
+   first 9 iters worth of correct behaviour that hwsim drops on
+   iter 1.
+
+Most likely explanation: register **initialization values**.
+Verilator initializes all regs to undefined / 'X' (which `Vinit`
+defaults to 0 in the C++ harness, but with `--O3` may scramble),
+whereas Cyclone II FFs power up to a specific Quartus-determined
+value. Clash sim initializes regs to their declared NFData
+defaults. If the iterative FSM's initial `prodReg` / `phase` /
+`countdown` values differ across these three:
+
+- Clash sim: declared defaults → FSM enters MdIdle clean, every
+  iter produces correct shift-and-add result → 10/10 PASS.
+- Quartus silicon: power-up FFs ≈ 0 → FSM also enters MdIdle
+  cleanly for the first 9 iters; some Mealy-state corner case
+  trips on iter 10 (cumulative state, see #58 perf log).
+- Verilator: random/unset regs → FSM starts in invalid state →
+  iter 1 already corrupted.
+
+## Setup
+
+- riski5-sim-mdstress at commit `d92d63e` (parameterized
+  `pkgs/riski5-sim/package.nix` with `firmware = "mdStress"`,
+  iterative MUL path — no `-DSILICON_MULCOMB_ONLY`).
+- Driver: existing `riski5-linux-hwsim` exec linked against
+  the new sim lib + stub `/tmp/stub.bin` (4 zero bytes) for
+  both kernel and DTB.
+- Cycle budget: 5_000_000 (mdstress reaches its hang point in
+  ~tens of thousands of cycles; budget chosen for headroom).
+
+```
+$ cabal run riski5-linux-hwsim --flag=hwsim \
+    --extra-lib-dirs=/nix/store/...-riski5-sim-mdstress-0.1.0/lib \
+    --ghc-options='-optl-lVriski5_sim_top -optl-lverilated -optl-lstdc++' \
+    -- /tmp/stub.bin /tmp/stub.bin 5000000
+```
+
+PC heartbeats at end-of-run cycle around `0xe4`–`0xf4` — the
+`failLBody` F-spin loop, confirming the firmware correctly
+detected the bne mismatch and entered the spin path.
+
+## Action items unblocked
+
+- [x] Build a Verilator-driven hwsim variant of the
+  HelloMdStress probe (riski5-sim-mdstress).
+- [x] Confirm mdstress is reproducible at the byte level under
+  hwsim. (It is — and produces a *different* failure mode than
+  silicon, which is itself diagnostic.)
+- [ ] Instrument the hwsim runner to dump the actual MUL result
+  produced on iter 1 — pinpoints which bits flipped vs the
+  expected `0x45678000`. Likely a small change to
+  `tools/linux-hwsim/Main.hs` to log `sDebugRegX3` (or similar)
+  whenever PC crosses the bne instruction.
+- [ ] Investigate whether explicit Verilog `initial` blocks for
+  `mulDivFUIterative`'s state regs (prodReg, phase, countdown)
+  bring Verilator hwsim into agreement with Clash sim.
+- [ ] If yes, port the same explicit init to the silicon path
+  via a Clash `register`-with-explicit-initial-value annotation
+  so Quartus FFs also start at a known-good state, potentially
+  fixing the iter-10 silicon bug as well.
+- [ ] Long-term per task #59: replace the iterative DIV (and
+  MUL) with Newton-Raphson DSP-backed dividers / hardwired DSP
+  multipliers — no FSM state to corrupt.
+
+## Conclusion for #58 root-cause
+
+The iterative `mulDivFUIterative` FSM in
+`src/Riski5/Core/FU/MulDiv.hs` is **not** robust to register
+initialization assumptions. Three different backends start the
+FSM in three different states and produce three different
+divergence cadences. The Clash sim's NFData defaults happen to
+work for both 10 iters in pure-Haskell AND 9 iters when Quartus
+infers similar power-up values; Verilator's undefined-init does
+not. The silicon "10th-iter fail" is the same bug, just
+expressed at a different ordinal because Quartus partially
+matches Clash sim's defaults but not perfectly.
+
+Fix path: explicit reset values on the FSM's mealy state
+register (single-line Clash change).
