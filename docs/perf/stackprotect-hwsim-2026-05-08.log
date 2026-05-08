@@ -89,6 +89,76 @@ canary check itself. Candidate root causes:
    broken. Worth disassembling sched_tick before/after
    STACKPROTECTOR to compare.
 
+## cbrMtip side-channel synchroniser audit (2026-05-08, evening)
+
+Per user direction, focusing on hardware fixes. Audited
+`Riski5.CoreCdcBridge`'s mtip handling:
+
+```haskell
+liveMtipB = cbrMtip <$> replyInB              -- bus-side level
+liveMtipC = syncBit clkB clkC rstC enC liveMtipB   -- 2-FF sync
+... base{cbrMtip = liveMtip, cbrMeip = liveMeip}   -- always overlay
+```
+
+The `syncBit` is a standard 2-FF synchroniser via
+`Clash.Explicit.Synchronizer.dualFlipFlopSynchronizer` with
+initial value `False`. It propagates a level signal symmetrically
+— both rising and falling edges go through with the same 2-clkC-cycle
+latency. No edge-detection or pulse-stretching, just a level
+synchroniser.
+
+The structure is sound for the WFI-halt case (which it was added
+to fix in commit `738cbab`): mtip rises on busDom even while the
+bridge round-trip isn't firing → 2-FF sync carries it to coreDom →
+core's WFI wakes.
+
+For the falling-edge case (kernel writes mtimecmp = mtime + tick,
+mtipS becomes False on busDom), the 2-FF sync should also propagate
+the False to coreDom within 2 clkC cycles. At 40 MHz that's 50 ns,
+trivial vs the trap-handler's hundreds of cycles. Unlikely to be
+the bug source.
+
+Sub-investigations to consider:
+
+- The `cbrMtip` field is also part of the bridge's `replyInB`
+  payload (sampled via `cbrMtip <$> replyInB`). `replyInB` is the
+  full bus-side reply, which is combinational on the bus side
+  (mtipS itself is `mt >= mtc` combinational). The 2-FF sync's
+  first FF samples a combinational input. That can metastable
+  if the source transitions right at the destination clock edge
+  — but the second FF resolves it. Standard practice. Hwsim is
+  deterministic so a metastability bug wouldn't reproduce
+  consistently as we observe.
+- The PC histogram in the 1B-cycle hwsim run actually shows
+  ~825 unique PCs hit in the last 100 M cycles, not a tight IRQ
+  loop. So the kernel is making *some* forward progress; the
+  earlier "IRQ-storm" interpretation may be wrong. More likely:
+  kernel silently advances through fs_initcall (no
+  KERN_EMERG override → no printk visible) and wedges at one
+  of the three documented sites (`clocksource_done_booting`,
+  `kswapd_init`, `altera_jtaguart_init`), which all involve
+  kthread / workqueue spin_lock_irqsave or wake_up_process
+  patterns.
+
+So `cbrMtip` synchroniser itself is **NOT** the load-bearing
+hardware bug. The actual SoC issue is more likely in the broader
+kernel-thread scheduling path or in our handling of one of the
+specific synchronisation primitives (futex / completion / rcu)
+used inside the wedging functions. Closer audit needed of:
+
+- AMO/LR/SC paths under the CoreCdcBridge — `spin_lock_irqsave`
+  on RV32 typically uses `lr.w` / `sc.w` for the actual lock
+  word. We have AMO/LR/SC tested at byte level (HelloAExt /
+  HelloLrScStress passed silicon), but those tests exercise only
+  the FU. Under load with the CoreCdcBridge round-trip, an
+  ill-timed `sc.w` retry-and-fail cascade could deadlock.
+- The trap-exit `csrw CSR_SCRATCH, tp` write in
+  `arch/riscv/kernel/entry.S:239` — does that CSR write
+  reliably commit before the `mret` fires through our 5-stage
+  pipeline? If our pipeline drops mid-trap CSR writes under
+  certain stall patterns, that could explain a cascade where
+  the next trap entry sees stale `mscratch`.
+
 ## Correction (2026-05-08, later): the workaround is initcall skipping, not printk delay
 
 Re-reading `pkgs/linux-rv32-nommu/package.nix`'s `prePatch` more
