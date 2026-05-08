@@ -194,6 +194,86 @@ used inside the wedging functions. Closer audit needed of:
   `csrw CSR_SCRATCH, tp` and `mret`, so plenty of cycles for
   the commit to take effect. **This commit path is correct.**
 
+## 🎯 Cycle-by-cycle diff finding — kernel BUG in mutex_lock fast path (2026-05-08, late evening)
+
+Built a STACKPROTECTOR-off + debug=false kernel and ran 1B-cycle
+hwsim. Result: kernel ALSO wedges (does NOT boot to /init in this
+configuration), and the wedge prints a kernel BUG with stack trace:
+
+```
+[    0.603565] bad: scheduling from the idle thread!
+[    0.639733] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.18.22
+[    0.708843] Hardware name: riski5-de2 (DT)
+[    0.727930] Call Trace:
+[    0.771609] [<800012d8>] show_stack+0x3c/0x5c
+[    0.847152] [<80004db4>] dump_stack+0x1c/0x30
+[    0.885496] [<80041400>] dequeue_task_idle+0x30/0x5c
+[    0.967926] [<801b5874>] __schedule+0x1f0/0x518
+[    1.006475] [<801b5bd0>] schedule+0x34/0x68
+[    1.043320] [<801b5cd0>] schedule_preempt_disabled+0x14/0x24
+[    1.085376] [<801b6bb0>] __mutex_lock.constprop.0+0x170/0x20c
+[    1.129265] [<801b6d5c>] __mutex_lock_slowpath+0x18/0x30
+[    1.171337] [<801b6d9c>] mutex_lock+0x28/0x54
+[    1.210330] [<8000ef54>] __cpuhp_setup_state_cpuslocked+0x6c/0x224
+[    1.255209] [<8000f120>] __cpuhp_setup_state+0x14/0x38
+[    1.296264] [<801c50a0>] page_writeback_init+0x80/0xc8
+[    1.340846] [<801c4fd8>] pagecache_init+0x50/0x98
+[    1.383967] [<801bb560>] start_kernel+0x584/0x5a8
+```
+
+This decodes top-down as: `start_kernel` → `pagecache_init` →
+`page_writeback_init` → `cpuhp_setup_state` → `mutex_lock` → fast
+path fails → slowpath → schedule_preempt_disabled → schedule →
+__schedule → dequeue_task_idle → BUG ("scheduling from idle
+thread").
+
+**The smoking gun: `mutex_lock` fast path is failing** even though
+`cpuhp_state_mutex` is uncontended at this boot point (this is the
+first call ever to `mutex_lock(&cpuhp_state_mutex)`). The fast
+path does an `atomic_long_try_cmpxchg_acquire(&lock->owner, &zero,
+current)`. On RV32 this lowers to an `lr.w` / `sc.w` retry loop
+in `arch/riscv/include/asm/cmpxchg.h`:
+
+```
+0: lr.w  %0, %2
+   bne   %0, %expected, 1f
+   sc.w  %1, %new, %2
+   bnez  %1, 0b      # retry sc.w spurious fails
+1:
+```
+
+For the cmpxchg to return "mutex held" (= the slowpath path), the
+LR.W result must NOT equal `expected=0`. So either:
+1. `lock->owner` is genuinely non-zero (impossible — first call,
+   uncontended). OR
+2. **Our LR.W is returning the wrong data** — silicon read of
+   `lock->owner` not zero on a freshly-initialised mutex.
+
+(2) is consistent with "STACKPROTECTOR on or off, same wedge,
+slightly different kernel time" — it's a deterministic hardware
+bug in our LR/SC under specific access patterns, NOT a
+STACKPROTECTOR-induced race.
+
+This is **the actual hardware bug** the user wants fixed. The
+debugSchedulerPrintks=true workaround masks it because the skipped
+initcalls (clocksource_done_booting, kswapd_init,
+altera_jtaguart_init) would also trigger this same wedge later
+in boot. With them skipped, the kernel doesn't reach the
+mutex_lock pattern that exposes the LR.W bug.
+
+The HelloLrScStress firmware passed silicon (#32) — but that test
+uses LR/SC in a tight loop on a fixed address. The kernel's
+pattern is different: LR.W on `lock->owner` at a kernel data
+address, immediately after lots of unrelated activity. Could be
+a cache-coherence-like issue (we don't have a cache, but our
+SDRAM data path with the CDC bridge could have a similar
+ordering issue between a write to the address and a subsequent
+LR.W).
+
+Need a focused silicon test: write 0 to a SDRAM address, then
+LR.W from it, verify result is 0. Repeat under various
+intervening-write patterns.
+
 ## Audit summary (2026-05-08, evening)
 
 Hardware sites checked, all sound:
