@@ -52,17 +52,18 @@ STACKPROTECTOR=off log
 The bug is *exposed* by STACKPROTECTOR, not *caused* by the
 canary check itself. Candidate root causes:
 
-1. **Per-CPU TLS register clobbered by trap entry/exit.**
+1. ~~**Per-CPU TLS register clobbered by trap entry/exit.**
    With `STACKPROTECTOR_PER_TASK=y`, the canary lives in a
    per-task struct accessed via `tp` (RISC-V thread pointer
-   register). If our trap entry/exit doesn't preserve `tp`
-   correctly across a user→kernel→user transition, the canary
-   pointer gets corrupted and *some* function in the
-   wake-from-init-task path silently reads garbage. (This
-   matches the May-7 trace note that called out
-   `sched_tick / finish_task_switch` as the canary-trip site:
-   the *region* is right, but the failure mode is silent
-   corruption rather than a clean panic.)
+   register).~~ **REFUTED 2026-05-08** by a diagnostic build
+   with `STACKPROTECTOR_PER_TASK=n` + `STACKPROTECTOR_STRONG=y`:
+   the kernel hangs at the **identical** point (Mountpoint-cache,
+   kernel time 0.43s) under hwsim. So `tp` is not the
+   discriminator — the bug is in the canary check that
+   `STACKPROTECTOR_STRONG` enables in many functions, regardless
+   of whether the canary lives in `__stack_chk_guard` (global)
+   or `current->stack_canary` (per-task). Diagnostic build
+   reverted (PER_TASK back to =y per user direction).
 
 2. **Larger stack frames hit a stack-bottom guard or alignment
    that we're getting wrong.** STACKPROTECTOR adds 4-8 bytes
@@ -75,6 +76,18 @@ canary check itself. Candidate root causes:
    without, racing with timer rearmament.** Less likely but
    not impossible given our SoC's high IRQ latency under the
    CoreCdcBridge.
+
+4. **The `__stack_chk_guard` global symbol load itself faults
+   silently.** With `STACKPROTECTOR_STRONG`, *every* function
+   with non-trivial stack picks up two new memory loads
+   (canary read at prologue, canary verify at epilogue) of a
+   *kernel-text-relative* global. If something about how our
+   SoC handles a specific access pattern around those loads
+   (e.g. PC-relative addressing into rodata, multi-cycle
+   pipeline forwarding) corrupts a register the next
+   instruction relies on, every canary'd function would be
+   broken. Worth disassembling sched_tick before/after
+   STACKPROTECTOR to compare.
 
 ## Action items
 
