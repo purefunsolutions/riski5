@@ -261,6 +261,26 @@ altera_jtaguart_init) would also trigger this same wedge later
 in boot. With them skipped, the kernel doesn't reach the
 mutex_lock pattern that exposes the LR.W bug.
 
+### STACKPROTECTOR variant comparison
+
+Re-running both variants confirms the bug surfaces under BOTH but
+at DIFFERENT timings:
+
+| Variant                   | UART size | Last printk                     | Kernel-time |
+|---------------------------|----------:|---------------------------------|-------------|
+| STACKPROTECTOR=off, dbg=0 | 4242 B    | start_kernel+0x584 (BUG trace)  | 1.38 s      |
+| STACKPROTECTOR=on, dbg=0  | 3068 B    | Mountpoint-cache hash table…    | 0.43 s      |
+
+STACKPROTECTOR's added prologue/epilogue cycles **shift timing**
+such that:
+- off: kernel reaches further (`pagecache_init`) before the BUG
+  fires, and we get the diagnostic stack trace.
+- on: kernel hits the same path but earlier or in a slightly
+  different way, where the BUG path fires *silently* (no
+  printk before deadlock).
+
+Same root cause, different observable symptom.
+
 The HelloLrScStress firmware passed silicon (#32) — but that test
 uses LR/SC in a tight loop on a fixed address. The kernel's
 pattern is different: LR.W on `lock->owner` at a kernel data
