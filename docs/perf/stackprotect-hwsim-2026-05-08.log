@@ -1,0 +1,112 @@
+# STACKPROTECTOR hwsim hang reproduction — 2026-05-08
+
+## TL;DR
+
+After re-enabling `CONFIG_STACKPROTECTOR{,_STRONG,_PER_TASK}` in
+`pkgs/linux-rv32-nommu/riski5-overlay.config` (commit `e47e5f5`,
+reverting `131e9ba`), Verilator hwsim reproduces the silicon
+hang **exactly**: kernel reaches `Mountpoint-cache hash table
+entries: 1024` at kernel time 0.43s, then no further printk for
+the remainder of a 1B-cycle run.
+
+Critically:
+
+- **Zero hits at `__stack_chk_fail` (PC 0x801c410c)** in the PC
+  histogram — the canary is **not** tripping.
+- **Zero hits at `panic` / `vpanic`** PCs.
+- 50 hits in the 0x801c4xxx range, all in
+  `irqentry_enter` / `arch_stack_walk` / surrounding helpers —
+  normal IRQ-entry traffic, not stack-protector-related.
+
+So the silicon hang under STACKPROTECTOR is **not a canary
+trip** — it is a different failure mode that STACKPROTECTOR
+exposes (and STACKPROTECTOR=off masks).
+
+## What the kernel is doing when stuck
+
+PC samples from the last 100 M cycles of the 1B-cycle hwsim
+run (linked against the
+`pmr8rwjm5hyi92k5yaqxq687my7crsr6-riski5-linux-rv32-nommu-6.18.22`
+kernel build) cluster around timer / scheduler IRQ-handler
+code:
+
+| Symbol (offset)                       | What it does                          |
+|---------------------------------------|---------------------------------------|
+| `sched_tick`         (0x3bdc8)        | Per-tick scheduler bookkeeping        |
+| `finish_task_switch.isra.0` (0x389cc) | Post-context-switch cleanup           |
+| `hrtimer_run_queues` (0x7478c)        | hrtimer expiry wheel walk             |
+| `__update_load_avg_se`(0x49f00)       | CFS load-average update               |
+| `call_on_irq_stack`  (0x1ca328)       | RISC-V IRQ-stack trampoline           |
+| `irqentry_enter`     (0x1c41a0)       | Architecture-independent IRQ entry    |
+| `kstrtoll_from_user` (0x12e8e8)       | (likely tail of an unrelated symbol)  |
+
+In other words: the **timer IRQ keeps firing**, and the kernel
+keeps servicing each tick, but **the init thread never reaches
+`kthreadd_done complete`** (the next printk that should fire
+~600 ms after Mountpoint-cache, per the working
+STACKPROTECTOR=off log
+[`silicon-init-hello-2026-05-08.log`](silicon-init-hello-2026-05-08.log)).
+
+## Hypotheses
+
+The bug is *exposed* by STACKPROTECTOR, not *caused* by the
+canary check itself. Candidate root causes:
+
+1. **Per-CPU TLS register clobbered by trap entry/exit.**
+   With `STACKPROTECTOR_PER_TASK=y`, the canary lives in a
+   per-task struct accessed via `tp` (RISC-V thread pointer
+   register). If our trap entry/exit doesn't preserve `tp`
+   correctly across a user→kernel→user transition, the canary
+   pointer gets corrupted and *some* function in the
+   wake-from-init-task path silently reads garbage. (This
+   matches the May-7 trace note that called out
+   `sched_tick / finish_task_switch` as the canary-trip site:
+   the *region* is right, but the failure mode is silent
+   corruption rather than a clean panic.)
+
+2. **Larger stack frames hit a stack-bottom guard or alignment
+   that we're getting wrong.** STACKPROTECTOR adds 4-8 bytes
+   per frame for the canary; if some specific function's frame
+   crosses a critical boundary (e.g. page boundary, irq-stack
+   limit) the kernel may silently misbehave.
+
+3. **A kernel thread misses its wake-up because the IRQ-entry
+   path with stack-canary-enabled prologue runs longer than
+   without, racing with timer rearmament.** Less likely but
+   not impossible given our SoC's high IRQ latency under the
+   CoreCdcBridge.
+
+## Action items
+
+- [ ] Inspect the RISC-V trap entry assembly in
+  `arch/riscv/kernel/entry.S` (and our boot stub
+  `firmware/phase1/LinuxBootMaster.hs`) for `tp` /
+  `__riscv_sscratch` / per-CPU base preservation. The MPP fix
+  from commit `aab129b` covered `mstatus.MPP` — likely there's
+  a sibling fix needed for `tp` or a CSR we're missing.
+- [ ] Boot the same kernel build under hwsim with the
+  `CONFIG_STACKPROTECTOR_PER_TASK=n` (keep `STRONG=y`) to test
+  hypothesis 1: PER_TASK is the variant that uses `tp`. If
+  the boot succeeds without PER_TASK, hypothesis 1 is
+  confirmed.
+- [ ] Trace the init-thread PC explicitly (= the PC where the
+  kernel runs `rest_init` / `kernel_init` / `kernel_init_freeable`)
+  vs the IRQ-handler PCs we already see. The init thread should
+  be making *some* forward progress; if its PC is also stuck
+  on a single instruction, that's the actual hang site.
+
+## Setup
+
+- Kernel: `/nix/store/pmr8rwjm5hyi92k5yaqxq687my7crsr6-riski5-linux-rv32-nommu-6.18.22`
+  built from commit `e47e5f5` (overlay config has STACKPROTECTOR
+  + STRONG + PER_TASK enabled).
+- Verilator sim lib: `/nix/store/xqmmvp297hgi4524a4h3c7s961b2jysa-riski5-sim-0.1.0`
+  (default `firmware="linuxBootSim"` variant).
+- Driver: `cabal run riski5-linux-hwsim --flag=hwsim` against the
+  above sim lib + the kernel + `/nix/store/i9649xc1am1dm5aa4bfy47wl54anwc4f-riski5-dtb-0.1.0/riski5.dtb`,
+  cycle budget 1_000_000_000.
+- Run wall clock: ~22 minutes for 1 B simulated cycles.
+- Captured UART: 3068 bytes, last printk
+  `Mountpoint-cache hash table entries: 1024`.
+- PC histogram + per-100-M-cycle sample log saved at
+  `/tmp/sp-hwsim-1g.log` (768 KB).
