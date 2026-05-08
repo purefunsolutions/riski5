@@ -89,6 +89,55 @@ canary check itself. Candidate root causes:
    broken. Worth disassembling sched_tick before/after
    STACKPROTECTOR to compare.
 
+## Correction (2026-05-08, later): the workaround is initcall skipping, not printk delay
+
+Re-reading `pkgs/linux-rv32-nommu/package.nix`'s `prePatch` more
+carefully revealed that `debugSchedulerPrintks=true` does **not
+just add printks** — it also runs three sed substitutions that
+**skip known-wedging initcalls entirely**:
+
+```nix
+# #64-step10
+sed 's|fs_initcall(clocksource_done_booting);|/* skipped */|' \
+    kernel/time/clocksource.c
+# #64-step11
+sed 's|module_init(kswapd_init)|/* skipped */|' \
+    mm/vmscan.c
+# #64-step12
+sed 's|module_init(altera_jtaguart_init)|/* skipped */|' \
+    drivers/tty/serial/altera_jtaguart.c
+```
+
+The Nix file's own comments document exactly where each wedges:
+
+- `clocksource_done_booting` → wedges in `spin_lock_irqsave`
+  inside `__clocksource_watchdog_kthread`.
+- `kswapd_init` → wedges at `create_worker pool_id=4 /
+  wake_up_process worker_id=1` (same workqueue/kthread pattern).
+- `altera_jtaguart_init` → wedges in the console kthread spawn
+  after console takeover.
+
+So the earlier hypothesis (printk delay masks a race) is **wrong**
+in the load-bearing sense. The pr_emerg sprinkles add visibility
+but the *actual reason* the debug variant boots is that those
+three module_init / fs_initcall registrations are removed at
+source-edit time, so the wedging code paths never run.
+
+This narrows the underlying SoC bug to **a wake-up / scheduling
+race exposed in three specific kthread-or-workqueue initcalls**:
+not a generic STACKPROTECTOR overhead problem, but a deterministic
+hang in `create_worker` / `wake_up_process` / `__clocksource_watchdog_kthread`
+common patterns. All three involve spawning a kernel thread or
+worker and the bug surfaces under STACKPROTECTOR's added prologue/
+epilogue cycles tightening the timing.
+
+The practical workaround (defaulting `debugSchedulerPrintks=true`)
+holds — Linux boots through to /init with STACKPROTECTOR on. The
+underlying fix is to root-cause the wake-up race in our SoC
+(likely in CoreCdcBridge mtip propagation, or in our IPI path
+when a kthread create needs to wake on a different CPU — though
+we're 1-CPU so that simplifies).
+
 ## Follow-up: debug-printk kernel boots through cleanly (2026-05-08)
 
 Built `linux-rv32-nommu-debug` (which adds `debugSchedulerPrintks=true`,
