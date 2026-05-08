@@ -146,12 +146,39 @@ kernel-thread scheduling path or in our handling of one of the
 specific synchronisation primitives (futex / completion / rcu)
 used inside the wedging functions. Closer audit needed of:
 
-- AMO/LR/SC paths under the CoreCdcBridge — `spin_lock_irqsave`
-  on RV32 typically uses `lr.w` / `sc.w` for the actual lock
-  word. We have AMO/LR/SC tested at byte level (HelloAExt /
-  HelloLrScStress passed silicon), but those tests exercise only
-  the FU. Under load with the CoreCdcBridge round-trip, an
-  ill-timed `sc.w` retry-and-fail cascade could deadlock.
+- AMO/LR/SC paths under the CoreCdcBridge — audited
+  `Riski5.Core.FU.Amo` (2026-05-08, evening). Reservation logic is
+  structurally sound:
+  * LR.W: AmoIdle→AmoRead→AmoDone, sets `reservation = Just addr`.
+  * SC.W: launchAt checks reservation; match → AmoWrite (success
+    on completion clears reservation); mismatch/none → straight
+    AmoDone with res=1, reservation cleared.
+  * AMO ops: AmoIdle→AmoRead→AmoWrite→AmoDone, clears reservation.
+  * AmoIdle/AmoDone holding states do *not* clear reservation —
+    so a squashed-by-IRQ LR.W mid-Read can either complete
+    naturally (reservation set, kernel happy) or never set
+    reservation (subsequent SC.W fails, kernel retries normally).
+  * Bus-busy backpressure correctly handled via `slaveReady`
+    gating in AmoRead / AmoWrite phases.
+  * Read→Write bridge re-fire handled by the #46 fix (`mLastDBe` /
+    `mLastDRen` rising-edge detection in CoreCdcBridge — commit
+    `6a1f5ee`).
+  Conclusion: the AMO FU itself is **not** the load-bearing bug
+  source for the spin_lock_irqsave wedge. Possible remaining
+  AMO-related concerns (lower probability):
+  * Reservation persistence across context switches — our FU
+    keeps the reservation register live across switches (kernel
+    doesn't explicitly clear it). Per RV32A spec this is
+    "implementation-defined" and could cause spurious sc.w
+    success on stale reservation, but that's a *correctness*
+    bug not a *deadlock* — wouldn't cause infinite retry.
+  * Bridge round-trip latency under sustained LR/SC retry —
+    each retry is ~10-20 bridge cycles. If STACKPROTECTOR's
+    overhead exposes a timing-dependent race in the bridge's
+    request capture/refire FSM, we could see infinite retry.
+    Worth specifically: hwsim trace of a forced LR/SC pair
+    around an IRQ to see if the second LR.W's bridge round-trip
+    completes correctly.
 - The trap-exit `csrw CSR_SCRATCH, tp` write in
   `arch/riscv/kernel/entry.S:239` — does that CSR write
   reliably commit before the `mret` fires through our 5-stage
