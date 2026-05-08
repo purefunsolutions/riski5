@@ -1,0 +1,85 @@
+# sdramhighstress on real DE2 silicon — 2026-05-08
+
+## TL;DR
+
+`riski5-core-sdramhighstress` (BRAM-resident firmware writing the
+proven-clean lower 6 MB at 4 KB stride and the suspect upper 2 MB
+at 1 KB stride with a unique `addr ^ 0xDEADBEEF` pattern, then
+read-back, then re-read after ~100 ms delay) **passes both phases
+on real silicon** — `PASS2` reached with no `F<region><addr><exp><act>`
+failure record.
+
+Conclusion for #64 follow-up: the SDRAM data path itself is **not**
+corrupting in the high 2 MB region for a single-bus-master firmware
+running from BRAM. The corruption observed during Linux boot at
+high addresses must therefore come from one of:
+
+1. Concurrent fetch+data access patterns the kernel uses — kernel
+   text/data both live in SDRAM, so during boot the Avalon master
+   port is multiplexed across instruction fetch and load/store.
+   This BRAM firmware never fetches from SDRAM, so it can't
+   reproduce that pattern.
+2. JTAG-Avalon-Master upload corruption — the kernel + DTB are
+   loaded into SDRAM via JTAG-Avalon before the core starts
+   running. This firmware writes from the runtime data port. If
+   the upload path corrupts high addresses but the runtime data
+   port doesn't, that explains the boot symptoms exactly.
+3. Refresh-vs-page-allocator interactions specific to the kernel's
+   access cadence (less likely given this firmware does ~3500
+   writes touching the same row patterns).
+
+Most-likely-cause priority for the next probe: (2) JTAG-Avalon-Master
+upload integrity check — re-verify written-vs-readback bytes from
+the host side at upload completion, with extra coverage of the
+> 6 MB region.
+
+## Setup
+
+- Bitstream: `riski5-core-sdramhighstress` at commit `416afa6`
+  (firmware in `0258127`).
+- Board: Altera DE2 Cyclone II EP2C35F672C6, USB-Blaster on
+  `[3-4.1]`.
+- Clock domain split: bus 40 MHz / core 40 MHz / sdram 100 MHz
+  (default Multi-PLL Phase E config).
+- Firmware overlay: `firmware/phase1/CoreMark.hs` is replaced
+  with a re-export of `HelloSdramHighStress`'s
+  `helloSdramHighStressFirmwareWords` so the unchanged
+  `-DFIRMWARE_COREMARK` path bakes the high-stress probe into
+  imem (BRAM at 0x0000_0000). FetchPolicy stays at the BRAM-only
+  default — no SDRAM fetch involved in this test.
+
+## Captured UART output
+
+```
+B,,,,,,,,,,,,,,,,,,,,,,,,................................................................................................................................,,,,,,,,,,,,,,,,,,,,,,,,................................................................................................................................PASS1r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r,r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.r.PASS2
+```
+
+Decoding:
+- `B` — boot byte (BRAM exec + UART alive).
+- 24 × `,` — phase-1 low-region writes (1536 strides ÷ 64 dot rate).
+- 128 × `.` — phase-1 high-region writes (2048 strides ÷ 16 dot rate).
+- 24 × `,` + 128 × `.` — phase-2 immediate read-back, no failure.
+- `PASS1` — phase 2 clean.
+- 25 × `r,` + 128 × `r.` — phase-3 re-read after delay, no failure.
+  (One extra `r,` vs phase 2 due to the boundary-stride dot
+  emission off-by-one — cosmetic, not a corruption.)
+- `PASS2` — phase 3 clean.
+
+Total UART chars: 1 + 152 + 152 + 5 + 153 × 2 + 5 ≈ 621.
+
+## Action items unblocked
+
+- [x] Discriminate "silicon-only" vs "RTL bug" for the high-SDRAM
+  corruption: silicon is clean for BRAM-resident single-master
+  workload → the bug is **upload-path-related** or **kernel
+  workload-pattern-related**, not a generic data-path
+  failure.
+- [ ] Add a hwsim variant (Verilator-driven) of this same
+  firmware → confirms RTL is also clean (expected) and gives us
+  a sim baseline to compare future regressions against.
+- [ ] Probe the JTAG-Avalon-Master upload path with a host-side
+  written-vs-readback verify covering the upper 2 MB explicitly.
+- [ ] Re-test with a kernel-style workload: BRAM fetch interleaved
+  with high-SDRAM data accesses (closer to what Linux actually
+  does at boot) to see if concurrent fetch+data access on the
+  runtime bus reproduces the corruption.
