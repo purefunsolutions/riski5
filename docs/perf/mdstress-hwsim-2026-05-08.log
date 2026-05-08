@@ -1,65 +1,68 @@
-# mdstress hwsim — diverges from BOTH silicon and cabal sim — 2026-05-08
+# mdstress hwsim — root-causes #58 as firmware test typo — 2026-05-08
 
 ## TL;DR
 
-The mdstress firmware running under Verilator hwsim produces:
+The mdstress firmware running under Verilator hwsim originally
+produced:
 
 ```
 BFMFFFFFFFFFFFFFFF...
 ```
 
-i.e. the iter-1 `mul x3, x1, x2` (with x1 = 0x12345678, x2 = 0x100)
-produces a value that does NOT match the firmware's expected
-0x45678000, so the bne immediately triggers `mulFailL` and emits
-`F` followed by `M` followed by an infinite F-spin.
+After re-flashing silicon today, **silicon shows the same
+BFMFFFF... output** — both fail iter 1 on the MUL check. This
+contradicts the May-5 perf log claim of "9 iters pass, iter 10
+fails". The actual root cause turned out to be a one-hex-digit
+typo in the firmware's expected MUL value:
 
-This **disagrees with both other backends**:
+```haskell
+li x1 0x1234_5678
+li x2 0x100
+mul x3 x1 x2
+li x5 0x4567_8000   -- ← wrong! should be 0x3456_7800
+bne x3 x5 mulFailL  -- ← fires every iter because x3 = 0x34567800
+```
 
-| Backend                           | mdstress result                          |
-|-----------------------------------|------------------------------------------|
-| cabal test (Clash pure-Haskell)   | passes 10/10 iters cleanly               |
-| **Verilator hwsim**               | **fails iter 1** (this run)              |
-| Silicon (Quartus, riski5-core-mdstress) | passes 9 iters, fails iter 10      |
+The math:
 
-All three run the same Clash source — `mulDivFUIterative` in
-`src/Riski5/Core/FU/MulDiv.hs`. The iterative shift-and-add
-multiplier + restoring divider FSM. Same operands, same `li`
-reload sequence, same expected result `0x45678000`.
+```
+0x12345678 * 0x100 = 0x1234567800 mod 2^32 = 0x34567800   (correct)
+0x12345678 << 12   = 0x12345678000 mod 2^32 = 0x45678000   (firmware wanted)
+```
 
-## Significance
+The firmware author shifted by 12 bits (multiplier 0x1000) but
+loaded x2 = 0x100 (multiplier 0x100). After fixing the expected
+to 0x34567800, both hwsim and silicon emit clean
+`BMUHDSR.MUHDSR....` indefinitely.
 
-This is the missing data point that constrains the silicon-only
-"10th-iter MUL fail" bug (#58 / #60). Previously we had:
+## Verification (after fix `4928486`)
 
-- Cabal sim PASS → "FSM is logically correct"
-- Silicon FAIL on iter 10 → "Quartus synth introduces something"
+| Backend                                   | Output                       |
+|-------------------------------------------|------------------------------|
+| Verilator hwsim (`riski5-sim-mdstress`)   | clean `BMUHDSR.…` × ~1500    |
+| Silicon (`riski5-core-mdstress`, direct flash) | clean `BMUHDSR.…` × ~150 K  |
 
-With Verilator hwsim FAIL on iter 1, we now know:
+Silicon emits ~150 K iterations cleanly during a few seconds of
+console capture. The iterative `mulDivFUIterative` FSM is
+**fully correct** on real Cyclone II silicon.
 
-1. The Verilog Clash emits is **NOT logically equivalent to the
-   pure-Haskell Clash sim**. Verilator runs the emitted Verilog
-   directly; if that Verilog produced the same result as the sim,
-   it would also pass 10/10. It doesn't.
-2. The iter-1 hwsim failure mode is **stronger than the iter-10
-   silicon failure mode**. Quartus synthesis somehow recovers the
-   first 9 iters worth of correct behaviour that hwsim drops on
-   iter 1.
+## Re-interpreting the May-5 perf log
 
-Most likely explanation: register **initialization values**.
-Verilator initializes all regs to undefined / 'X' (which `Vinit`
-defaults to 0 in the C++ harness, but with `--O3` may scramble),
-whereas Cyclone II FFs power up to a specific Quartus-determined
-value. Clash sim initializes regs to their declared NFData
-defaults. If the iterative FSM's initial `prodReg` / `phase` /
-`countdown` values differ across these three:
+The May-5 perf log ([`docs/perf/mdstress-silicon-2026-05-05.log`](mdstress-silicon-2026-05-05.log))
+sampled `CMTC=65 / ITRC=1 / core_pc=0x000000F0` and interpreted
+this as "9 successful iterations + 1 failure byte = 65 bytes
+emitted". But the load-bearing field is **ITRC=1** — silicon was
+on iter 1, not iter 10. The 65 bytes break down as:
 
-- Clash sim: declared defaults → FSM enters MdIdle clean, every
-  iter produces correct shift-and-add result → 10/10 PASS.
-- Quartus silicon: power-up FFs ≈ 0 → FSM also enters MdIdle
-  cleanly for the first 9 iters; some Mealy-state corner case
-  trips on iter 10 (cumulative state, see #58 perf log).
-- Verilator: random/unset regs → FSM starts in invalid state →
-  iter 1 already corrupted.
+```
+ 1 'B' boot byte
+ 1 'F' from mulFailL (failure signal)
+ 1 'M' op-letter
+62 'F's from the spin loop (= JTAG-UART FIFO depth at the time
+   of sample, with +1 commit attempt → CMTC = 65)
+```
+
+Identical to the BFMFFFF... we see today.
 
 ## Setup
 
@@ -83,41 +86,42 @@ PC heartbeats at end-of-run cycle around `0xe4`–`0xf4` — the
 `failLBody` F-spin loop, confirming the firmware correctly
 detected the bne mismatch and entered the spin path.
 
-## Action items unblocked
+## Action items closed
 
-- [x] Build a Verilator-driven hwsim variant of the
-  HelloMdStress probe (riski5-sim-mdstress).
+- [x] Build a Verilator-driven hwsim variant of HelloMdStress
+  (`riski5-sim-mdstress`, commit `d92d63e`).
 - [x] Confirm mdstress is reproducible at the byte level under
-  hwsim. (It is — and produces a *different* failure mode than
-  silicon, which is itself diagnostic.)
-- [ ] Instrument the hwsim runner to dump the actual MUL result
-  produced on iter 1 — pinpoints which bits flipped vs the
-  expected `0x45678000`. Likely a small change to
-  `tools/linux-hwsim/Main.hs` to log `sDebugRegX3` (or similar)
-  whenever PC crosses the bne instruction.
-- [ ] Investigate whether explicit Verilog `initial` blocks for
-  `mulDivFUIterative`'s state regs (prodReg, phase, countdown)
-  bring Verilator hwsim into agreement with Clash sim.
-- [ ] If yes, port the same explicit init to the silicon path
-  via a Clash `register`-with-explicit-initial-value annotation
-  so Quartus FFs also start at a known-good state, potentially
-  fixing the iter-10 silicon bug as well.
-- [ ] Long-term per task #59: replace the iterative DIV (and
-  MUL) with Newton-Raphson DSP-backed dividers / hardwired DSP
-  multipliers — no FSM state to corrupt.
+  hwsim — it is, and matches silicon exactly when both run the
+  same firmware.
+- [x] Identify the actual root cause: firmware test typo on the
+  MUL expected value. Fixed in commit `4928486`.
+- [x] Verify fix on hwsim: clean `BMUHDSR.…` for ~1500 iters
+  in 2 M cycles.
+- [x] Verify fix on silicon: clean `BMUHDSR.…` for ~150 K iters
+  in a few seconds of console capture.
 
 ## Conclusion for #58 root-cause
 
 The iterative `mulDivFUIterative` FSM in
-`src/Riski5/Core/FU/MulDiv.hs` is **not** robust to register
-initialization assumptions. Three different backends start the
-FSM in three different states and produce three different
-divergence cadences. The Clash sim's NFData defaults happen to
-work for both 10 iters in pure-Haskell AND 9 iters when Quartus
-infers similar power-up values; Verilator's undefined-init does
-not. The silicon "10th-iter fail" is the same bug, just
-expressed at a different ordinal because Quartus partially
-matches Clash sim's defaults but not perfectly.
+`src/Riski5/Core/FU/MulDiv.hs` is **fully correct** on real
+Cyclone II silicon. The "iter-10 silicon hang" hypothesis was
+based on a misinterpreted JTAG-UART CMTC=65 sample where ITRC=1
+(iter 1) was the load-bearing field. After fixing the firmware's
+typo'd MUL expected value (one hex digit), all 6 ops
+(MUL/MULHU/MULH/DIVU/DIV/REMU) pass on both hwsim and silicon
+indefinitely.
 
-Fix path: explicit reset values on the FSM's mealy state
-register (single-line Clash change).
+**Implication for the SoC roadmap.** The hybrid
+`mulDivFUMulComb` workaround (combinational MUL via DSP
+inference, iterative DIV) for Linux boot remains valid as a
+*performance optimisation* — combinational MUL retires in 1
+cycle vs the iterative FSM's 34 — but it is no longer required
+for *correctness*. Linux booting on `mulDivFUMulComb` showed the
+silicon already worked; the BogoMIPS print proving M-extension
+worked end-to-end is consistent with the FSM being correct
+all along.
+
+Task #58 / #60 are effectively closed by this discovery. The
+remaining open task #59 (replace iterative DIV with
+Newton-Raphson DSP) is now a pure performance / area win, not
+a correctness fix.
