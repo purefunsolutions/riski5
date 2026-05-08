@@ -31,10 +31,20 @@
   # the whole pipeline.
   kernelChoice ? "6.18",
   # #64 debug: sprinkle pr_emerg() calls at rest_init /
-  # kernel_init_freeable / kthreadd_done to see where the boot
-  # silently wedges past Mountpoint-cache. Off by default — toggle
-  # via the package call's debugSchedulerPrintks arg.
-  debugSchedulerPrintks ? false,
+  # kernel_init_freeable / kthreadd_done and many other init steps
+  # so we can see exactly how far past Mountpoint-cache the boot
+  # gets.
+  #
+  # Default flipped to true on 2026-05-08: with CONFIG_STACKPROTECTOR
+  # enabled, the silent (debugSchedulerPrintks=false) kernel hangs
+  # at kernel time 0.43 s in the post-Mountpoint-cache /
+  # kernel_init / kthreadd handoff (a wake-up race that the printk-
+  # path's delay masks). The debug variant boots through cleanly.
+  # See docs/perf/stackprotect-hwsim-2026-05-08.log for the diagnosis.
+  # Override with `debugSchedulerPrintks = false` at the call site
+  # only if you've separately rooted the underlying race and know
+  # the silent kernel boots.
+  debugSchedulerPrintks ? true,
   pkgsCross,
   bc,
   bison,
