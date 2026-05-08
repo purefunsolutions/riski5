@@ -94,12 +94,18 @@ helloMdStressFirmware = do
 
   -- ============================================================
   -- M : MUL  x3 = x1 * x2  with x1=0x1234_5678, x2=0x100
-  --     Expected (low 32):  0x4567_8000
+  --     Expected (low 32):  0x3456_7800   (= 0x12345678 << 8 mod 2^32)
+  -- The original 0x4567_8000 expectation was wrong (= shift by
+  -- 12 bits / 0x1000 multiplier). Both silicon and hwsim
+  -- correctly produced 0x3456_7800 and the bne fired immediately —
+  -- the "iterative-MUL silicon hang" of #58 was misdiagnosed: MUL
+  -- works fine, the firmware test was just checking against a
+  -- mathematically wrong expected value.
   -- ============================================================
   li x1 0x1234_5678
   li x2 0x100
   mul x3 x1 x2
-  li x5 0x4567_8000
+  li x5 0x3456_7800
   -- If x3 != x5, jump to mulFailL; otherwise fall through and emit 'M'.
   mulFailL <- labelUnplaced
   bne x3 x5 mulFailL
