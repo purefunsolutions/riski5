@@ -145,6 +145,7 @@ library riski5-firmware
     HelloSchedStress
     HelloSdramDataStress
     HelloSdramExec
+    HelloSdramHighStress
     HelloSdramStress
     HelloSramExec
     HelloStackStress
