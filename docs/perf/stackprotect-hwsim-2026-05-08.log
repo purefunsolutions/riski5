@@ -180,11 +180,45 @@ used inside the wedging functions. Closer audit needed of:
     around an IRQ to see if the second LR.W's bridge round-trip
     completes correctly.
 - The trap-exit `csrw CSR_SCRATCH, tp` write in
-  `arch/riscv/kernel/entry.S:239` — does that CSR write
-  reliably commit before the `mret` fires through our 5-stage
-  pipeline? If our pipeline drops mid-trap CSR writes under
-  certain stall patterns, that could explain a cascade where
-  the next trap entry sees stale `mscratch`.
+  `arch/riscv/kernel/entry.S:239` — audited (2026-05-08, evening).
+  Pipeline commit logic in `src/Riski5/Core.hs:1260-1285`:
+  ```haskell
+  csrsS = register initCsrs $
+    (\stall valid next cur _ _ ->
+       if stall || not valid then cur else next) ...
+  ```
+  At cycle N's edge, csrsS commits to `xCsrsNextS` from
+  handleInstr's csrw case (which returns `cs' = writeCsr ...`).
+  Next instruction at X reads the new csrsS. The kernel's
+  ret_from_exception has ~10 instructions between
+  `csrw CSR_SCRATCH, tp` and `mret`, so plenty of cycles for
+  the commit to take effect. **This commit path is correct.**
+
+## Audit summary (2026-05-08, evening)
+
+Hardware sites checked, all sound:
+- ✅ cbrMtip side-channel synchroniser (CoreCdcBridge:420-428)
+- ✅ AMO FU reservation tracking (Riski5.Core.FU.Amo)
+- ✅ AMO Read→Write bridge re-fire (mLastDBe/mLastDRen, #46 fix)
+- ✅ CSR write commit timing (Riski5.Core.csrsS register)
+- ✅ MPP preservation in trap entry (#54 fix `aab129b`)
+
+The STACKPROTECTOR hang's load-bearing hardware site is
+unidentified after this audit pass. The bug *is* hardware
+(STACKPROTECTOR doesn't change kernel logic, only adds
+prologue/epilogue cycles, and the same kernel boots without it),
+but the specific site is subtle.
+
+Possible deeper investigations:
+- Cycle-by-cycle hwsim diff between the two builds (with vs
+  without STACKPROTECTOR) at the same kernel time, looking for
+  where pipeline state diverges.
+- Forced LR/SC-around-IRQ probe at byte level (silicon firmware)
+  to test bridge round-trip under the specific timing pattern.
+- Pipeline forwarding audit for CSR reads in the cycle after
+  CSR writes — current `csrsS` register provides correct value
+  on clock edge, but does any pipeline path read csrsS *before*
+  the edge in a stall-recovery scenario?
 
 ## Correction (2026-05-08, later): the workaround is initcall skipping, not printk delay
 
