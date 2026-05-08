@@ -68,6 +68,19 @@
         firmware = "sdramHighStress";
       };
 
+      # Verilator sim library variant for the M-extension stress
+      # probe. Bakes HelloMdStress into BRAM and keeps FetchPolicy
+      # at the BRAM-only default. Used to discriminate whether the
+      # silicon-only "10th MUL produces wrong value" hang
+      # (#58/#60: deterministic CMTC=65 / PC=0xF0 across reflashes)
+      # reproduces against the Clash-emitted RTL in Verilator
+      # (= an RTL bug we can fix) or only against Quartus-
+      # synthesised silicon (= a Cyclone II synthesis edge case).
+      riski5-sim-mdstress = pkgs.callPackage ./riski5-sim/package.nix {
+        inherit quartus-ii-13 verilambda-shim-gen;
+        firmware = "mdStress";
+      };
+
       # YosysHQ/riscv-formal harness — expose the pinned package
       # so consumers can point at it with `.#riscv-formal` too.
       inherit riscv-formal;

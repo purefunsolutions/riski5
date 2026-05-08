@@ -63,11 +63,14 @@
     ]);
   isLinuxBootSim = firmware == "linuxBootSim";
   isSdramHighStress = firmware == "sdramHighStress";
+  isMdStress = firmware == "mdStress";
 in
   stdenv.mkDerivation {
     pname =
       if isSdramHighStress
       then "riski5-sim-sdramhighstress"
+      else if isMdStress
+      then "riski5-sim-mdstress"
       else "riski5-sim";
     version = "0.1.0";
 
@@ -194,6 +197,39 @@ in
         # is data-path-only, no SDRAM fetch involved.
       ''}
 
+      ${lib.optionalString isMdStress ''
+        cat > firmware/phase1/CoreMark.hs <<'EOF'
+        -- SPDX-FileCopyrightText: 2026 Mika Tammi
+        -- SPDX-License-Identifier: MIT OR BSD-3-Clause
+        --
+        -- Overlaid by the riski5-sim (firmware="mdStress") Nix
+        -- build: re-exports HelloMdStress's firmware under
+        -- CoreMark so the unchanged -DFIRMWARE_COREMARK path in
+        -- app/Top.hs bakes the M-extension byte-level stress
+        -- probe into BRAM. The probe runs `BMUHDSR.MUHDSR.…` in
+        -- a tight loop using known operands. Used to discriminate
+        -- whether the silicon-only "10th MUL produces wrong value"
+        -- bug (#58/#60) reproduces against the Clash-emitted RTL
+        -- in Verilator (= RTL bug) or only against Quartus-
+        -- synthesised silicon (= synthesis edge case).
+        {-# LANGUAGE DataKinds #-}
+        {-# LANGUAGE NoStarIsType #-}
+
+        module CoreMark (
+          coreMarkFirmwareWords,
+        ) where
+
+        import Clash.Prelude (BitVector)
+        import HelloMdStress (helloMdStressFirmwareWords)
+
+        coreMarkFirmwareWords :: [BitVector 32]
+        coreMarkFirmwareWords = helloMdStressFirmwareWords
+        EOF
+        sed -i 's/^        //' firmware/phase1/CoreMark.hs
+        # FetchPolicy stays at the BRAM-only default — M-FU lives
+        # in the core, no SDRAM/SRAM involvement.
+      ''}
+
       echo "### riski5-sim (${firmware}): overlaid firmware/phase1/CoreMark.hs"
       cat firmware/phase1/CoreMark.hs
       if [[ -f firmware/phase1/FetchPolicy.hs ]]; then
@@ -218,7 +254,7 @@ in
         -DSOC_CLOCK_HZ=40000000 \
         -DSOC_SDRAM_CLOCK_HZ=40000000 \
         -DSOC_SDRAM_PERIOD_PS=25000 \
-        -DSILICON_MULCOMB_ONLY \
+        ${lib.optionalString (!isMdStress) "-DSILICON_MULCOMB_ONLY"} \
         -isrc -iapp -ifirmware/phase1 \
         Top
 
