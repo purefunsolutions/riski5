@@ -78,22 +78,42 @@ canary check itself. Candidate root causes:
 
 ## Action items
 
-- [ ] Inspect the RISC-V trap entry assembly in
-  `arch/riscv/kernel/entry.S` (and our boot stub
-  `firmware/phase1/LinuxBootMaster.hs`) for `tp` /
-  `__riscv_sscratch` / per-CPU base preservation. The MPP fix
-  from commit `aab129b` covered `mstatus.MPP` — likely there's
-  a sibling fix needed for `tp` or a CSR we're missing.
-- [ ] Boot the same kernel build under hwsim with the
-  `CONFIG_STACKPROTECTOR_PER_TASK=n` (keep `STRONG=y`) to test
-  hypothesis 1: PER_TASK is the variant that uses `tp`. If
-  the boot succeeds without PER_TASK, hypothesis 1 is
-  confirmed.
+- [x] Inspect the RISC-V trap entry assembly in
+  `arch/riscv/kernel/entry.S`. The `tp`/`CSR_SCRATCH` contract
+  is sound:
+  - `head.S:198` initialises `mscratch=0` in M-mode at boot.
+  - `handle_exception:102` does `csrrw tp, CSR_SCRATCH, tp` —
+    swap user-tp ↔ kernel-tp at trap entry. `bnez tp` discriminates
+    came-from-user (tp != 0) vs came-from-kernel (tp = 0 since
+    scratch held 0 in kernel mode).
+  - `handle_exception:166` clears `mscratch=0` after the swap-
+    plus-save so a recursive in-kernel exception sees the zero
+    sentinel.
+  - `ret_from_exception:239` writes `mscratch=tp` before mret
+    when returning to U-mode, ensuring the next U→M trap can
+    swap correctly.
+  So the kernel's contract is correct given that mstatus.MPP and
+  CSR_SCRATCH are preserved across our SoC's mret/trap. The MPP
+  fix `aab129b` covered MPP. CSR_SCRATCH is a regular machine-
+  level CSR we expose through `Riski5.CSR.csrMscratch` — should
+  also work, but worth verifying our pipeline doesn't drop
+  scratch writes mid-trap-entry.
+- [ ] Verify `mscratch` reads/writes round-trip correctly through
+  our trap-entry pipeline. Likely instrumentation: emit
+  `mscratch` in the boot-stub's TRAP-INFO dump (it's already in
+  there per `LinuxBootMaster.hs:178-180`), then trigger a
+  controlled U→M trap and read the byte stream.
 - [ ] Trace the init-thread PC explicitly (= the PC where the
   kernel runs `rest_init` / `kernel_init` / `kernel_init_freeable`)
-  vs the IRQ-handler PCs we already see. The init thread should
-  be making *some* forward progress; if its PC is also stuck
-  on a single instruction, that's the actual hang site.
+  vs the IRQ-handler PCs we already see. If the init thread's
+  PC is *also* stuck on a single instruction, that's the actual
+  hang site. Currently we only see the IRQ-handler clusters.
+- [ ] If the above doesn't pinpoint, isolate by toggling
+  `CONFIG_STACKPROTECTOR_PER_TASK` independently of
+  `STACKPROTECTOR_STRONG` to check whether the per-task tp-
+  based canary access is the discriminator. (User direction
+  is to keep all three on; do this only as a temporary diagnostic
+  swap, revert immediately after.)
 
 ## Setup
 
